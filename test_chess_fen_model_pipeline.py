@@ -188,7 +188,7 @@ class ChessFenModelPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir) / "out"
 
-            payload = recognize_fen_local(out)
+            payload = recognize_fen_local(out, model_path=out / "models" / "missing.npz")
 
             self.assertEqual(payload["status"], "needs_review")
             self.assertEqual(payload["reason"], "model_missing")

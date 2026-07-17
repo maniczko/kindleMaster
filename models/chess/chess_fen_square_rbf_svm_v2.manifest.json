@@ -1,0 +1,309 @@
+{
+  "schema": "kindlemaster.fen_square_classifier.portable.v1",
+  "status": "ready",
+  "model_type": "rbf_svm_hog",
+  "model_name": "chess_fen_square_rbf_svm_v2",
+  "profile": "yusupov-fixed-edition",
+  "feature_schema": "grayscale16_hog4x4_projection_v1",
+  "feature_count": 512,
+  "classes": [
+    "B",
+    "K",
+    "N",
+    "P",
+    "Q",
+    "R",
+    "b",
+    "empty",
+    "k",
+    "n",
+    "p",
+    "q",
+    "r"
+  ],
+  "created_at": "2026-07-17T05:59:00.928268Z",
+  "artifact_path": "models/chess/chess_fen_square_rbf_svm_v2.npz",
+  "artifact_sha256": "f159958fd785cc0384d937f281beeb3843f47ad4458c8b691e9419b0914d8eb0",
+  "source_artifact_sha256": "b0b345caa006b7d5c08a5e79a914a8037d8c1ba5b88691d33c762ad58cb9a321",
+  "source_manifest_sha256": "230715330808ffbcf2760bcff8292c44b810db56fd447e5699e17e464aeb0824",
+  "training_data": {
+    "dataset_sha256": "ce60028fc0054d94422125e4204191b80dab3172db7addbc3d3af28c0b8b1a8f",
+    "split_counts": {
+      "train": 11072,
+      "val": 3840,
+      "holdout": 1920
+    },
+    "split_integrity": {
+      "status": "passed",
+      "group_count": 106,
+      "diagram_count": 263,
+      "leaked_groups": [],
+      "leaked_diagrams": [],
+      "incomplete_boards": [],
+      "policy": "A page or chapter group and all 64 squares from each diagram must stay in exactly one split."
+    }
+  },
+  "benchmark_comparison": {
+    "split": "holdout",
+    "baseline": {
+      "model_type": "feature_centroid",
+      "square_accuracy": 0.4943,
+      "exact_board_accuracy": 0.0
+    },
+    "candidate": {
+      "model_type": "rbf_svm_hog",
+      "square_accuracy": 0.989062,
+      "exact_board_accuracy": 0.9
+    },
+    "delta": {
+      "square_accuracy": 0.494762,
+      "exact_board_accuracy": 0.9
+    }
+  },
+  "calibration": {
+    "method": "temperature_scaling",
+    "source_split": "val",
+    "temperature": 0.191559
+  },
+  "acceptance": {
+    "source_split": "val",
+    "board_confidence": "minimum_square_confidence",
+    "threshold": 0.994787,
+    "policy": "Abstain unless every square clears the validation-calibrated zero-false-board threshold."
+  },
+  "orientation": {
+    "value": "white_bottom",
+    "source": "fixed_edition_profile",
+    "version": "yusupov-orientation-v1"
+  },
+  "marker_calibration": {
+    "calibration_version": "yusupov-marker-reliability-v1",
+    "source_profile": "yusupov-fundamentals",
+    "classifier_version": "marker_adaptive_v3",
+    "source_split": "calibration",
+    "artifact_path": "models/chess/chess_marker_calibration_yusupov_v1.json",
+    "artifact_sha256": "7a9f374834d6748ab6f163cbc4acd41a90d68e8c305440f89a337dc57dd9a84e"
+  },
+  "validation": {
+    "sample_count": 3840,
+    "exact_square_count": 3829,
+    "square_accuracy": 0.997135,
+    "piece_accuracy": 0.991575,
+    "board_count": 60,
+    "exact_board_count": 51,
+    "exact_board_accuracy": 0.85,
+    "exact_fen_placement_count": 51,
+    "exact_fen_placement_accuracy": 0.85,
+    "confusion": {
+      "B": {
+        "B": 47,
+        "P": 1,
+        "b": 1
+      },
+      "K": {
+        "K": 59,
+        "R": 1
+      },
+      "N": {
+        "N": 55,
+        "P": 3
+      },
+      "P": {
+        "K": 1,
+        "P": 299
+      },
+      "Q": {
+        "Q": 46
+      },
+      "R": {
+        "R": 81
+      },
+      "b": {
+        "B": 1,
+        "b": 52
+      },
+      "empty": {
+        "Q": 1,
+        "empty": 2652
+      },
+      "k": {
+        "k": 58,
+        "q": 1,
+        "r": 1
+      },
+      "n": {
+        "n": 53
+      },
+      "p": {
+        "p": 302
+      },
+      "q": {
+        "q": 40
+      },
+      "r": {
+        "r": 85
+      }
+    },
+    "per_class_accuracy": {
+      "B": 0.959184,
+      "K": 0.983333,
+      "N": 0.948276,
+      "P": 0.996667,
+      "Q": 1.0,
+      "R": 1.0,
+      "b": 0.981132,
+      "empty": 0.999623,
+      "k": 0.966667,
+      "n": 1.0,
+      "p": 1.0,
+      "q": 1.0,
+      "r": 1.0
+    },
+    "confidence": [
+      {
+        "lower": 0.5,
+        "upper": 0.6,
+        "count": 1,
+        "mean_confidence": 0.53212,
+        "accuracy": 1.0
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "count": 3839,
+        "mean_confidence": 0.995495,
+        "accuracy": 0.997135
+      }
+    ],
+    "acceptance": {
+      "threshold": 0.994787,
+      "accepted_board_count": 15,
+      "abstained_board_count": 45,
+      "coverage": 0.25,
+      "false_accepted_board_count": 0,
+      "false_accepted_board_rate": 0.0
+    }
+  },
+  "holdout": {
+    "sample_count": 1920,
+    "exact_square_count": 1899,
+    "square_accuracy": 0.989062,
+    "piece_accuracy": 0.97351,
+    "board_count": 30,
+    "exact_board_count": 27,
+    "exact_board_accuracy": 0.9,
+    "exact_fen_placement_count": 27,
+    "exact_fen_placement_accuracy": 0.9,
+    "confusion": {
+      "B": {
+        "B": 29,
+        "K": 1,
+        "b": 1
+      },
+      "K": {
+        "K": 30
+      },
+      "N": {
+        "N": 22,
+        "P": 1,
+        "empty": 1
+      },
+      "P": {
+        "P": 145,
+        "R": 1
+      },
+      "Q": {
+        "Q": 24
+      },
+      "R": {
+        "R": 46
+      },
+      "b": {
+        "b": 29,
+        "empty": 1,
+        "p": 1
+      },
+      "empty": {
+        "B": 1,
+        "Q": 1,
+        "b": 1,
+        "empty": 1311,
+        "k": 1,
+        "p": 1
+      },
+      "k": {
+        "k": 29,
+        "r": 1
+      },
+      "n": {
+        "n": 22,
+        "r": 1
+      },
+      "p": {
+        "empty": 2,
+        "p": 146,
+        "r": 2
+      },
+      "q": {
+        "empty": 1,
+        "q": 23
+      },
+      "r": {
+        "empty": 1,
+        "p": 1,
+        "r": 43
+      }
+    },
+    "per_class_accuracy": {
+      "B": 0.935484,
+      "K": 1.0,
+      "N": 0.916667,
+      "P": 0.993151,
+      "Q": 1.0,
+      "R": 1.0,
+      "b": 0.935484,
+      "empty": 0.996201,
+      "k": 0.966667,
+      "n": 0.956522,
+      "p": 0.973333,
+      "q": 0.958333,
+      "r": 0.955556
+    },
+    "confidence": [
+      {
+        "lower": 0.5,
+        "upper": 0.6,
+        "count": 1,
+        "mean_confidence": 0.510716,
+        "accuracy": 0.0
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "count": 1919,
+        "mean_confidence": 0.995474,
+        "accuracy": 0.989578
+      }
+    ],
+    "acceptance": {
+      "threshold": 0.994787,
+      "accepted_board_count": 13,
+      "abstained_board_count": 17,
+      "coverage": 0.433333,
+      "false_accepted_board_count": 0,
+      "false_accepted_board_rate": 0.0
+    }
+  },
+  "promotion": {
+    "status": "eligible_for_shadow_integration",
+    "passed": true,
+    "reasons": [],
+    "policy": "Candidate may enter shadow runtime only after beating the baseline and accepting zero incorrect holdout boards."
+  },
+  "runtime": {
+    "dependency": "numpy",
+    "allow_pickle": false,
+    "default_mode": "shadow",
+    "rollback": "Set KINDLEMASTER_CHESS_FEN_MODEL_MODE=off."
+  }
+}

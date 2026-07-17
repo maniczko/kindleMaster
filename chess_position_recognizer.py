@@ -118,6 +118,8 @@ class ChessFenResult:
     requires_review: bool = True
     board_detected: bool = False
     squares: list[dict[str, Any]] = field(default_factory=list)
+    model_runtime: dict[str, Any] = field(default_factory=dict)
+    recognition_blockers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         full_fen = self.full_fen or self.fen
@@ -149,6 +151,8 @@ class ChessFenResult:
             "requires_review": requires_review,
             "board_detected": bool(self.board_detected),
             "squares": [dict(square) for square in self.squares],
+            "model_runtime": dict(self.model_runtime),
+            "recognition_blockers": list(self.recognition_blockers),
         }
 
 
@@ -631,6 +635,20 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
     side_to_move_inferred = [item for item in records if _side_to_move_inferred(item)]
     side_unknown = [item for item in records if _record_side_to_move(item) not in {"w", "b"}]
     probe_checked = [item for item in records if "side_to_move_marker_probes_checked" in _record_warnings(item)]
+    model_records = [
+        item
+        for item in records
+        if isinstance(item.get("model_runtime"), Mapping) and item.get("model_runtime")
+    ]
+    model_status_counts: dict[str, int] = {}
+    model_blocker_counts: dict[str, int] = {}
+    for item in model_records:
+        runtime = item.get("model_runtime") or {}
+        status = str(runtime.get("status") or "unknown")
+        model_status_counts[status] = model_status_counts.get(status, 0) + 1
+        blocker = str(runtime.get("owning_blocker") or "")
+        if blocker:
+            model_blocker_counts[blocker] = model_blocker_counts.get(blocker, 0) + 1
     return {
         "status": "not_applicable" if total == 0 else ("passed" if len(with_fen) == total else "requires_review"),
         "diagram_count": total,
@@ -646,6 +664,23 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
         "marker_missing_count": len(marker_missing),
         "marker_conflict_count": len(marker_conflicts),
         "marker_ambiguous_count": len(marker_ambiguous),
+        "model_runtime_count": len(model_records),
+        "model_accepted_candidate_count": len(
+            [
+                item
+                for item in model_records
+                if bool((item.get("model_runtime") or {}).get("candidate_accepted"))
+            ]
+        ),
+        "model_publishable_count": len(
+            [
+                item
+                for item in model_records
+                if bool((item.get("model_runtime") or {}).get("publishable"))
+            ]
+        ),
+        "model_status_counts": dict(sorted(model_status_counts.items())),
+        "model_owning_blocker_counts": dict(sorted(model_blocker_counts.items())),
         "records": [dict(item) for item in records],
     }
 

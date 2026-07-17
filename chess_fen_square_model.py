@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -15,6 +17,12 @@ MODEL_SCHEMA = "kindlemaster.fen_square_classifier.v2"
 MODEL_EVAL_SCHEMA = "kindlemaster.fen_square_model_eval.v2"
 FEATURE_SCHEMA = "grayscale16_hog4x4_projection_v1"
 MODEL_TYPE = "rbf_svm_hog"
+PORTABLE_MODEL_SCHEMA = "kindlemaster.fen_square_classifier.portable.v1"
+RUNTIME_RESULT_SCHEMA = "kindlemaster.fen_square_runtime.v1"
+RUNTIME_MODES = frozenset({"off", "shadow", "assist"})
+EXPECTED_RUNTIME_CLASSES = frozenset(
+    {"B", "K", "N", "P", "Q", "R", "b", "empty", "k", "n", "p", "q", "r"}
+)
 MODEL_CONFIG = {
     "C": 8.0,
     "gamma": "scale",
@@ -23,6 +31,570 @@ MODEL_CONFIG = {
     "break_ties": True,
     "random_state": 42,
 }
+
+
+def export_portable_fen_square_model(
+    model_path: str | Path,
+    *,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Export the trained SVC to a safe NumPy-only runtime artifact."""
+    source = Path(model_path)
+    target = Path(output_path)
+    source_manifest_path = source.with_suffix(".manifest.json")
+    manifest_path = target.with_suffix(".manifest.json")
+    if not source.is_file():
+        return {
+            "schema": PORTABLE_MODEL_SCHEMA,
+            "status": "failed",
+            "error": "model_missing",
+            "model_path": str(source),
+        }
+    try:
+        manifest_collision = (
+            source_manifest_path.resolve() == manifest_path.resolve()
+        )
+    except OSError:
+        manifest_collision = source_manifest_path == manifest_path
+    if manifest_collision:
+        return {
+            "schema": PORTABLE_MODEL_SCHEMA,
+            "status": "failed",
+            "error": "portable_manifest_path_conflicts_with_source_manifest",
+            "model_path": str(source),
+            "output_path": str(target),
+        }
+    dependencies = _import_training_dependencies()
+    if dependencies.get("status") != "available":
+        return {
+            "schema": PORTABLE_MODEL_SCHEMA,
+            "status": "export_unavailable",
+            "error": "scikit-learn is required only while exporting the training artifact.",
+            "exception": dependencies.get("exception", ""),
+        }
+    bundle = dependencies["joblib"].load(source)
+    if bundle.get("schema") != MODEL_SCHEMA or bundle.get("model_type") != MODEL_TYPE:
+        return {
+            "schema": PORTABLE_MODEL_SCHEMA,
+            "status": "failed",
+            "error": "unsupported_model_contract",
+            "model_path": str(source),
+        }
+
+    classifier = bundle["classifier"]
+    scaler = bundle["scaler"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        target,
+        classes=np.asarray([str(value) for value in classifier.classes_]),
+        scaler_mean=np.asarray(scaler.mean_, dtype=np.float64),
+        scaler_scale=np.asarray(scaler.scale_, dtype=np.float64),
+        support_vectors=np.asarray(classifier.support_vectors_, dtype=np.float64),
+        dual_coef=np.asarray(classifier.dual_coef_, dtype=np.float64),
+        intercept=np.asarray(classifier.intercept_, dtype=np.float64),
+        n_support=np.asarray(classifier.n_support_, dtype=np.int32),
+        gamma=np.asarray([classifier._gamma], dtype=np.float64),
+        temperature=np.asarray(
+            [float((bundle.get("calibration") or {}).get("temperature") or 1.0)],
+            dtype=np.float64,
+        ),
+        acceptance_threshold=np.asarray(
+            [float((bundle.get("acceptance") or {}).get("threshold") or 1.0)],
+            dtype=np.float64,
+        ),
+    )
+
+    source_manifest: dict[str, Any] = {}
+    if source_manifest_path.is_file():
+        try:
+            source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            source_manifest = {}
+    marker_calibration_path = (
+        Path(__file__).resolve().parent
+        / "models"
+        / "chess"
+        / "chess_marker_calibration_yusupov_v1.json"
+    )
+    marker_calibration: dict[str, Any] = {}
+    if marker_calibration_path.is_file():
+        try:
+            marker_payload = json.loads(
+                marker_calibration_path.read_text(encoding="utf-8")
+            )
+            marker_calibration = {
+                "calibration_version": marker_payload.get("calibration_version"),
+                "source_profile": marker_payload.get("source_profile"),
+                "classifier_version": marker_payload.get("classifier_version"),
+                "source_split": marker_payload.get("source_split"),
+                "artifact_path": "models/chess/chess_marker_calibration_yusupov_v1.json",
+                "artifact_sha256": _file_sha256(marker_calibration_path),
+            }
+        except (OSError, ValueError, TypeError):
+            marker_calibration = {}
+    baseline_holdout = dict(
+        ((source_manifest.get("baseline") or {}).get("holdout") or {})
+    )
+    candidate_holdout = dict(source_manifest.get("holdout") or {})
+    manifest = {
+        "schema": PORTABLE_MODEL_SCHEMA,
+        "status": "ready",
+        "model_type": MODEL_TYPE,
+        "model_name": str(bundle.get("model_name") or target.stem),
+        "profile": str(bundle.get("profile") or ""),
+        "feature_schema": str(bundle.get("feature_schema") or ""),
+        "feature_count": int(bundle.get("feature_count") or 0),
+        "classes": [str(value) for value in classifier.classes_],
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "artifact_path": target.as_posix(),
+        "artifact_sha256": _file_sha256(target),
+        "source_artifact_sha256": _file_sha256(source),
+        "source_manifest_sha256": _file_sha256(source_manifest_path),
+        "training_data": {
+            "dataset_sha256": source_manifest.get("dataset_sha256"),
+            "split_counts": dict(source_manifest.get("split_counts") or {}),
+            "split_integrity": dict(source_manifest.get("split_integrity") or {}),
+        },
+        "benchmark_comparison": {
+            "split": "holdout",
+            "baseline": {
+                "model_type": str(
+                    (source_manifest.get("baseline") or {}).get("model_type")
+                    or "feature_centroid"
+                ),
+                "square_accuracy": baseline_holdout.get("square_accuracy"),
+                "exact_board_accuracy": baseline_holdout.get(
+                    "exact_board_accuracy"
+                ),
+            },
+            "candidate": {
+                "model_type": MODEL_TYPE,
+                "square_accuracy": candidate_holdout.get("square_accuracy"),
+                "exact_board_accuracy": candidate_holdout.get(
+                    "exact_board_accuracy"
+                ),
+            },
+            "delta": {
+                "square_accuracy": round(
+                    float(candidate_holdout.get("square_accuracy") or 0.0)
+                    - float(baseline_holdout.get("square_accuracy") or 0.0),
+                    6,
+                ),
+                "exact_board_accuracy": round(
+                    float(candidate_holdout.get("exact_board_accuracy") or 0.0)
+                    - float(baseline_holdout.get("exact_board_accuracy") or 0.0),
+                    6,
+                ),
+            },
+        },
+        "calibration": dict(bundle.get("calibration") or {}),
+        "acceptance": dict(bundle.get("acceptance") or {}),
+        "orientation": {
+            "value": "white_bottom",
+            "source": "fixed_edition_profile",
+            "version": "yusupov-orientation-v1",
+        },
+        "marker_calibration": marker_calibration,
+        "validation": dict(source_manifest.get("validation") or {}),
+        "holdout": dict(source_manifest.get("holdout") or {}),
+        "promotion": dict(source_manifest.get("promotion") or {}),
+        "runtime": {
+            "dependency": "numpy",
+            "allow_pickle": False,
+            "default_mode": "shadow",
+            "rollback": "Set KINDLEMASTER_CHESS_FEN_MODEL_MODE=off.",
+        },
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "schema": PORTABLE_MODEL_SCHEMA,
+        "status": "exported",
+        "model_path": str(target),
+        "manifest_path": str(manifest_path),
+        "artifact_sha256": manifest["artifact_sha256"],
+        "artifact_bytes": target.stat().st_size,
+    }
+
+
+def predict_portable_fen_board(
+    image: Image.Image,
+    *,
+    model_path: str | Path,
+    mode: str = "shadow",
+) -> dict[str, Any]:
+    """Predict one board while preserving calibrated abstention and provenance."""
+    started = time.perf_counter()
+    normalized_mode = str(mode or "shadow").strip().lower()
+    if normalized_mode not in RUNTIME_MODES:
+        normalized_mode = "off"
+    if normalized_mode == "off":
+        return _runtime_failure(
+            mode=normalized_mode,
+            status="disabled",
+            blocker="model_runtime_disabled",
+            model_path=Path(model_path),
+        )
+
+    loaded = load_portable_fen_square_model(model_path)
+    loaded_at = time.perf_counter()
+    if loaded.get("status") != "ready":
+        return _runtime_failure(
+            mode=normalized_mode,
+            status=str(loaded.get("status") or "unavailable"),
+            blocker=str(loaded.get("error") or "model_runtime_unavailable"),
+            model_path=Path(model_path),
+            provenance=dict(loaded.get("provenance") or {}),
+        )
+
+    model = loaded["model"]
+    squares = _runtime_board_squares(image)
+    features = np.stack([square_feature_vector(square) for square in squares]).astype(np.float64)
+    scaled = (features - model["scaler_mean"]) / np.where(
+        model["scaler_scale"] == 0.0,
+        1.0,
+        model["scaler_scale"],
+    )
+    scores = _portable_ovr_decision_function(model, scaled)
+    probabilities = _softmax(scores / max(float(model["temperature"]), 1e-6))
+    indexes = probabilities.argmax(axis=1)
+    classes = model["classes"]
+    predicted = classes[indexes]
+    confidences = probabilities[np.arange(len(indexes)), indexes]
+    placement = _runtime_placement(predicted.tolist())
+    validation_fen = f"{placement} w - - 0 1"
+    from chess_position_recognizer import validate_fen
+
+    valid, validation_warnings = validate_fen(validation_fen)
+    threshold = float(model["acceptance_threshold"])
+    minimum_confidence = float(confidences.min()) if len(confidences) else 0.0
+    sorted_probabilities = np.sort(probabilities, axis=1)
+    runner_up_margins = (
+        sorted_probabilities[:, -1] - sorted_probabilities[:, -2]
+        if sorted_probabilities.shape[1] >= 2
+        else sorted_probabilities[:, -1]
+    )
+    minimum_runner_up_margin = (
+        float(runner_up_margins.min()) if len(runner_up_margins) else 0.0
+    )
+    blockers = [str(warning) for warning in validation_warnings]
+    if minimum_confidence < threshold:
+        blockers.insert(0, "board_confidence_below_calibrated_threshold")
+    candidate_accepted = bool(valid and minimum_confidence >= threshold)
+    publish_blockers = list(blockers)
+    if normalized_mode == "shadow":
+        publish_blockers.append("shadow_mode_not_publishable")
+    square_records: list[dict[str, Any]] = []
+    for index, (label, confidence) in enumerate(zip(predicted.tolist(), confidences.tolist())):
+        alternatives = np.argsort(probabilities[index])[-3:][::-1]
+        square_records.append(
+            {
+                "square": f"{chr(ord('a') + index % 8)}{8 - index // 8}",
+                "piece": "" if label == "empty" else str(label),
+                "class": str(label),
+                "confidence": round(float(confidence), 6),
+                "runner_up_margin": round(float(runner_up_margins[index]), 6),
+                "alternatives": [
+                    {
+                        "class": str(classes[candidate]),
+                        "confidence": round(float(probabilities[index, candidate]), 6),
+                    }
+                    for candidate in alternatives
+                ],
+            }
+        )
+    return {
+        "schema": RUNTIME_RESULT_SCHEMA,
+        "status": "accepted_candidate" if candidate_accepted else "needs_review",
+        "mode": normalized_mode,
+        "placement": placement,
+        "validation_fen": validation_fen,
+        "confidence": round(minimum_confidence, 6),
+        "confidence_policy": "minimum_square_confidence",
+        "acceptance_threshold": round(threshold, 6),
+        "minimum_runner_up_margin": round(minimum_runner_up_margin, 6),
+        "candidate_accepted": candidate_accepted,
+        "publishable": bool(candidate_accepted and normalized_mode == "assist"),
+        "blockers": blockers,
+        "publish_blockers": publish_blockers,
+        "owning_blocker": (publish_blockers or blockers or [""])[0],
+        "validation": {
+            "valid": bool(valid),
+            "warnings": list(validation_warnings),
+        },
+        "orientation": dict((loaded.get("provenance") or {}).get("orientation") or {}),
+        "timing": {
+            "model_load_ms": round((loaded_at - started) * 1000.0, 3),
+            "inference_ms": round((time.perf_counter() - loaded_at) * 1000.0, 3),
+            "total_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        },
+        "squares": square_records,
+        "provenance": dict(loaded.get("provenance") or {}),
+    }
+
+
+def load_portable_fen_square_model(model_path: str | Path) -> dict[str, Any]:
+    artifact = Path(model_path).expanduser()
+    manifest_path = artifact.with_suffix(".manifest.json")
+    provenance = {
+        "artifact_path": str(artifact),
+        "manifest_path": str(manifest_path),
+    }
+    if not artifact.is_file():
+        return {
+            "status": "unavailable",
+            "error": "model_artifact_missing",
+            "provenance": provenance,
+        }
+    if not manifest_path.is_file():
+        return {
+            "status": "invalid",
+            "error": "model_manifest_missing",
+            "provenance": provenance,
+        }
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {
+            "status": "invalid",
+            "error": "model_manifest_invalid",
+            "provenance": provenance,
+        }
+    if (
+        manifest.get("schema") != PORTABLE_MODEL_SCHEMA
+        or manifest.get("status") != "ready"
+        or manifest.get("model_type") != MODEL_TYPE
+    ):
+        return {
+            "status": "invalid",
+            "error": "model_manifest_contract_invalid",
+            "provenance": provenance,
+        }
+    expected_hash = str(manifest.get("artifact_sha256") or "")
+    try:
+        model = _load_portable_fen_square_model_cached(
+            str(artifact.resolve()),
+            artifact.stat().st_mtime_ns,
+            artifact.stat().st_size,
+            expected_hash,
+        )
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {
+            "status": "invalid",
+            "error": str(error) or "model_contract_invalid",
+            "provenance": provenance,
+        }
+    provenance.update(
+        {
+            "schema": manifest.get("schema"),
+            "model_name": manifest.get("model_name"),
+            "profile": manifest.get("profile"),
+            "feature_schema": manifest.get("feature_schema"),
+            "artifact_sha256": expected_hash,
+            "calibration": dict(manifest.get("calibration") or {}),
+            "acceptance": dict(manifest.get("acceptance") or {}),
+            "orientation": dict(manifest.get("orientation") or {}),
+            "marker_calibration": dict(manifest.get("marker_calibration") or {}),
+            "training_data": dict(manifest.get("training_data") or {}),
+            "benchmark_comparison": dict(
+                manifest.get("benchmark_comparison") or {}
+            ),
+            "promotion": dict(manifest.get("promotion") or {}),
+        }
+    )
+    return {"status": "ready", "model": model, "provenance": provenance}
+
+
+@lru_cache(maxsize=4)
+def _load_portable_fen_square_model_cached(
+    artifact_path: str,
+    artifact_mtime_ns: int,
+    artifact_size: int,
+    expected_hash: str,
+) -> dict[str, Any]:
+    del artifact_mtime_ns, artifact_size
+    artifact = Path(artifact_path)
+    if not expected_hash or _file_sha256(artifact) != expected_hash:
+        raise ValueError("model_artifact_hash_mismatch")
+    with np.load(artifact, allow_pickle=False) as payload:
+        required = {
+            "classes",
+            "scaler_mean",
+            "scaler_scale",
+            "support_vectors",
+            "dual_coef",
+            "intercept",
+            "n_support",
+            "gamma",
+            "temperature",
+            "acceptance_threshold",
+        }
+        missing = sorted(required - set(payload.files))
+        if missing:
+            raise ValueError(f"model_contract_missing:{','.join(missing)}")
+        model = {key: np.array(payload[key], copy=True) for key in required}
+    model["classes"] = np.asarray([str(value) for value in model["classes"]])
+    feature_count = int(model["support_vectors"].shape[1])
+    if feature_count != 512:
+        raise ValueError("model_feature_count_invalid")
+    if model["scaler_mean"].shape != (feature_count,) or model["scaler_scale"].shape != (feature_count,):
+        raise ValueError("model_scaler_shape_invalid")
+    class_count = len(model["classes"])
+    support_vector_count = int(model["support_vectors"].shape[0])
+    if (
+        class_count != len(model["n_support"])
+        or frozenset(model["classes"].tolist()) != EXPECTED_RUNTIME_CLASSES
+    ):
+        raise ValueError("model_class_contract_invalid")
+    if (
+        int(np.sum(model["n_support"])) != support_vector_count
+        or model["dual_coef"].shape != (class_count - 1, support_vector_count)
+        or model["intercept"].shape != (class_count * (class_count - 1) // 2,)
+    ):
+        raise ValueError("model_svc_shape_invalid")
+    numeric_arrays = [
+        model["scaler_mean"],
+        model["scaler_scale"],
+        model["support_vectors"],
+        model["dual_coef"],
+        model["intercept"],
+        model["gamma"],
+        model["temperature"],
+        model["acceptance_threshold"],
+    ]
+    if any(not np.all(np.isfinite(values)) for values in numeric_arrays):
+        raise ValueError("model_numeric_contract_invalid")
+    model["gamma"] = float(model["gamma"][0])
+    model["temperature"] = float(model["temperature"][0])
+    model["acceptance_threshold"] = float(model["acceptance_threshold"][0])
+    if (
+        model["gamma"] <= 0.0
+        or model["temperature"] <= 0.0
+        or not 0.0 <= model["acceptance_threshold"] <= 1.0
+    ):
+        raise ValueError("model_calibration_contract_invalid")
+    return model
+
+
+def _portable_ovr_decision_function(model: Mapping[str, Any], features: np.ndarray) -> np.ndarray:
+    support_vectors = np.asarray(model["support_vectors"], dtype=np.float64)
+    dual_coef = np.asarray(model["dual_coef"], dtype=np.float64)
+    intercept = np.asarray(model["intercept"], dtype=np.float64)
+    n_support = np.asarray(model["n_support"], dtype=np.int32)
+    feature_norms = np.sum(features * features, axis=1, keepdims=True)
+    support_norms = np.sum(support_vectors * support_vectors, axis=1, keepdims=True).T
+    distances = feature_norms + support_norms - 2.0 * (features @ support_vectors.T)
+    np.maximum(distances, 0.0, out=distances)
+    kernels = np.exp(-float(model["gamma"]) * distances)
+    starts = np.cumsum(np.concatenate([np.asarray([0], dtype=np.int32), n_support]))
+    pair_scores: list[np.ndarray] = []
+    class_count = len(n_support)
+    for first in range(class_count):
+        for second in range(first + 1, class_count):
+            first_start = int(starts[first])
+            second_start = int(starts[second])
+            first_count = int(n_support[first])
+            second_count = int(n_support[second])
+            score = (
+                kernels[:, first_start : first_start + first_count]
+                @ dual_coef[second - 1, first_start : first_start + first_count]
+                + kernels[:, second_start : second_start + second_count]
+                @ dual_coef[first, second_start : second_start + second_count]
+                + intercept[len(pair_scores)]
+            )
+            pair_scores.append(score)
+    raw = np.stack(pair_scores, axis=1)
+    pair_predictions = raw < 0
+    pair_confidences = -raw
+    votes = np.zeros((len(features), class_count), dtype=np.float64)
+    confidence_sums = np.zeros_like(votes)
+    pair_index = 0
+    for first in range(class_count):
+        for second in range(first + 1, class_count):
+            confidence_sums[:, first] -= pair_confidences[:, pair_index]
+            confidence_sums[:, second] += pair_confidences[:, pair_index]
+            votes[pair_predictions[:, pair_index] == 0, first] += 1
+            votes[pair_predictions[:, pair_index] == 1, second] += 1
+            pair_index += 1
+    return votes + confidence_sums / (3.0 * (np.abs(confidence_sums) + 1.0))
+
+
+def _runtime_board_squares(image: Image.Image) -> list[Image.Image]:
+    rgb = image.convert("RGB")
+    side = min(rgb.size)
+    left = max(0, (rgb.width - side) // 2)
+    top = max(0, (rgb.height - side) // 2)
+    square = rgb.crop((left, top, left + side, top + side))
+    margin = max(0, int(side * 0.035))
+    if side - margin * 2 >= 32:
+        square = square.crop((margin, margin, side - margin, side - margin))
+    normalized = ImageOps.autocontrast(square.convert("L")).resize(
+        (256, 256),
+        Image.Resampling.LANCZOS,
+    )
+    normalized = normalized.resize((512, 512), Image.Resampling.LANCZOS).convert("RGB")
+    return [
+        normalized.crop(
+            (
+                file_index * 64,
+                rank * 64,
+                (file_index + 1) * 64,
+                (rank + 1) * 64,
+            )
+        )
+        for rank in range(8)
+        for file_index in range(8)
+    ]
+
+
+def _runtime_placement(labels: Sequence[str]) -> str:
+    if len(labels) != 64:
+        raise ValueError("runtime_board_must_have_64_squares")
+    ranks: list[str] = []
+    for rank in range(8):
+        values: list[str] = []
+        empty_count = 0
+        for label in labels[rank * 8 : (rank + 1) * 8]:
+            if label == "empty":
+                empty_count += 1
+                continue
+            if empty_count:
+                values.append(str(empty_count))
+                empty_count = 0
+            values.append(str(label))
+        if empty_count:
+            values.append(str(empty_count))
+        ranks.append("".join(values) or "8")
+    return "/".join(ranks)
+
+
+def _runtime_failure(
+    *,
+    mode: str,
+    status: str,
+    blocker: str,
+    model_path: Path,
+    provenance: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": RUNTIME_RESULT_SCHEMA,
+        "status": status,
+        "mode": mode,
+        "placement": "",
+        "confidence": 0.0,
+        "candidate_accepted": False,
+        "publishable": False,
+        "blockers": [blocker],
+        "publish_blockers": [blocker],
+        "owning_blocker": blocker,
+        "squares": [],
+        "provenance": {
+            "artifact_path": str(model_path),
+            **dict(provenance or {}),
+        },
+    }
 
 
 def train_fen_square_candidate(

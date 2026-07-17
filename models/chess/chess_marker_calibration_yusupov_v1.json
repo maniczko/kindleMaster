@@ -1,0 +1,56 @@
+{
+  "schema": "kindlemaster.chess.marker_confidence_calibration.v1",
+  "status": "ready",
+  "calibration_version": "yusupov-marker-reliability-v1",
+  "source_profile": "yusupov-fundamentals",
+  "classifier_version": "marker_adaptive_v3",
+  "source_split": "calibration",
+  "sample_count": 22,
+  "rejected_non_calibration_count": 0,
+  "holdout_used_for_tuning": false,
+  "points": [
+    {
+      "raw": 0.9752,
+      "calibrated": 0.8571,
+      "count": 5,
+      "correct": 5
+    },
+    {
+      "raw": 0.9871,
+      "calibrated": 0.8571,
+      "count": 5,
+      "correct": 5
+    },
+    {
+      "raw": 0.99,
+      "calibrated": 0.8571,
+      "count": 4,
+      "correct": 4
+    },
+    {
+      "raw": 0.9927,
+      "calibrated": 0.8571,
+      "count": 4,
+      "correct": 4
+    },
+    {
+      "raw": 0.995,
+      "calibrated": 0.8571,
+      "count": 4,
+      "correct": 4
+    }
+  ],
+  "holdout_evidence": {
+    "source_document_sha256": "9faf77bf6f38fe584fb0c191a0bd61c419e6ff3912ffe60a575749cf7493a1e5",
+    "runtime_commit": "610b66321e8231523db0aa801db9ec040c8dd2f6",
+    "evaluation_number": 1,
+    "matched_holdout_labels": 29,
+    "clear_visible_count": 19,
+    "clear_visible_correct_count": 19,
+    "false_trusted_count": 0,
+    "brier_score": 0.0001,
+    "expected_calibration_error": 0.0097,
+    "source_report_sha256": "d9d5b6fdc3bd33b881c74b25a7e1b1e29ed7d1ae4c33177730e137bfa21b68ce"
+  },
+  "policy": "Calibration points come only from the frozen calibration split; holdout was evaluated once and was not used for tuning."
+}

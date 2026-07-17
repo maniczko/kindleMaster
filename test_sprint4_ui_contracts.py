@@ -30,6 +30,26 @@ class Sprint4UiContractsTests(unittest.TestCase):
         self.assertIn("vite", package["devDependencies"])
         self.assertIn("@vitest/coverage-v8", package["devDependencies"])
 
+    def test_railway_image_packages_the_production_react_build(self) -> None:
+        dockerfile = (REPO_ROOT / "Dockerfile.railway").read_text(encoding="utf-8")
+
+        self.assertIn("FROM node:22-bookworm-slim AS ui-builder", dockerfile)
+        self.assertIn("RUN npm ci --no-audit --no-fund", dockerfile)
+        self.assertIn("RUN npm run build:ui", dockerfile)
+        self.assertIn("test -f /ui/static/react/index.html", dockerfile)
+        self.assertIn(
+            "FROM mcr.microsoft.com/playwright/python:v1.52.0-noble AS runtime",
+            dockerfile,
+        )
+        self.assertIn(
+            "COPY --from=ui-builder /ui/static/react ./static/react",
+            dockerfile,
+        )
+        self.assertIn(
+            'CMD ["python", "kindlemaster.py", "serve", "--runtime", "waitress"]',
+            dockerfile,
+        )
+
     def test_react_shell_declares_shadcn_style_operational_surfaces(self) -> None:
         source = "\n".join(
             [

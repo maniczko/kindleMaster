@@ -65,6 +65,7 @@ QUICK_TESTS = [
     "test_chess_pgn_extraction.py",
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
+    "test_chess_page_geometry.py",
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
     "test_chess_diagram_manifest_reconciliation.py",

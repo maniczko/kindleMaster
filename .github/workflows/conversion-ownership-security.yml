@@ -1,0 +1,94 @@
+name: Conversion Ownership Security
+
+on:
+  pull_request:
+    paths:
+      - "conversion_job_access.py"
+      - "conversion_job_store_security.py"
+      - "conversion_jobs.py"
+      - "app.py"
+      - "app_runtime_services.py"
+      - "frontend/src/lib/api-base.ts"
+      - "frontend/src/lib/api-base.test.ts"
+      - "test_conversion_job_access.py"
+      - "test_job_ownership_security.py"
+      - "test_app_async_convert.py"
+      - ".github/workflows/conversion-ownership-security.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "conversion_job_access.py"
+      - "conversion_job_store_security.py"
+      - "conversion_jobs.py"
+      - "app.py"
+      - "app_runtime_services.py"
+      - "frontend/src/lib/api-base.ts"
+      - "frontend/src/lib/api-base.test.ts"
+      - "test_conversion_job_access.py"
+      - "test_job_ownership_security.py"
+      - "test_app_async_convert.py"
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    name: python-security (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+
+      - name: Run ownership and async-route regressions
+        shell: bash
+        run: |
+          mkdir -p reports/security
+          set -o pipefail
+          python -m unittest -v \
+            test_conversion_job_access.py \
+            test_job_ownership_security.py \
+            test_app_async_convert.py \
+            2>&1 | tee reports/security/python-${{ matrix.python-version }}.log
+
+      - name: Upload Python security logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: conversion-ownership-python-${{ matrix.python-version }}
+          path: reports/security/
+          if-no-files-found: warn
+          retention-days: 14
+
+  frontend-security:
+    name: frontend-security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run guest URL regressions
+        run: npx vitest run --config vitest.config.js frontend/src/lib/api-base.test.ts

@@ -3,17 +3,22 @@ from unittest.mock import patch
 
 from conversion_job_access import (
     GUEST_OWNER_FIELD,
+    JOB_ACCESS_QUERY_PARAM,
     USER_OWNER_FIELD,
     InvalidAuthenticatedIdentity,
     InvalidGuestIdentity,
     MissingGuestIdentity,
+    append_job_access_token,
     apply_job_owner,
+    create_job_access_token,
+    extract_job_access_token,
     guest_owner_id,
     is_local_request_host,
     job_owned_by,
     normalize_guest_id,
     owner_scope,
     resolve_job_owner,
+    verify_job_access_token,
 )
 
 
@@ -94,6 +99,22 @@ class ConversionJobAccessTests(unittest.TestCase):
         self.assertTrue(is_local_request_host("[::1]:5001"))
         self.assertTrue(is_local_request_host("kindlemaster.localhost:5001"))
         self.assertFalse(is_local_request_host("kindlemaster-production.up.railway.app"))
+
+    def test_signed_job_access_token_is_job_bound_and_expires(self) -> None:
+        with patch.dict("os.environ", {"KINDLEMASTER_JOB_ACCESS_SECRET": "test-secret"}, clear=False):
+            token = create_job_access_token("job-a", now=1_000, ttl_seconds=300)
+
+            self.assertTrue(verify_job_access_token("job-a", token, now=1_299))
+            self.assertFalse(verify_job_access_token("job-b", token, now=1_100))
+            self.assertFalse(verify_job_access_token("job-a", token, now=1_301))
+
+    def test_signed_job_access_url_replaces_existing_capability(self) -> None:
+        url = append_job_access_token("/convert/download/job-a?format=epub&access=old", "new-token")
+
+        self.assertIn("format=epub", url)
+        self.assertIn(f"{JOB_ACCESS_QUERY_PARAM}=new-token", url)
+        self.assertNotIn("access=old", url)
+        self.assertEqual(extract_job_access_token(url), "new-token")
 
 
 if __name__ == "__main__":

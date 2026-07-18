@@ -129,6 +129,10 @@ jobs:
         if: ${{ hashFiles('package.json') != '' }}
         run: npm ci
 
+      - name: Build React UI when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm run build:ui
+
       - name: Bootstrap runtime profile
         run: python kindlemaster.py bootstrap --runtime-only
 
@@ -227,6 +231,10 @@ jobs:
       - name: Install Node workspace dependencies when workspace exists
         if: ${{ hashFiles('package.json') != '' }}
         run: npm ci
+
+      - name: Build React UI when workspace exists
+        if: ${{ hashFiles('package.json') != '' }}
+        run: npm run build:ui
 
       - name: Bootstrap developer profile
         run: python kindlemaster.py bootstrap

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qsl, urlsplit
 
@@ -19,7 +17,6 @@ from conversion_job_access import (
     JOB_ACCESS_QUERY_PARAM,
     USER_OWNER_FIELD,
     InvalidGuestIdentity,
-    MissingGuestIdentity,
     append_job_access_token,
     create_job_access_token,
     guest_owner_id,
@@ -51,10 +48,6 @@ class RequestIdentity:
     legacy_local: bool = False
     auth_error: str = ""
     guest_error: str = ""
-
-    @property
-    def invalid(self) -> bool:
-        return bool(self.auth_error or self.guest_error)
 
 
 def _raw_query_value(url: object, key: str) -> str:
@@ -119,13 +112,12 @@ def _resolve_request_identity() -> RequestIdentity:
     except InvalidGuestIdentity as error:
         guest_error = error.error_code
 
-    legacy_local = not authenticated and not guest_owner and legacy_local_guest_allowed(request.host)
     identity = RequestIdentity(
         bearer_present=bool(bearer),
         authenticated=authenticated,
         user_id=user_id,
         guest_owner_id=guest_owner,
-        legacy_local=legacy_local,
+        legacy_local=not guest_owner and legacy_local_guest_allowed(request.host),
         auth_error=auth_error,
         guest_error=guest_error,
     )
@@ -150,8 +142,10 @@ def _read_allowed(job_id: str, job: Mapping[str, Any], identity: RequestIdentity
         return True
     if request.method in {"GET", "HEAD"} and verify_job_access_token(job_id, _request_access_token()):
         return True
-    if identity.invalid:
+    if identity.guest_error:
         return False
+    if identity.auth_error:
+        return identity.legacy_local and _job_is_legacy_unowned(job)
     if identity.authenticated:
         return bool(identity.user_id) and _job_user_owner(job) == identity.user_id
     if identity.guest_owner_id:
@@ -162,8 +156,10 @@ def _read_allowed(job_id: str, job: Mapping[str, Any], identity: RequestIdentity
 def _write_allowed(job: Mapping[str, Any], identity: RequestIdentity) -> bool:
     if not has_request_context():
         return True
-    if identity.invalid:
+    if identity.guest_error:
         return False
+    if identity.auth_error:
+        return identity.legacy_local and _job_is_legacy_unowned(job)
     user_owner = _job_user_owner(job)
     if user_owner:
         return identity.authenticated and identity.user_id == user_owner
@@ -174,12 +170,15 @@ def _write_allowed(job: Mapping[str, Any], identity: RequestIdentity) -> bool:
 
 
 def _claim_import_allowed(job: Mapping[str, Any], identity: RequestIdentity) -> bool:
-    if not identity.authenticated:
-        return False
-    if _job_user_owner(job):
-        return _job_user_owner(job) == identity.user_id
-    guest_owner = _job_guest_owner(job)
-    return not guest_owner or guest_owner == identity.guest_owner_id
+    if identity.authenticated:
+        if _job_user_owner(job):
+            return _job_user_owner(job) == identity.user_id
+        guest_owner = _job_guest_owner(job)
+        return not guest_owner or guest_owner == identity.guest_owner_id
+    if identity.auth_error and identity.legacy_local and identity.bearer_present:
+        guest_owner = _job_guest_owner(job)
+        return not _job_user_owner(job) and (not guest_owner or guest_owner == identity.guest_owner_id)
+    return False
 
 
 def _copy_owner_fields(source: Mapping[str, Any], target: dict[str, Any]) -> None:
@@ -208,18 +207,19 @@ def _prepare_new_job_owner(store: ConversionJobStore, payload: dict[str, Any]) -
         _copy_owner_fields(parent, payload)
 
     identity = _resolve_request_identity()
-    if identity.auth_error:
-        raise Unauthorized(description="Invalid authenticated session for conversion job ownership.")
     if identity.guest_error:
         raise BadRequest(description="Invalid anonymous conversion session identifier.")
+    if identity.auth_error and not identity.legacy_local:
+        raise Unauthorized(description="Invalid authenticated session for conversion job ownership.")
 
     user_owner = _job_user_owner(payload)
     if user_owner:
         if identity.authenticated and identity.user_id != user_owner:
             raise Unauthorized(description="Conversion job owner does not match the authenticated user.")
-        if not identity.authenticated:
-            if not (existing and _read_allowed(job_id, existing, identity)):
-                raise Unauthorized(description="Authenticated ownership is required for this conversion job.")
+        local_server_owned_job = identity.auth_error and identity.legacy_local and identity.bearer_present
+        signed_existing_job = bool(existing and _read_allowed(job_id, existing, identity))
+        if not identity.authenticated and not local_server_owned_job and not signed_existing_job:
+            raise Unauthorized(description="Authenticated ownership is required for this conversion job.")
         return payload
 
     guest_owner = _job_guest_owner(payload)
@@ -323,6 +323,17 @@ def _sign_job_links(value: Any, job_id: str, token: str) -> Any:
     return value
 
 
+def _sign_payload_job_links(value: Any) -> Any:
+    if isinstance(value, dict):
+        job_id = str(value.get("job_id") or "").strip()
+        if job_id:
+            return _sign_job_links(value, job_id, create_job_access_token(job_id))
+        return {key: _sign_payload_job_links(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sign_payload_job_links(item) for item in value]
+    return value
+
+
 def _sign_json_response_links(response: Response) -> Response:
     if not has_request_context() or is_local_request_host(request.host):
         return response
@@ -335,28 +346,7 @@ def _sign_json_response_links(response: Response) -> Response:
     if not isinstance(payload, (dict, list)):
         return response
 
-    if isinstance(payload, dict):
-        root_job_id = str(payload.get("job_id") or "").strip()
-        if root_job_id:
-            signed_payload = _sign_job_links(payload, root_job_id, create_job_access_token(root_job_id))
-        else:
-            signed_payload = {
-                key: (
-                    [_sign_job_links(item, str(item.get("job_id") or ""), create_job_access_token(str(item.get("job_id") or "")))
-                     if isinstance(item, dict) and item.get("job_id") else item for item in value]
-                    if isinstance(value, list)
-                    else value
-                )
-                for key, value in payload.items()
-            }
-    else:
-        signed_payload = [
-            _sign_job_links(item, str(item.get("job_id") or ""), create_job_access_token(str(item.get("job_id") or "")))
-            if isinstance(item, dict) and item.get("job_id")
-            else item
-            for item in payload
-        ]
-
+    signed_payload = _sign_payload_job_links(payload)
     response.set_data(json.dumps(signed_payload, ensure_ascii=False, separators=(",", ":")))
     response.content_type = "application/json; charset=utf-8"
     response.headers["X-KindleMaster-Job-Links"] = "signed"
@@ -386,7 +376,10 @@ def install_conversion_job_store_security() -> None:
         raw_job = original_get(self, job_id)
         if raw_job is not None and has_request_context():
             identity = _resolve_request_identity()
-            allowed = _read_allowed(job_id, raw_job, identity) if request.method in {"GET", "HEAD"} else _write_allowed(raw_job, identity)
+            if request.method in {"GET", "HEAD"}:
+                allowed = _read_allowed(job_id, raw_job, identity)
+            else:
+                allowed = _write_allowed(raw_job, identity)
             if not allowed:
                 return None
         return original_update(self, job_id, fields, updated_at=updated_at)
@@ -395,7 +388,12 @@ def install_conversion_job_store_security() -> None:
         job = original_get(self, job_id)
         if job is None or not has_request_context():
             return job
-        return job if _read_allowed(job_id, job, _resolve_request_identity()) if request.method in {"GET", "HEAD"} else _write_allowed(job, _resolve_request_identity()) else None
+        identity = _resolve_request_identity()
+        if request.method in {"GET", "HEAD"}:
+            allowed = _read_allowed(job_id, job, identity)
+        else:
+            allowed = _write_allowed(job, identity)
+        return job if allowed else None
 
     def secure_delete(self: ConversionJobStore, job_id: str) -> dict[str, Any] | None:
         job = original_get(self, job_id)
@@ -410,10 +408,14 @@ def install_conversion_job_store_security() -> None:
         if not has_request_context():
             return jobs
         identity = _resolve_request_identity()
-        if identity.invalid:
-            return {}
         if request.endpoint == "user_library_import_local":
             return {job_id: job for job_id, job in jobs.items() if _claim_import_allowed(job, identity)}
+        if identity.guest_error:
+            return {}
+        if identity.auth_error:
+            if identity.legacy_local:
+                return {job_id: job for job_id, job in jobs.items() if _job_is_legacy_unowned(job)}
+            return {}
         if identity.authenticated:
             return {job_id: job for job_id, job in jobs.items() if _job_user_owner(job) == identity.user_id}
         if identity.guest_owner_id:

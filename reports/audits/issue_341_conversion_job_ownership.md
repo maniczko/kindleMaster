@@ -36,7 +36,7 @@ npm run test:contracts:regression
 
 The focused workflow runs on Python 3.12 and 3.14 and captures test logs as retained CI artifacts. The standard READY workflow additionally runs governance, quality-critical, quick, release, browser and corpus gates.
 
-Normal API fetches transport the anonymous capability in the `X-KindleMaster-Guest-Id` header. Only browser-opened artifact links receive `km_guest`; component tests opt into an anonymous session explicitly, while production browser smoke validates automatic creation and propagation.
+Normal API fetches transport the anonymous capability in the `X-KindleMaster-Guest-Id` header. Only browser-opened artifact links receive `km_guest`; component tests opt into an anonymous session explicitly, while production browser smoke validates automatic creation and propagation. Both duplicated manual-repair test cases accept the additional request metadata without weakening the endpoint or HTTP-method assertion.
 
 ## Production configuration gate
 

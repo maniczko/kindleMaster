@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import os
 import re
+import secrets
+import time
 from dataclasses import dataclass
 from typing import Mapping, MutableMapping
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 GUEST_ID_HEADER = "X-KindleMaster-Guest-Id"
+JOB_ACCESS_QUERY_PARAM = "access"
 USER_OWNER_FIELD = "user_id"
 GUEST_OWNER_FIELD = "guest_owner_id"
 LEGACY_LOCAL_OWNER_ID = "legacy-local"
+DEFAULT_JOB_ACCESS_TTL_SECONDS = 15 * 60
 
 _GUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{19,127}$")
 _LOCAL_HOSTNAMES = {
@@ -19,6 +26,7 @@ _LOCAL_HOSTNAMES = {
     "localhost",
     "kindlemaster.localhost",
 }
+_EPHEMERAL_JOB_ACCESS_SECRET = secrets.token_bytes(32)
 
 
 class JobOwnerResolutionError(ValueError):
@@ -162,3 +170,86 @@ def owner_scope(owner: JobOwner) -> str:
     if owner.kind == "guest":
         return "guest"
     return "local"
+
+
+def _job_access_secret() -> bytes:
+    configured = os.environ.get("KINDLEMASTER_JOB_ACCESS_SECRET", "").strip()
+    if configured:
+        return hashlib.sha256(configured.encode("utf-8")).digest()
+    return _EPHEMERAL_JOB_ACCESS_SECRET
+
+
+def _job_access_ttl_seconds(value: object = None) -> int:
+    candidate = value if value is not None else os.environ.get("KINDLEMASTER_JOB_ACCESS_TTL_SECONDS")
+    try:
+        resolved = int(candidate) if candidate not in {None, ""} else DEFAULT_JOB_ACCESS_TTL_SECONDS
+    except (TypeError, ValueError):
+        resolved = DEFAULT_JOB_ACCESS_TTL_SECONDS
+    return max(60, min(resolved, 24 * 60 * 60))
+
+
+def _job_access_signature(job_id: str, expires_at: int) -> str:
+    payload = f"kindlemaster-job-access-v1\n{job_id}\n{expires_at}".encode("utf-8")
+    digest = hmac.new(_job_access_secret(), payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def create_job_access_token(
+    job_id: object,
+    *,
+    now: float | int | None = None,
+    ttl_seconds: int | None = None,
+) -> str:
+    normalized_job_id = str(job_id or "").strip()
+    if not normalized_job_id:
+        raise ValueError("Job identifier is required for a signed access token.")
+    current_time = int(time.time() if now is None else now)
+    expires_at = current_time + _job_access_ttl_seconds(ttl_seconds)
+    return f"{expires_at}.{_job_access_signature(normalized_job_id, expires_at)}"
+
+
+def verify_job_access_token(
+    job_id: object,
+    token: object,
+    *,
+    now: float | int | None = None,
+) -> bool:
+    normalized_job_id = str(job_id or "").strip()
+    normalized_token = str(token or "").strip()
+    if not normalized_job_id or not normalized_token or "." not in normalized_token:
+        return False
+    raw_expiry, supplied_signature = normalized_token.split(".", 1)
+    try:
+        expires_at = int(raw_expiry)
+    except ValueError:
+        return False
+    current_time = int(time.time() if now is None else now)
+    if expires_at < current_time:
+        return False
+    expected_signature = _job_access_signature(normalized_job_id, expires_at)
+    return hmac.compare_digest(supplied_signature, expected_signature)
+
+
+def append_job_access_token(url: object, token: object) -> str:
+    normalized_url = str(url or "").strip()
+    normalized_token = str(token or "").strip()
+    if not normalized_url or not normalized_token:
+        return normalized_url
+    parsed = urlsplit(normalized_url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != JOB_ACCESS_QUERY_PARAM]
+    query.append((JOB_ACCESS_QUERY_PARAM, normalized_token))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def extract_job_access_token(url: object) -> str:
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
+        return ""
+    try:
+        parsed = urlsplit(normalized_url)
+    except ValueError:
+        return ""
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key == JOB_ACCESS_QUERY_PARAM:
+            return value
+    return ""

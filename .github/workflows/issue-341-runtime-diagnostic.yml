@@ -1,0 +1,45 @@
+name: Issue 341 Runtime Diagnostic
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-followup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build:ui
+      - run: python kindlemaster.py bootstrap
+      - run: python -m playwright install chromium
+      - name: Run runtime follow-up with full diagnostics
+        shell: bash
+        run: |
+          mkdir -p reports/issue-341-runtime
+          set -o pipefail
+          python -m unittest -v \
+            test_runtime_waitress_smoke.py \
+            test_browser_polling_e2e.py \
+            test_sprint2_playwright_smoke.py \
+            test_browser_privacy_diagnostics.py \
+            test_ui_state_screenshot_pack.py \
+            2>&1 | tee reports/issue-341-runtime/runtime-followup.log
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-341-runtime-followup
+          path: reports/issue-341-runtime/
+          if-no-files-found: warn
+          retention-days: 7

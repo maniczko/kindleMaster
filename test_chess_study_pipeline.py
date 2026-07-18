@@ -261,6 +261,87 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertEqual(len(positions["positions"]), 1)
             self.assertIn("p010_d01", positions["positions"][0]["source_crop"])
 
+    def test_positions_use_printed_geometry_order_and_persist_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "out"
+            parent_boxes = [
+                [37.6, 66.0, 235.6, 255.7],
+                [37.6, 258.6, 235.6, 448.3],
+                [37.6, 451.2, 235.6, 640.9],
+                [261.5, 66.0, 459.5, 255.7],
+                [261.5, 258.6, 459.5, 448.3],
+                [261.5, 451.2, 459.5, 640.9],
+            ]
+            assignments = [
+                {
+                    "source_page": 33,
+                    "column": 1 if index <= 3 else 2,
+                    "visual_order": index,
+                    "diagram_bbox": box,
+                    "diagram_block_index": 100 + index,
+                    "candidate_number": index,
+                    "exercise_number": index,
+                    "number_bbox": [box[0] - 15.0, box[1] + 27.0, box[0] - 2.0, box[1] + 45.0],
+                    "confidence": 0.9,
+                    "status": "accepted",
+                    "warnings": [],
+                }
+                for index, box in enumerate(parent_boxes, start=1)
+            ]
+            segments = {
+                "pages": [
+                    {
+                        "page": 33,
+                        "chapter_no": 1,
+                        "labels": [],
+                        "exercise_geometry": {
+                            "schema": "kindlemaster.chess.page_geometry.v1",
+                            "source_page": 33,
+                            "page_width": 481.89,
+                            "page_height": 680.315,
+                            "column_count": 2,
+                            "diagram_count": 6,
+                            "number_candidate_count": 6,
+                            "assignments": assignments,
+                            "warnings": [],
+                            "status": "accepted",
+                        },
+                    }
+                ]
+            }
+            # Deliberately use row-major input to prove the semantic output follows printed columns.
+            input_order = [0, 3, 1, 4, 2, 5]
+            diagrams = {
+                "diagrams": [
+                    {
+                        "diagram_id": f"p033_d{index + 1:02d}",
+                        "page": 33,
+                        "bbox_xyxy": [
+                            parent_boxes[index][0] + 10.0,
+                            parent_boxes[index][1] + 10.0,
+                            parent_boxes[index][2] - 10.0,
+                            parent_boxes[index][3] - 10.0,
+                        ],
+                        "confidence": 0.9,
+                        "status": "needs_review",
+                        "fen": "",
+                    }
+                    for index in input_order
+                ]
+            }
+
+            payload = build_study_positions(diagrams, segments, out)
+            positions = payload["positions"]
+            geometry_report = json.loads(
+                (out / "reports" / "chess_geometry" / "page_geometry.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual([item["label"] for item in positions], ["1", "2", "3", "4", "5", "6"])
+            self.assertEqual([item["id"] for item in positions], [f"exercise_{index:04d}" for index in range(1, 7)])
+            self.assertEqual([item["source_column"] for item in positions], [1, 1, 1, 2, 2, 2])
+            self.assertEqual(geometry_report["accepted_page_count"], 1)
+            self.assertEqual(geometry_report["pages"][0]["source_page"], 33)
+
     def test_manual_ocr_mapping_can_unlock_pgn_only_after_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -892,6 +973,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
                 "reports/chess_reader/semantic_book.json",
                 "reports/chess_reader/semantic_book.md",
                 "reports/chess_reader/chess_exercises.json",
+                "reports/chess_geometry/page_geometry.json",
                 "reports/fen-review.csv",
                 "reports/pgn-review.csv",
                 "reports/ocr-issues.md",

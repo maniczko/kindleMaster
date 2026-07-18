@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
 from chess_exercise_model import build_chess_exercise_model, exercise_to_reader_item
+from chess_page_geometry import analyze_exercise_page_geometry, bbox_containment, order_geometry_items
 from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
 from chess_fen_square_model import predict_portable_fen_board
 from chess_position_recognizer import validate_fen
@@ -6825,6 +6826,12 @@ def segment_study_pages(
         final_labels = sorted(set(f"F-{match.group('number')}" for match in FINAL_LABEL_RE.finditer(text)))
         page_type = _classify_page_type(text, book_page, chapter, final_start=final_start, first_appendix=first_appendix)
         blocks = _segment_blocks_from_page(page, labels=labels, final_labels=final_labels)
+        exercise_geometry = analyze_exercise_page_geometry(
+            blocks,
+            page_number=book_page,
+            page_width=float(page.get("page_width") or 0.0),
+            page_height=float(page.get("page_height") or 0.0),
+        )
         segments.append(
             {
                 "page": book_page,
@@ -6835,6 +6842,7 @@ def segment_study_pages(
                 "exercise_labels": labels,
                 "final_test_labels": final_labels,
                 "blocks": blocks,
+                "exercise_geometry": exercise_geometry,
             }
         )
     payload = {"page_count": len(segments), "pages": segments}
@@ -8048,13 +8056,18 @@ def _study_side_to_move_label(value: Any) -> str:
 
 def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
     pages_by_number = {int(page.get("page") or 0): page for page in segments.get("pages", []) or []}
+    ordered_diagrams, geometry_report = _apply_exercise_geometry_assignments(
+        list(diagrams.get("diagrams", []) or []),
+        pages_by_number,
+    )
     positions: list[dict[str, Any]] = []
-    for index, diagram in enumerate(diagrams.get("diagrams", []) or [], start=1):
+    for index, diagram in enumerate(ordered_diagrams, start=1):
         if diagram.get("manual_label") == "false_positive":
             continue
         page_number = int(diagram.get("page") or 0)
         page = pages_by_number.get(page_number) or {}
-        label = _best_label_for_diagram(diagram, page, fallback_index=index)
+        printed_number = diagram.get("printed_exercise_number")
+        label = str(int(printed_number)) if printed_number else _best_label_for_diagram(diagram, page, fallback_index=index)
         chapter_no = page.get("chapter_no")
         item_type = "final_test" if str(label).startswith("F-") or page.get("page_type") == "final_test" else "exercise"
         fen = str(diagram.get("fen") or "").strip()
@@ -8101,6 +8114,12 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
                 "board_crop_path": str(diagram.get("board_crop_path") or diagram.get("source_crop") or ""),
                 "debug_overlay_path": str(diagram.get("debug_overlay_path") or ""),
                 "visual_order_on_page": diagram.get("visual_order_on_page"),
+                "source_column": diagram.get("source_column"),
+                "printed_exercise_number": printed_number,
+                "printed_exercise_number_candidate": diagram.get("printed_exercise_number_candidate"),
+                "exercise_geometry_status": str(diagram.get("exercise_geometry_status") or "unavailable"),
+                "exercise_geometry_warnings": list(diagram.get("exercise_geometry_warnings") or []),
+                "exercise_number_bbox": list(diagram.get("exercise_number_bbox") or []),
                 "stars": None,
                 "fen": fen,
                 "fen_candidate": str(diagram.get("fen_candidate") or ""),
@@ -8129,7 +8148,66 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
         )
     payload = {"positions": positions, "status_counts": _count_by_status(positions)}
     _write_json(Path(out_dir) / "positions.json", payload)
+    geometry_dir = Path(out_dir) / "reports" / "chess_geometry"
+    geometry_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(geometry_dir / "page_geometry.json", geometry_report)
     return payload
+
+
+def _apply_exercise_geometry_assignments(
+    diagrams: list[dict[str, Any]],
+    pages_by_number: Mapping[int, Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    report_pages: list[dict[str, Any]] = []
+    for page_number in sorted({int(item.get("page") or 0) for item in diagrams}):
+        page_diagrams = [dict(item) for item in diagrams if int(item.get("page") or 0) == page_number]
+        page = dict(pages_by_number.get(page_number) or {})
+        geometry = dict(page.get("exercise_geometry") or {})
+        assignments = [dict(item) for item in geometry.get("assignments") or []]
+        page_width = float(geometry.get("page_width") or 1.0)
+        page_diagrams = order_geometry_items(
+            page_diagrams,
+            bbox_getter=lambda item: item.get("bbox_xyxy") or item.get("board_bbox") or item.get("bbox") or [],
+            page_width=page_width,
+        )
+        used_assignments: set[int] = set()
+        for visual_order, diagram in enumerate(page_diagrams, start=1):
+            diagram_bbox = diagram.get("bbox_xyxy") or diagram.get("board_bbox") or diagram.get("bbox") or []
+            ranked = sorted(
+                (
+                    (bbox_containment(diagram_bbox, assignment.get("diagram_bbox")), assignment_index, assignment)
+                    for assignment_index, assignment in enumerate(assignments)
+                    if assignment_index not in used_assignments
+                ),
+                reverse=True,
+                key=lambda item: item[0],
+            )
+            selected = ranked[0] if ranked and ranked[0][0] >= 0.45 else None
+            diagram["visual_order_on_page"] = visual_order
+            if selected:
+                _, assignment_index, assignment = selected
+                used_assignments.add(assignment_index)
+                diagram["source_column"] = assignment.get("column")
+                diagram["printed_exercise_number"] = assignment.get("exercise_number")
+                diagram["printed_exercise_number_candidate"] = assignment.get("candidate_number")
+                diagram["exercise_geometry_status"] = assignment.get("status")
+                diagram["exercise_geometry_warnings"] = list(assignment.get("warnings") or [])
+                diagram["exercise_number_bbox"] = list(assignment.get("number_bbox") or [])
+                if assignment.get("status") != "accepted":
+                    diagram["warnings"] = sorted(set([*list(diagram.get("warnings") or []), "exercise_geometry_needs_review"]))
+            else:
+                diagram["exercise_geometry_status"] = "needs_review" if assignments else "unavailable"
+                diagram["exercise_geometry_warnings"] = ["AMBIGUOUS_DIAGRAM_MATCH"] if assignments else []
+            enriched.append(diagram)
+        report_pages.append(geometry)
+    return enriched, {
+        "schema": "kindlemaster.chess.page_geometry_report.v1",
+        "page_count": len(report_pages),
+        "accepted_page_count": len([page for page in report_pages if page.get("status") == "accepted"]),
+        "needs_review_page_count": len([page for page in report_pages if page.get("status") != "accepted"]),
+        "pages": report_pages,
+    }
 
 
 def extract_study_notation_fragments(
@@ -11726,7 +11804,13 @@ def _pdf_page_texts(pdf: Path, *, include_blocks: bool = False) -> list[dict[str
     with fitz.open(pdf) as document:
         for index, page in enumerate(document):
             text = page.get_text("text") or ""
-            row: dict[str, Any] = {"index": index, "page_number": index + 1, "text": text}
+            row: dict[str, Any] = {
+                "index": index,
+                "page_number": index + 1,
+                "page_width": float(page.rect.width or 0.0),
+                "page_height": float(page.rect.height or 0.0),
+                "text": text,
+            }
             if include_blocks:
                 row["blocks"] = _text_blocks(page)
             pages.append(row)
@@ -11796,7 +11880,16 @@ def _text_blocks(page: fitz.Page) -> list[dict[str, Any]]:
             if not text:
                 continue
             bbox = line.get("bbox") or block.get("bbox") or [0, 0, 0, 0]
-            blocks.append({"type": "text", "text": text, "bbox": [float(value) for value in bbox[:4]], "block_index": block_index, "line_index": line_index})
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": text,
+                    "bbox": [float(value) for value in bbox[:4]],
+                    "parent_bbox": [float(value) for value in (block.get("bbox") or bbox)[:4]],
+                    "block_index": block_index,
+                    "line_index": line_index,
+                }
+            )
     return blocks
 
 
@@ -11964,6 +12057,8 @@ def _position_id(*, item_type: str, chapter_no: Any, label: str, fallback_index:
     label_match = EXERCISE_LABEL_RE.search(label or "")
     if label_match:
         return f"ch{int(label_match.group('chapter')):02d}_ex_{int(label_match.group('number')):03d}"
+    if re.fullmatch(r"\d{1,4}", str(label or "").strip()):
+        return f"exercise_{int(label):04d}"
     if chapter_no:
         return f"ch{int(chapter_no):02d}_diag_{fallback_index:03d}"
     return f"diag_{fallback_index:03d}"

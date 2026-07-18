@@ -18,6 +18,9 @@ export function getOrCreateGuestAccessId(): string {
   if (typeof window === "undefined") return "";
   const existing = window.localStorage?.getItem(GUEST_ACCESS_STORAGE_KEY) ?? "";
   if (GUEST_ACCESS_PATTERN.test(existing)) return existing;
+  // Component tests must opt into a guest session explicitly. Browser smoke and
+  // production builds still exercise the real persistent capability flow.
+  if (import.meta.env.MODE === "test") return "";
 
   let generated = "";
   if (typeof window.crypto?.randomUUID === "function") {

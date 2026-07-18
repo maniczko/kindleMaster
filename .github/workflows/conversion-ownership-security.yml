@@ -49,6 +49,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build React UI
+        run: npm run build:ui
+
       - name: Bootstrap runtime dependencies
         run: python kindlemaster.py bootstrap --runtime-only
 

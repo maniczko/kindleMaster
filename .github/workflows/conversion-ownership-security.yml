@@ -10,8 +10,8 @@ on:
       - "app_runtime_services.py"
       - "frontend/src/lib/api-base.ts"
       - "frontend/src/lib/api-base.test.ts"
-      - "test_conversion_job_access.py"
-      - "test_job_ownership_security.py"
+      - "tests/security/test_conversion_job_access.py"
+      - "tests/security/test_job_ownership_security.py"
       - "test_app_async_convert.py"
       - ".github/workflows/conversion-ownership-security.yml"
   push:
@@ -25,8 +25,8 @@ on:
       - "app_runtime_services.py"
       - "frontend/src/lib/api-base.ts"
       - "frontend/src/lib/api-base.test.ts"
-      - "test_conversion_job_access.py"
-      - "test_job_ownership_security.py"
+      - "tests/security/test_conversion_job_access.py"
+      - "tests/security/test_job_ownership_security.py"
       - "test_app_async_convert.py"
 
 permissions:
@@ -69,9 +69,9 @@ jobs:
           mkdir -p reports/security
           set -o pipefail
           python -m unittest -v \
-            test_conversion_job_access.py \
-            test_job_ownership_security.py \
-            test_app_async_convert.py \
+            tests.security.test_conversion_job_access \
+            tests.security.test_job_ownership_security \
+            test_app_async_convert \
             2>&1 | tee reports/security/python-${{ matrix.python-version }}.log
 
       - name: Upload Python security logs

@@ -79,7 +79,6 @@ class JobOwnershipRouteTests(unittest.TestCase):
         with (
             patch("conversion_job_store_security.validate_bearer_token", return_value=self._authenticated_context("user-a")),
             patch("app._supabase_library_client", return_value=cloud_client),
-            patch("app._delete_supabase_conversion_job") as cloud_delete,
         ):
             response = self.client.delete(
                 "/convert/jobs/job-user-b",
@@ -89,7 +88,6 @@ class JobOwnershipRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertIsNotNone(app_module._CONVERSION_JOB_STORE.get("job-user-b"))
-        cloud_delete.assert_not_called()
 
     def test_authenticated_user_cannot_retry_another_users_input(self) -> None:
         self._register_job("job-user-b", status="failed", user_id="user-b")

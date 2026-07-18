@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 import fitz
@@ -21,9 +22,101 @@ from pymupdf_chess_extractor import (
     extract_chess_notation_pdf_reflow,
 )
 from chess_pgn_extractor import ChessPgnRecord
+from kindle_semantic_cleanup import (
+    _classify_chess_notation_paragraph,
+    _expand_semantic_blocks,
+    _looks_like_chess_notation_paragraph,
+    _process_chapter,
+)
 
 
 class ChessNotationReflowTests(unittest.TestCase):
+    def test_chess_notation_parser_covers_move_numbers_1_through_999(self) -> None:
+        for move_number in range(1, 1000):
+            with self.subTest(move_number=move_number):
+                self.assertTrue(_looks_like_chess_notation_paragraph(f"{move_number}.Rxe6+! fxe6"))
+                self.assertTrue(_looks_like_chess_notation_paragraph(f"{move_number}...e3! Rxe3"))
+
+    def test_chess_notation_parser_recognizes_special_moves_results_and_variations(self) -> None:
+        samples = [
+            "1.O-O O-O-O",
+            "42.e8=Q+ Kf7",
+            "17.Qh7# 1-0",
+            "23.Rxe6+! (23...fxe6 24.Qxe6+) 24.Rxe6",
+            "33 ... e3! 34.Rxe3",
+            "35.£c6 ¦xf7 36.¦a8+",
+            "1/2-1/2",
+        ]
+
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(_looks_like_chess_notation_paragraph(sample))
+
+        self.assertFalse(_looks_like_chess_notation_paragraph("Black attacks f3 and c6 before the exchange."))
+
+    def test_ambiguous_ocr_move_is_preserved_for_review_not_converted_to_list(self) -> None:
+        text = "23. R?e6+"
+        expanded = _expand_semantic_blocks(
+            [{"type": "paragraph", "text": text, "html": text, "class_name": ""}]
+        )
+
+        self.assertEqual(_classify_chess_notation_paragraph(text), "review")
+        self.assertEqual([block["type"] for block in expanded], ["paragraph"])
+        self.assertIn("chess-notation-review", expanded[0]["class_name"])
+
+    def test_chess_notation_is_classified_before_generic_ordered_lists(self) -> None:
+        text = "23. Rxe6+! fxe6 24. Qxe6+ Kf8"
+        expanded = _expand_semantic_blocks(
+            [{"type": "paragraph", "text": text, "html": text, "class_name": ""}]
+        )
+
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0]["type"], "paragraph")
+        self.assertEqual(expanded[0]["text"], text)
+        self.assertIn("chess-notation", expanded[0]["class_name"])
+        self.assertIn("notation-heavy", expanded[0]["class_name"])
+
+    def test_explicit_normal_list_class_keeps_generic_list_behavior(self) -> None:
+        expanded = _expand_semantic_blocks(
+            [
+                {
+                    "type": "paragraph",
+                    "text": "1. e4 2. e5 3. Nf3",
+                    "html": "1. e4 2. e5 3. Nf3",
+                    "class_name": "normal-list",
+                }
+            ]
+        )
+
+        self.assertEqual([block["type"] for block in expanded], ["list-item", "list-item", "list-item"])
+        self.assertTrue(all(block["list_kind"] == "ol" for block in expanded))
+
+    def test_chapter_render_preserves_notation_and_only_lists_explicit_prose(self) -> None:
+        source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Solutions</title></head><body>
+<h1>Solutions</h1>
+<p>23. Rxe6+! fxe6 24. Qxe6+ Kf8</p>
+<p>33...e3! (33...Rde8+ 34.Bxe8) 34.Rxe3</p>
+<p class="normal-list">1. Prepare 2. Validate 3. Publish</p>
+</body></html>"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chapter = Path(temp_dir) / "solutions.xhtml"
+            chapter.write_text(source, encoding="utf-8")
+            result = _process_chapter(
+                chapter,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="Solutions",
+                author="Tester",
+                language="en",
+            )
+
+        self.assertIn('class="chess-notation notation-heavy"', result.xhtml)
+        self.assertIn("23. Rxe6+! fxe6 24. Qxe6+ Kf8", result.xhtml)
+        self.assertIn("33...e3! (33...Rde8+ 34.Bxe8) 34.Rxe3", result.xhtml)
+        self.assertEqual(result.xhtml.count("<ol>"), 1)
+        self.assertNotIn(">Rxe6+! fxe6</li>", result.xhtml)
+
     def test_notation_layout_consensus_conflict_blocks_fen_without_losing_marker(self) -> None:
         payload = {
             "fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",

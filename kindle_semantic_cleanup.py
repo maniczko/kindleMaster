@@ -963,7 +963,8 @@ blockquote p {
   font-size: 0.98em;
 }
 
-.notation-heavy {
+.notation-heavy,
+.chess-notation {
   font-family: sans-serif;
   font-size: 0.98em;
   line-height: 1.42;
@@ -4146,6 +4147,18 @@ def _merge_paragraph_blocks(blocks: list[dict]) -> list[dict]:
         if previous_classes & metadata_classes or current_classes & metadata_classes:
             merged.append(dict(block))
             continue
+        if previous_classes & EXPLICIT_LIST_CLASS_TOKENS or current_classes & EXPLICIT_LIST_CLASS_TOKENS:
+            merged.append(dict(block))
+            continue
+        if _looks_like_chess_notation_paragraph(
+            previous["text"],
+            class_name=previous.get("class_name", ""),
+        ) or _looks_like_chess_notation_paragraph(
+            block["text"],
+            class_name=block.get("class_name", ""),
+        ):
+            merged.append(dict(block))
+            continue
         if _looks_like_reference_entry_text(previous["text"]) or _looks_like_reference_entry_text(block["text"]):
             merged.append(dict(block))
             continue
@@ -4165,6 +4178,45 @@ DEFINITION_LINE_RE = re.compile(
 )
 ORDERED_LIST_ITEM_RE = re.compile(r"^(?P<marker>\(?\d{1,3}[.)])\s+(?P<body>.+)$")
 INLINE_ORDERED_MARKER_RE = re.compile(r"(?:^|(?<=[\s;:]))(?P<marker>\(?\d{1,3}[.)])\s+")
+CHESS_SAN_TOKEN_PATTERN = (
+    r"(?:O-O(?:-O)?|"
+    r"[KQRBN](?:[a-h1-8]{0,2})?x?[a-h][1-8](?:=[QRBN])?|"
+    r"[a-h](?:x[a-h])?[1-8](?:=[QRBN])?)"
+    r"[+#]?[!?]*"
+)
+CHESS_SAN_TOKEN_RE = re.compile(rf"(?<![A-Za-z0-9]){CHESS_SAN_TOKEN_PATTERN}(?![A-Za-z0-9])")
+CHESS_DISTINCTIVE_SAN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:O-O(?:-O)?|[KQRBN][a-h1-8x]*[a-h][1-8]|[a-h]x[a-h][1-8]|[a-h][1-8]=[QRBN])"
+    r"[+#]?[!?]*(?![A-Za-z0-9])"
+)
+CHESS_NUMBERED_MOVE_RE = re.compile(
+    rf"(?<!\d)(?P<number>[1-9]\d{{0,2}})\s*\.\s*(?P<black>\.\s*\.)?\s*"
+    rf"(?P<move>{CHESS_SAN_TOKEN_PATTERN})(?![A-Za-z0-9])"
+)
+CHESS_NUMBERED_MOVE_CANDIDATE_RE = re.compile(
+    r"(?<!\d)[1-9]\d{0,2}\s*\.\s*(?:\.\s*\.)?\s*(?P<move>\S{1,24})"
+)
+CHESS_RESULT_RE = re.compile(r"(?<!\S)(?:1-0|0-1|1/2-1/2|\u00bd-\u00bd|0\.5-0\.5|\*)(?!\S)")
+EXPLICIT_LIST_CLASS_TOKENS = {"force-list", "normal-list", "ordered-list"}
+CHESS_FIGURINE_TRANSLATION = str.maketrans(
+    {
+        "¢": "K",
+        "£": "Q",
+        "¥": "B",
+        "¦": "R",
+        "¤": "N",
+        "♔": "K",
+        "♕": "Q",
+        "♖": "R",
+        "♗": "B",
+        "♘": "N",
+        "♚": "K",
+        "♛": "Q",
+        "♜": "R",
+        "♝": "B",
+        "♞": "N",
+    }
+)
 BULLET_MARKER_CHARS = "•*·▪‣◦●\uf0b7"
 INLINE_BULLET_MARKER_RE = re.compile(rf"(?:^|(?<=[\s;:]))(?P<marker>[{re.escape(BULLET_MARKER_CHARS)}])\s+")
 
@@ -4268,6 +4320,42 @@ def _split_inline_ordered_list_items(block: dict) -> list[dict]:
         _make_list_item_block(block, item_text=item_text, list_kind="ol", class_name_extra="ordered-item")
         for item_text in items
     ]
+
+
+def _classify_chess_notation_paragraph(text: str, *, class_name: str = "") -> str:
+    classes = {token.strip().lower() for token in str(class_name or "").split() if token.strip()}
+    if classes & EXPLICIT_LIST_CLASS_TOKENS:
+        return ""
+    if any(token.startswith("chess-notation") for token in classes):
+        return "review" if "chess-notation-review" in classes else "accepted"
+
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+    detection_text = normalized.translate(CHESS_FIGURINE_TRANSLATION)
+    if CHESS_NUMBERED_MOVE_RE.search(detection_text):
+        return "accepted"
+
+    san_tokens = CHESS_SAN_TOKEN_RE.findall(detection_text)
+    if len(san_tokens) >= 2 and CHESS_DISTINCTIVE_SAN_RE.search(detection_text):
+        return "accepted"
+    if len(san_tokens) == 1 and CHESS_DISTINCTIVE_SAN_RE.fullmatch(detection_text.strip("() ")):
+        return "accepted"
+    if CHESS_RESULT_RE.fullmatch(detection_text):
+        return "accepted"
+
+    for candidate in CHESS_NUMBERED_MOVE_CANDIDATE_RE.finditer(detection_text):
+        move = candidate.group("move").strip("()[]{}.,;:")
+        if (
+            re.match(r"^(?:O-O|[KQRBN].*[a-h][1-8]|[a-h].*[1-8])", move)
+            and re.search(r"[x+#=?!]|[a-h][1-8]", move)
+        ):
+            return "review"
+    return ""
+
+
+def _looks_like_chess_notation_paragraph(text: str, *, class_name: str = "") -> bool:
+    return bool(_classify_chess_notation_paragraph(text, class_name=class_name))
 
 
 def _split_inline_bullet_list_items(block: dict) -> list[dict]:
@@ -6102,6 +6190,19 @@ def _expand_semantic_blocks(
 
         if section_context == "references":
             expanded.append(block)
+            continue
+
+        chess_notation_status = _classify_chess_notation_paragraph(text, class_name=class_name)
+        if chess_notation_status:
+            updated = dict(block)
+            notation_class = _append_class_name(
+                _append_class_name(class_name, "chess-notation"),
+                "notation-heavy",
+            )
+            if chess_notation_status == "review":
+                notation_class = _append_class_name(notation_class, "chess-notation-review")
+            updated["class_name"] = notation_class
+            expanded.append(updated)
             continue
 
         table_block = _build_table_block(block)

@@ -891,6 +891,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
                 "reports/source_html_quality_gate.json",
                 "reports/chess_reader/semantic_book.json",
                 "reports/chess_reader/semantic_book.md",
+                "reports/chess_reader/chess_exercises.json",
                 "reports/fen-review.csv",
                 "reports/pgn-review.csv",
                 "reports/ocr-issues.md",
@@ -916,6 +917,7 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertEqual(qa["summary"]["expected_chapters"], 24)
             self.assertEqual(semantic_book["schema"], chess_study_export.SEMANTIC_BOOK_SCHEMA)
             self.assertIn("pages", semantic_book)
+            self.assertIn("exercises", semantic_book)
             self.assertIn(qa["status"], {"PASS", "PASS_WITH_REVIEW_ITEMS", "FAIL"})
             self.assertEqual(pages_summary["page_count"], 27)
             self.assertGreater(pages_summary["pages_with_extractable_text"], 0)
@@ -1033,6 +1035,9 @@ class ChessStudyPipelineTests(unittest.TestCase):
 
             diagrams_payload = json.loads((out / "data" / "diagrams.json").read_text(encoding="utf-8"))
             source_book = json.loads((out / "data" / "book.json").read_text(encoding="utf-8"))
+            exercise_model = json.loads(
+                (out / "reports" / "chess_reader" / "chess_exercises.json").read_text(encoding="utf-8")
+            )
             gate = json.loads((out / "reports" / "source_html_quality_gate.json").read_text(encoding="utf-8"))
             final_index = (out / "index.html").read_text(encoding="utf-8")
 
@@ -1042,6 +1047,12 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertEqual(diagrams_payload["summary"]["empty_diagram_image_count"], 1)
             self.assertEqual(source_book["summary"]["resolved_diagram_image_count"], 2)
             self.assertEqual(source_book["summary"]["empty_diagram_image_count"], 1)
+            self.assertEqual(exercise_model["summary"]["exercise_count"], 3)
+            self.assertEqual(
+                [item["exercise_id"] for item in exercise_model["exercises"]],
+                ["ex_1_1", "ex_1_2", "ex_1_3"],
+            )
+            self.assertEqual(exercise_model["exercises"][2]["diagram"]["asset_missing_reason"], "empty_src")
             self.assertEqual(gate["summary"]["resolved_diagram_image_count"], 2)
             self.assertEqual(gate["summary"]["empty_diagram_image_count"], 1)
             self.assertNotIn('src=""', final_index)

@@ -86,7 +86,7 @@ Every persisted conversion is scoped before it reaches the shared job store:
 - ownerless legacy jobs are accessible only on localhost unless an explicit claim/import flow is used;
 - a job ID by itself does not authorize mutation.
 
-The frontend transports the anonymous capability in the `km_guest` API query parameter so it is available to normal fetches and direct browser navigation. Browser referrer policy should remain at least `strict-origin-when-cross-origin`; capability values must not be copied to logs, analytics events, issue reports, or user-facing error messages.
+The frontend transports the anonymous capability in the `km_guest` API query parameter so it is available to normal fetches and direct browser navigation. Access logs, analytics, traces and error-reporting integrations must redact the values of both `km_guest` and `access`. Browser referrer policy should remain at least `strict-origin-when-cross-origin` so these query values are not disclosed to other origins.
 
 Optional observability environment:
 
@@ -133,6 +133,7 @@ Before promoting a public deployment:
 - Confirm `KINDLEMASTER_ALLOW_LOCAL_DEV_CORS=0` and `KINDLEMASTER_ALLOWED_ORIGINS` lists only production Vercel origins.
 - Confirm `KINDLEMASTER_ALLOW_LEGACY_LOCAL_GUEST=0` on Railway.
 - Confirm `KINDLEMASTER_JOB_ACCESS_SECRET` is long, random, stable, backend-only, and different between production and previews.
+- Confirm edge/proxy/application logging redacts the `km_guest` and `access` query values.
 - Confirm unauthenticated requests without `km_guest` receive `401` before upload or library listing.
 - Confirm two authenticated users and two anonymous browser identities cannot list, read, retry, or delete each other's jobs.
 - Confirm signed read-only links expire and cannot be reused for write endpoints.
@@ -148,7 +149,7 @@ Before promoting the deployment:
 npm ci
 npm run build:ui:vercel
 npm run typecheck --if-present
-python -m unittest test_conversion_job_access.py test_job_ownership_security.py
+python -m unittest tests.security.test_conversion_job_access tests.security.test_job_ownership_security
 python -m unittest test_app_runtime_services.py test_sprint4_ui_contracts.py
 python kindlemaster.py doctor
 ```

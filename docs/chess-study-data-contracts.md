@@ -16,6 +16,21 @@ solutions remain visible as QA warnings. Artifact paths are relative; local
 absolute paths and unrelated source text must not be exported. The model can be
 serialized and deserialized without changing its canonical JSON form.
 
+## Exercise Page Geometry Contract
+
+`reports/chess_geometry/page_geometry.json` records how printed exercise
+numbers are associated with diagram regions before positions are rendered. The
+reader uses visible column order rather than the technical order returned by
+the PDF parser. Each assignment retains the source page, column, visual order,
+diagram bounding box, number bounding box, candidate number, confidence, and
+warning codes.
+
+An exercise number is accepted only when every diagram on the page has one
+unique candidate, the printed sequence is consecutive, and each match clears
+the geometry confidence threshold. Duplicate, detached, ambiguous, or
+non-consecutive candidates remain `needs_review`; their candidate values and
+coordinates are retained for diagnosis but are not promoted to exercise IDs.
+
 ## Policy
 
 - AI, preprocessing, template matching, and local classifiers create candidates only.

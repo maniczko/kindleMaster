@@ -2,6 +2,20 @@
 
 These contracts define evidence artifacts for the MasterKindle chess-study FEN/PGN quality loop.
 
+## Semantic Exercise Contract
+
+`reports/chess_reader/chess_exercises.json` is the deterministic, machine-readable
+intermediate model used before exercise and solution HTML is rendered. Each
+record has one explicit `exercise_id`, source page geometry, raw and normalized
+text, optional diagram and solution evidence, validation warnings, and a trace
+for automatic normalization. The reader derives both sides of the
+exercise-solution presentation from this same record.
+
+Records without an explicit identifier are not generated. Missing diagrams or
+solutions remain visible as QA warnings. Artifact paths are relative; local
+absolute paths and unrelated source text must not be exported. The model can be
+serialized and deserialized without changing its canonical JSON form.
+
 ## Policy
 
 - AI, preprocessing, template matching, and local classifiers create candidates only.

@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
+from chess_exercise_model import build_chess_exercise_model, exercise_to_reader_item
 from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
 from chess_fen_square_model import predict_portable_fen_board
 from chess_position_recognizer import validate_fen
@@ -4213,13 +4214,21 @@ def build_chess_reader_semantic_book(book: Mapping[str, Any]) -> dict[str, Any]:
         blocks = [block for block in blocks if _semantic_book_block_has_value(block)]
         if blocks:
             semantic_pages.append({"page_number": page_number, "blocks": blocks})
+    exercise_model = build_chess_exercise_model(semantic_pages)
+    exercise_payload = exercise_model.to_dict()
+    summary = _semantic_book_summary(semantic_pages)
+    summary["canonical_exercise_count"] = len(exercise_payload["exercises"])
+    summary["exercise_warning_count"] = int(exercise_payload["summary"]["warning_count"])
     return {
         "schema": SEMANTIC_BOOK_SCHEMA,
         "book_title": str(source.get("title") or "Chess Study Reader"),
         "source_pdf": str(source.get("source_pdf") or ""),
         "source_html": str(source.get("source_html") or ""),
-        "summary": _semantic_book_summary(semantic_pages),
+        "summary": summary,
         "pages": semantic_pages,
+        "exercise_model_schema": exercise_payload["schema"],
+        "exercise_model_warnings": exercise_payload["warnings"],
+        "exercises": exercise_payload["exercises"],
     }
 
 
@@ -4228,6 +4237,18 @@ def _write_chess_reader_semantic_book_reports(out: Path, semantic_book: Mapping[
     report_dir.mkdir(parents=True, exist_ok=True)
     payload = dict(semantic_book or {})
     _write_json(report_dir / "semantic_book.json", payload)
+    _write_json(
+        report_dir / "chess_exercises.json",
+        {
+            "schema": payload.get("exercise_model_schema"),
+            "summary": {
+                "exercise_count": len(payload.get("exercises") or []),
+                "warning_count": int(dict(payload.get("summary") or {}).get("exercise_warning_count") or 0),
+            },
+            "warnings": list(payload.get("exercise_model_warnings") or []),
+            "exercises": list(payload.get("exercises") or []),
+        },
+    )
     (report_dir / "semantic_book.md").write_text(_semantic_book_markdown(payload), encoding="utf-8")
 
 
@@ -4353,6 +4374,7 @@ def _semantic_book_diagram_block(
         "source_page": int(diagram.get("page") or page.get("page") or page.get("page_number") or 0),
         "side_to_move": side,
         "fen": fen,
+        "fen_confidence": diagram.get("fen_confidence") or diagram.get("full_fen_confidence"),
         "fen_status": fen_status,
         "pgn": pgn_text,
         "book_line": str((pgn or {}).get("visible_review_text") or (pgn or {}).get("raw_text") or "").strip() or None,
@@ -4361,6 +4383,7 @@ def _semantic_book_diagram_block(
         "original_crop_path": str(diagram.get("original_crop_path") or diagram.get("image_path") or ""),
         "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
         "side_marker_status": str(diagram.get("side_marker_status") or ""),
+        "side_to_move_confidence": diagram.get("side_to_move_confidence") or diagram.get("side_marker_confidence"),
         "asset_missing_reason": str(diagram.get("asset_missing_reason") or ""),
         "original_page_path": str(page.get("page_preview") or ""),
         "review_status": review_status,
@@ -4375,6 +4398,8 @@ def _semantic_book_exercise_block(page_number: int, diagram: Mapping[str, Any], 
         "exercise_id": exercise_id,
         "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
         "source_page": page_number,
+        "source_column": diagram.get("column"),
+        "bounding_box": diagram.get("bounding_box") or diagram.get("bbox"),
         "difficulty": _semantic_difficulty_from_text(caption),
     }
 
@@ -4552,6 +4577,20 @@ def _semantic_exercise_items_by_page(semantic_book: Mapping[str, Any]) -> dict[i
 
 
 def _semantic_exercise_items(semantic_book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    canonical_exercises = [item for item in semantic_book.get("exercises") or [] if isinstance(item, Mapping)]
+    if canonical_exercises:
+        return [
+            {
+                **exercise_to_reader_item(item),
+                "label": _semantic_exercise_label(str(item.get("exercise_id") or "")),
+                "solution_id": (
+                    _reader_anchor("solution", item.get("exercise_id"), fallback="exercise")
+                    if isinstance(item.get("solution"), Mapping)
+                    else ""
+                ),
+            }
+            for item in canonical_exercises
+        ]
     pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
     diagrams_by_exercise: dict[str, dict[str, Any]] = {}
     exercises_by_id: dict[str, dict[str, Any]] = {}

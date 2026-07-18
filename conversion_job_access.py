@@ -13,6 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 GUEST_ID_HEADER = "X-KindleMaster-Guest-Id"
+GUEST_ID_QUERY_PARAM = "km_guest"
 JOB_ACCESS_QUERY_PARAM = "access"
 USER_OWNER_FIELD = "user_id"
 GUEST_OWNER_FIELD = "guest_owner_id"

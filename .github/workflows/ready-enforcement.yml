@@ -141,6 +141,9 @@ jobs:
       - name: Run Sprint 1 QA regression gate
         run: python -m unittest test_sprint1_quality_gates.py
 
+      - name: Run conversion ownership security regressions
+        run: python -m unittest test_conversion_job_access.py test_job_ownership_security.py
+
       - name: Run Vitest contract regressions when workspace exists
         shell: bash
         run: |

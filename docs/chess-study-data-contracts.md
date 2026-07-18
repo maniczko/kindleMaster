@@ -31,6 +31,19 @@ the geometry confidence threshold. Duplicate, detached, ambiguous, or
 non-consecutive candidates remain `needs_review`; their candidate values and
 coordinates are retained for diagnosis but are not promoted to exercise IDs.
 
+## Chess Notation Paragraph Contract
+
+Chess move numbers are classified before generic ordered-list reconstruction.
+Paragraphs containing a valid numbered SAN move, castling, promotion, check,
+mate, result, or parenthesized variation remain paragraphs with the
+`chess-notation` and `notation-heavy` classes. Their move numbers and side dots
+must not be stripped or replaced by generated `<ol>` numbering.
+
+Malformed OCR tokens that still carry strong chess evidence remain paragraphs
+with `chess-notation-review`; this class is a QA signal and does not authorize
+PGN export. A source block explicitly marked `normal-list`, `ordered-list`, or
+`force-list` remains eligible for normal list reconstruction.
+
 ## Policy
 
 - AI, preprocessing, template matching, and local classifiers create candidates only.

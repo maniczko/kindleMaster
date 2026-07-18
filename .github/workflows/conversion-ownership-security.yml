@@ -8,6 +8,7 @@ on:
       - "conversion_jobs.py"
       - "app.py"
       - "app_runtime_services.py"
+      - "frontend/src/App.tsx"
       - "frontend/src/lib/api-base.ts"
       - "frontend/src/lib/api-base.test.ts"
       - "tests/security/test_conversion_job_access.py"
@@ -23,6 +24,7 @@ on:
       - "conversion_jobs.py"
       - "app.py"
       - "app_runtime_services.py"
+      - "frontend/src/App.tsx"
       - "frontend/src/lib/api-base.ts"
       - "frontend/src/lib/api-base.test.ts"
       - "tests/security/test_conversion_job_access.py"
@@ -103,3 +105,19 @@ jobs:
 
       - name: Run guest URL regressions
         run: npx vitest run --config vitest.config.js frontend/src/lib/api-base.test.ts
+
+      - name: Run full frontend contract regressions
+        shell: bash
+        run: |
+          mkdir -p reports/security
+          set -o pipefail
+          npm run test:contracts:regression 2>&1 | tee reports/security/frontend-contracts.log
+
+      - name: Upload frontend security logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: conversion-ownership-frontend
+          path: reports/security/
+          if-no-files-found: warn
+          retention-days: 14

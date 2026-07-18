@@ -1,5 +1,6 @@
 const ABSOLUTE_URL_PATTERN = /^[a-z][a-z0-9+.-]*:/i;
 const GUEST_ACCESS_STORAGE_KEY = "kindlemaster.guest-access.v1";
+export const GUEST_ACCESS_HEADER = "X-KindleMaster-Guest-Id";
 export const GUEST_ACCESS_QUERY_PARAM = "km_guest";
 const GUEST_ACCESS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{19,127}$/;
 
@@ -56,29 +57,29 @@ function isConfiguredApiAbsoluteUrl(value: string, baseUrl: string): boolean {
   return value === baseUrl || value.startsWith(`${baseUrl}/`);
 }
 
+export function apiRequestUrl(pathOrUrl: string, baseUrl = configuredApiBaseUrl()): string {
+  const value = String(pathOrUrl || "").trim();
+  if (!value) return value;
+  const normalizedBase = normalizeApiBaseUrl(baseUrl);
+  if (ABSOLUTE_URL_PATTERN.test(value)) return value;
+  const normalizedPath = value.startsWith("/") ? value : `/${value}`;
+  return normalizedBase ? `${normalizedBase}${normalizedPath}` : value;
+}
+
 export function apiUrl(
   pathOrUrl: string,
   baseUrl = configuredApiBaseUrl(),
   guestAccessId = getOrCreateGuestAccessId(),
 ): string {
-  const value = String(pathOrUrl || "").trim();
+  const value = apiRequestUrl(pathOrUrl, baseUrl);
   if (!value) return value;
   const normalizedBase = normalizeApiBaseUrl(baseUrl);
-
-  if (ABSOLUTE_URL_PATTERN.test(value)) {
-    if (!isConfiguredApiAbsoluteUrl(value, normalizedBase)) return value;
-    return appendGuestAccess(value, guestAccessId);
-  }
-
-  const normalizedPath = value.startsWith("/") ? value : `/${value}`;
-  if (!normalizedBase) {
-    return appendGuestAccess(value, guestAccessId);
-  }
-  return appendGuestAccess(`${normalizedBase}${normalizedPath}`, guestAccessId);
+  if (ABSOLUTE_URL_PATTERN.test(value) && !isConfiguredApiAbsoluteUrl(value, normalizedBase)) return value;
+  return appendGuestAccess(value, guestAccessId);
 }
 
 export function apiRequestInput(input: RequestInfo | URL): RequestInfo | URL {
-  if (typeof input === "string") return apiUrl(input);
-  if (input instanceof URL) return apiUrl(input.toString());
+  if (typeof input === "string") return apiRequestUrl(input);
+  if (input instanceof URL) return apiRequestUrl(input.toString());
   return input;
 }

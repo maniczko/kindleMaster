@@ -158,7 +158,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         }
 
         self.page.route(
-            "**/auth/config",
+            "**/auth/config**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -174,7 +174,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            "**/user/profile",
+            "**/user/profile**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -182,7 +182,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            "**/convert/delivery/config",
+            "**/convert/delivery/config**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",

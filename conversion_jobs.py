@@ -145,3 +145,8 @@ def build_timed_out_job_fields(*, now: datetime, message: str, error: str) -> di
         "source_path": "",
         "updated_at": utc_now_label(now=now),
     }
+
+
+from conversion_job_store_security import install_conversion_job_store_security
+
+install_conversion_job_store_security()

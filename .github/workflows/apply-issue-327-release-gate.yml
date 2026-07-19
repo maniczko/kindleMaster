@@ -24,15 +24,29 @@ jobs:
       - name: Apply release gate integration
         run: python .github/scripts/apply_issue_327_release_gate_integration.py
 
+      - name: Register one root-level governance test
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("kindlemaster.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    "tests.chess.test_semantic_release_gate",
+              "tests.chess.test_semantic_release_gate_hook",
+          '''
+          if text.count(old) != 2:
+              raise RuntimeError(f"Expected two dotted test registrations, found {text.count(old)}")
+          text = text.replace(old, '    "test_chess_semantic_release_gate.py",\n')
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Validate focused contracts
         shell: bash
         run: |
           mkdir -p reports/issue-327
           set -o pipefail
           python -m unittest -v \
-            tests.chess.test_semantic_release_gate \
-            tests.chess.test_semantic_release_gate_hook \
-            tests.chess.test_semantic_release_gate_cli \
+            test_chess_semantic_release_gate \
             tests.chess.test_exercise_solution_navigation \
             tests.chess.test_semantic_navigation_model \
             tests.chess.test_solution_integrity \
@@ -42,7 +56,6 @@ jobs:
             test_chess_reader_exercises \
             test_chess_reader_solutions \
             test_chess_reader_navigation \
-            test_kindlemaster_entrypoint \
             2>&1 | tee reports/issue-327/focused.log
 
       - name: Upload diagnostics

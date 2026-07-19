@@ -306,13 +306,13 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                     )
                 )
                 continue
-            if exercise_id not in components:
-                components[exercise_id] = {}
-                order.append(exercise_id)
             kind = str(block.get("type"))
             if kind == "solution":
                 solution_candidates.append({**dict(block), "_page_number": page_number})
                 continue
+            if exercise_id not in components:
+                components[exercise_id] = {}
+                order.append(exercise_id)
             if kind in components[exercise_id]:
                 model_warnings.append(
                     ValidationWarning(

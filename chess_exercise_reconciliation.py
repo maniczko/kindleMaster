@@ -30,8 +30,13 @@ def normalize_identity_text(value: Any) -> str:
 def _first_value(record: Mapping[str, Any], keys: Sequence[str]) -> Any:
     for key in keys:
         value = record.get(key)
-        if value not in {None, "", (), []}:
-            return value
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (list, tuple, dict, set)) and not value:
+            continue
+        return value
     return None
 
 

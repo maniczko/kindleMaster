@@ -86,6 +86,36 @@ class ChessExerciseModelReconciliationTests(unittest.TestCase):
         self.assertEqual(len(report["solution_identities"]), 2)
         self.assertEqual(ChessExerciseModel.from_dict(model.to_dict()).to_json(), model.to_json())
 
+    def test_solution_only_identifier_does_not_create_phantom_exercise(self) -> None:
+        model = build_chess_exercise_model(
+            [
+                {
+                    "page_number": 50,
+                    "blocks": [
+                        {
+                            "type": "exercise",
+                            "exercise_id": "exercise-500",
+                            "printed_number": 500,
+                            "raw_title": "A - B, Berlin 2001",
+                            "source_page": 50,
+                        },
+                        {
+                            "type": "solution",
+                            "exercise_id": "solution-record-500",
+                            "solution_number": 500,
+                            "solution_title": "A - B, Berlin 2001",
+                            "solution_page": 250,
+                            "book_line": "1. Qh7+",
+                        },
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual([exercise.exercise_id for exercise in model.exercises], ["exercise-500"])
+        self.assertEqual(model.exercises[0].solution.raw_text, "1. Qh7+")
+        self.assertEqual(model.exercises[0].solution_match["selected_solution_id"], "solution-record-500")
+
     def test_title_mismatch_adds_error_and_blocks_model_report(self) -> None:
         model = build_chess_exercise_model(
             [

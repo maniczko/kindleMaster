@@ -1,0 +1,69 @@
+name: Chess Solution Integrity
+
+on:
+  pull_request:
+    paths:
+      - "chess_solution_integrity.py"
+      - "chess_exercise_model.py"
+      - "tests/chess/test_solution_integrity.py"
+      - "tests/chess/test_solution_integrity_model.py"
+      - "test_chess_study_data_contracts.py"
+      - "test_chess_study_pipeline.py"
+      - "test_chess_notation_reflow.py"
+      - ".github/workflows/chess-solution-integrity.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "chess_solution_integrity.py"
+      - "chess_exercise_model.py"
+      - "tests/chess/test_solution_integrity.py"
+      - "tests/chess/test_solution_integrity_model.py"
+      - "test_chess_study_data_contracts.py"
+      - "test_chess_study_pipeline.py"
+      - "test_chess_notation_reflow.py"
+
+permissions:
+  contents: read
+
+jobs:
+  solution-integrity:
+    name: solution-integrity (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+
+      - name: Run integrity and compatibility tests
+        shell: bash
+        run: |
+          mkdir -p reports/solution-integrity
+          set -o pipefail
+          python -m unittest -v \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            test_chess_study_data_contracts \
+            test_chess_study_pipeline \
+            test_chess_notation_reflow \
+            2>&1 | tee reports/solution-integrity/python-${{ matrix.python-version }}.log
+
+      - name: Upload integrity evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chess-solution-integrity-python-${{ matrix.python-version }}
+          path: reports/solution-integrity/
+          if-no-files-found: warn
+          retention-days: 14

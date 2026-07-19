@@ -38,7 +38,7 @@ The focused workflow runs on Python 3.12 and 3.14 and captures test logs as reta
 
 Normal API fetches transport the anonymous capability in the `X-KindleMaster-Guest-Id` header. Only browser-opened artifact links receive `km_guest`; component tests opt into an anonymous session explicitly, while production browser smoke validates automatic creation and propagation. Both duplicated manual-repair test cases accept the additional request metadata without weakening the endpoint or HTTP-method assertion.
 
-Runtime Playwright tests select download links by the exact `/convert/download/<job_id>` path prefix, so the expected owner-bound query parameters remain covered without weakening the job identity assertion.
+Runtime Playwright tests select download links by the exact `/convert/download/<job_id>` path prefix, so the expected owner-bound query parameters remain covered without weakening the job identity assertion. Their route mocks accept the same path plus query parameters and still require the exact `job_id` before producing an attachment response.
 
 ## Production configuration gate
 

@@ -23,6 +23,7 @@ jobs:
       - run: npm run build:ui
       - run: python kindlemaster.py bootstrap
       - run: python -m playwright install chromium
+      - run: python kindlemaster.py prepare-reference-inputs
       - name: Run runtime follow-up with full diagnostics
         shell: bash
         run: |

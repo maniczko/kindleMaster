@@ -22,11 +22,24 @@ jobs:
         run: python .github/scripts/apply_issue_321_model_integration.py
 
       - name: Validate focused contracts
+        shell: bash
         run: |
+          mkdir -p reports/issue-321
+          set -o pipefail
           python -m unittest -v \
             tests.chess.test_solution_integrity \
             tests.chess.test_solution_integrity_model \
-            test_chess_study_data_contracts
+            test_chess_study_data_contracts \
+            2>&1 | tee reports/issue-321/focused.log
+
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-321-model-integration
+          path: reports/issue-321/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Remove one-time patch machinery
         run: |

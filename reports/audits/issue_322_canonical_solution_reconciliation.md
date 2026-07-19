@@ -10,7 +10,7 @@ A solution is paired automatically only when all of the following are true:
 4. no second canonical candidate is within the ambiguity margin;
 5. the aggregate evidence score reaches the configured automatic threshold.
 
-Title normalization is case-, whitespace-, punctuation- and diacritic-insensitive. Players, location, year, difficulty, neighboring numbers and source-page proximity increase the evidence score, but they never override a number or title mismatch.
+Title normalization is case-, whitespace-, punctuation- and diacritic-insensitive. It also transliterates non-decomposing Latin characters such as `ł`, `ø`, `æ` and `œ` before comparison. Players, location, year, difficulty, neighboring numbers and source-page proximity increase the evidence score, but they never override a number or title mismatch.
 
 ## Safety behavior
 
@@ -44,6 +44,7 @@ Committed fixtures cover:
 - one-to-one ownership;
 - swapped solution identifiers;
 - legacy incomplete identity;
-- solution-only identifiers that must not create phantom exercises.
+- solution-only identifiers that must not create phantom exercises;
+- Latin diacritic and non-decomposing-character normalization.
 
 Full acceptance against all 1,128 Woodpecker pairs still requires the protected fixed-edition source and a verified source-bound manifest. The implementation does not claim full-book correctness until that acceptance run is completed.

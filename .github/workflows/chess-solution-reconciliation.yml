@@ -5,8 +5,8 @@ on:
     paths:
       - "chess_exercise_reconciliation.py"
       - "chess_exercise_model.py"
-      - "test_chess_exercise_reconciliation.py"
-      - "test_chess_exercise_model_reconciliation.py"
+      - "tests/chess/test_exercise_reconciliation.py"
+      - "tests/chess/test_exercise_model_reconciliation.py"
       - "test_chess_study_data_contracts.py"
       - "test_chess_study_pipeline.py"
       - ".github/workflows/chess-solution-reconciliation.yml"
@@ -16,8 +16,8 @@ on:
     paths:
       - "chess_exercise_reconciliation.py"
       - "chess_exercise_model.py"
-      - "test_chess_exercise_reconciliation.py"
-      - "test_chess_exercise_model_reconciliation.py"
+      - "tests/chess/test_exercise_reconciliation.py"
+      - "tests/chess/test_exercise_model_reconciliation.py"
       - "test_chess_study_data_contracts.py"
       - "test_chess_study_pipeline.py"
 
@@ -50,8 +50,8 @@ jobs:
           mkdir -p reports/reconciliation
           set -o pipefail
           python -m unittest -v \
-            test_chess_exercise_reconciliation \
-            test_chess_exercise_model_reconciliation \
+            tests.chess.test_exercise_reconciliation \
+            tests.chess.test_exercise_model_reconciliation \
             test_chess_study_data_contracts \
             test_chess_study_pipeline \
             2>&1 | tee reports/reconciliation/python-${{ matrix.python-version }}.log

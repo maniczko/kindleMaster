@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
 from chess_exercise_model import build_chess_exercise_model, exercise_to_reader_item
+from chess_semantic_release_gate import run_output_semantic_release_gate
 from chess_page_geometry import analyze_exercise_page_geometry, bbox_containment, order_geometry_items
 from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
 from chess_fen_square_model import predict_portable_fen_board
@@ -646,6 +647,7 @@ def run_chess_study_export(
             pdf_path=config.pdf,
             qa_report=qa_report,
             source_gate=source_gate,
+            integrity_mode=("strict" if config.strict_thresholds else None),
         )
     return qa_report
 
@@ -657,6 +659,7 @@ def rebuild_chess_source_html_export(
     pdf_path: str | Path | None = None,
     qa_report: dict[str, Any] | None = None,
     source_gate: dict[str, Any] | None = None,
+    integrity_mode: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild a semantic, asset-backed study reader from the PDF-layout HTML artifact.
 
@@ -739,9 +742,25 @@ def rebuild_chess_source_html_export(
     _write_source_html_reports(book_payload, diagrams_payload, reports_dir)
     _write_chess_reader_semantic_book_reports(out, semantic_book)
     _write_artifact_manifest(data_dir / "artifact_manifest.json", artifact_manifest)
+    reader_html = _semantic_source_index_html(book_payload)
+    integrity_report = run_output_semantic_release_gate(
+        semantic_book,
+        out_dir=out,
+        mode=integrity_mode,
+        book_payload=book_payload,
+        documents={"index.html": reader_html},
+    )
+    book_payload["semantic_release_gate"] = integrity_report.to_dict()
+    if integrity_report.exit_code:
+        return {
+            **book_payload,
+            "status": "failed",
+            "final_reader_missing": True,
+            "blocked_before_write": True,
+        }
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
-    (out / "index.html").write_text(_semantic_source_index_html(book_payload), encoding="utf-8")
+    (out / "index.html").write_text(reader_html, encoding="utf-8")
     _write_final_reader_health_gate(
         out,
         artifact_manifest=artifact_manifest,
@@ -2913,7 +2932,11 @@ def build_ai_assisted_quality_eval(out_dir: str | Path) -> dict[str, Any]:
     return payload
 
 
-def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
+def render_semantic_source_reader(
+    out_dir: str | Path,
+    *,
+    integrity_mode: str | None = None,
+) -> dict[str, Any]:
     out = Path(out_dir)
     book = _load_source_book(out)
     if not book:
@@ -2929,9 +2952,25 @@ def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
         book["semantic_book"] = semantic_book
         _write_json(out / "data" / "book.json", book)
     _write_chess_reader_semantic_book_reports(out, semantic_book)
+    reader_html = _semantic_source_index_html(book)
+    integrity_report = run_output_semantic_release_gate(
+        semantic_book,
+        out_dir=out,
+        mode=integrity_mode,
+        book_payload=book,
+        documents={"index.html": reader_html},
+    )
+    if integrity_report.exit_code:
+        return {
+            "status": "failed",
+            "schema": "kindlemaster.semantic_source_reader.v1",
+            "out_dir": str(out),
+            "blocked_before_write": True,
+            "semantic_release_gate": integrity_report.to_dict(),
+        }
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
-    (out / "index.html").write_text(_semantic_source_index_html(book), encoding="utf-8")
+    (out / "index.html").write_text(reader_html, encoding="utf-8")
     page_count = len([page for page in book.get("pages") or [] if _semantic_source_page_elements(page)])
     return {
         "status": "ok",

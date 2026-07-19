@@ -18,6 +18,28 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
+      - name: Preserve existing missing-solution warning contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/apply_issue_321_model_integration.py')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              '        "        for finding in integrity_record.findings:\\n"\n'
+              '        "            warnings.append(\\n"\n'
+          )
+          new = (
+              '        "        for finding in integrity_record.findings:\\n"\n'
+              '        "            if finding.code == \\"MISSING_SOLUTION_TEXT\\" and not solution_evidence:\\n"\n'
+              '        "                continue\\n"\n'
+              '        "            warnings.append(\\n"\n'
+          )
+          if text.count(old) != 1:
+              raise RuntimeError('Could not locate issue 321 compatibility anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply model integration
         run: python .github/scripts/apply_issue_321_model_integration.py
 

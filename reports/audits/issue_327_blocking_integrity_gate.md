@@ -35,6 +35,8 @@ The gate checks:
 15. the existing fixed-edition FEN gate from #295 reports `passed`, zero false acceptance and full published coverage;
 16. every non-error warning is explicitly allowlisted.
 
+The fragment check directly reuses `validate_internal_links()` from #326 rather than maintaining a weaker parallel resolver. Regression coverage includes links between sibling `exercises/` and `solutions/` directories using `../` paths, duplicate anchors and orphan fragments.
+
 ## Default warning allowlist
 
 - `SHORT_SOLUTION_REVIEW`

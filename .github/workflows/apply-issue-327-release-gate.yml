@@ -1,0 +1,70 @@
+name: Apply issue 327 release gate integration
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+
+      - name: Apply release gate integration
+        run: python .github/scripts/apply_issue_327_release_gate_integration.py
+
+      - name: Validate focused contracts
+        shell: bash
+        run: |
+          mkdir -p reports/issue-327
+          set -o pipefail
+          python -m unittest -v \
+            tests.chess.test_semantic_release_gate \
+            tests.chess.test_semantic_release_gate_hook \
+            tests.chess.test_semantic_release_gate_cli \
+            tests.chess.test_exercise_solution_navigation \
+            tests.chess.test_semantic_navigation_model \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            tests.chess.test_exercise_reconciliation \
+            tests.chess.test_exercise_model_reconciliation \
+            test_chess_reader_exercises \
+            test_chess_reader_solutions \
+            test_chess_reader_navigation \
+            test_kindlemaster_entrypoint \
+            2>&1 | tee reports/issue-327/focused.log
+
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-327-release-gate-integration
+          path: reports/issue-327/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove one-time machinery
+        run: |
+          rm -f .github/workflows/inspect-issue-327-hooks.yml
+          rm .github/scripts/apply_issue_327_release_gate_integration.py
+          rm .github/workflows/apply-issue-327-release-gate.yml
+
+      - name: Commit integrated release gate
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Integrate blocking semantic release gate (#327)"
+          git push origin HEAD:${{ github.head_ref }}

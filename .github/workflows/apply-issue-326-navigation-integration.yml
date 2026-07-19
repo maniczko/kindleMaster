@@ -1,0 +1,114 @@
+name: Apply issue 326 navigation integration
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply model and renderer integration
+        run: python .github/scripts/apply_issue_326_navigation_integration.py
+
+      - name: Prevent blocked canonical records from using legacy fallback links
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("chess_study_export.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        linked_target=card_id,
+                  linked_href=str(item.get("exercise_href") or "") if navigation_accepted else "",
+          '''
+          new = '''        linked_target=(card_id if not item.get("navigation_status") else ""),
+                  linked_href=str(item.get("exercise_href") or "") if navigation_accepted else "",
+          '''
+          if text.count(old) != 1:
+              raise RuntimeError("exercise fallback hardening anchor mismatch")
+          text = text.replace(old, new, 1)
+
+          old = '''    navigation_accepted = block.get("navigation_status") == "accepted"
+              linked_href = str(block.get("exercise_href") or "") if navigation_accepted else ""
+              linked_label = str(block.get("backlink_text") or "Open linked diagram")
+              linked_target = (
+                  ""
+                  if linked_href
+                  else (
+                      _reader_anchor("exercise", exercise_id, fallback="exercise")
+                      if exercise_id
+                      else _reader_anchor("diagram", block.get("diagram_id"), fallback="diagram")
+                  )
+              )
+          '''
+          new = '''    navigation_status = str(block.get("navigation_status") or "")
+              navigation_accepted = navigation_status == "accepted"
+              linked_href = str(block.get("exercise_href") or "") if navigation_accepted else ""
+              linked_label = str(block.get("backlink_text") or "Open linked diagram")
+              linked_target = (
+                  ""
+                  if navigation_status
+                  else (
+                      _reader_anchor("exercise", exercise_id, fallback="exercise")
+                      if exercise_id
+                      else _reader_anchor("diagram", block.get("diagram_id"), fallback="diagram")
+                  )
+              )
+          '''
+          if text.count(old) != 1:
+              raise RuntimeError("solution fallback hardening anchor mismatch")
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Validate focused contracts
+        shell: bash
+        run: |
+          mkdir -p reports/issue-326
+          set -o pipefail
+          python -m unittest -v \
+            tests.chess.test_exercise_solution_navigation \
+            tests.chess.test_semantic_navigation_model \
+            tests.chess.test_exercise_reconciliation \
+            tests.chess.test_exercise_model_reconciliation \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            test_chess_reader_exercises \
+            test_chess_reader_solutions \
+            test_chess_reader_navigation \
+            test_chess_study_data_contracts \
+            test_chess_study_pipeline \
+            2>&1 | tee reports/issue-326/focused.log
+
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-326-navigation-integration
+          path: reports/issue-326/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove one-time patch machinery
+        run: |
+          rm .github/scripts/apply_issue_326_navigation_integration.py
+          rm .github/workflows/apply-issue-326-navigation-integration.yml
+
+      - name: Commit integrated navigation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Integrate canonical bidirectional navigation (#326)"
+          git push origin HEAD:${{ github.head_ref }}

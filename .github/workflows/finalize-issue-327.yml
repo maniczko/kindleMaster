@@ -90,26 +90,27 @@ jobs:
           path = Path("tests/chess/test_semantic_release_gate.py")
           text = path.read_text(encoding="utf-8")
           anchor = "    def test_orphan_fragment_is_blocked(self) -> None:\n"
-          test = '''    def test_cross_directory_fragments_use_canonical_validator(self) -> None:
-              report = evaluate_semantic_release_gate(
-                  book(accepted_exercise()),
-                  mode="strict",
-                  documents={
-                      "exercises/chapter.xhtml": (
-                          '<article id="exercise-ex-1-1">'
-                          '<a href="../solutions/chapter.xhtml#solution-ex-1-1">solution</a>'
-                          '</article>'
-                      ),
-                      "solutions/chapter.xhtml": (
-                          '<section id="solution-ex-1-1">'
-                          '<a href="../exercises/chapter.xhtml#exercise-ex-1-1">back</a>'
-                          '</section>'
-                      ),
-                  },
-              )
-              self.assertFalse(any(item.code == "ORPHAN_INTERNAL_FRAGMENT" for item in report.findings))
-
-          '''
+          test = (
+              "    def test_cross_directory_fragments_use_canonical_validator(self) -> None:\n"
+              "        report = evaluate_semantic_release_gate(\n"
+              "            book(accepted_exercise()),\n"
+              "            mode=\"strict\",\n"
+              "            documents={\n"
+              "                \"exercises/chapter.xhtml\": (\n"
+              "                    '<article id=\"exercise-ex-1-1\">'\n"
+              "                    '<a href=\"../solutions/chapter.xhtml#solution-ex-1-1\">solution</a>'\n"
+              "                    '</article>'\n"
+              "                ),\n"
+              "                \"solutions/chapter.xhtml\": (\n"
+              "                    '<section id=\"solution-ex-1-1\">'\n"
+              "                    '<a href=\"../exercises/chapter.xhtml#exercise-ex-1-1\">back</a>'\n"
+              "                    '</section>'\n"
+              "                ),\n"
+              "            },\n"
+              "        )\n"
+              "        self.assertFalse(any(item.code == \"ORPHAN_INTERNAL_FRAGMENT\" for item in report.findings))\n"
+              "\n"
+          )
           if "test_cross_directory_fragments_use_canonical_validator" not in text:
               if text.count(anchor) != 1:
                   raise RuntimeError("cross-directory test anchor mismatch")

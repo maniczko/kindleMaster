@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from chess_exercise_navigation import NavigationReport, build_navigation_report
 from chess_exercise_reconciliation import reconcile_exercise_solution_pairs
 from chess_solution_integrity import SolutionIntegrityReport, analyze_solution_integrity
 
@@ -208,6 +209,7 @@ class ChessExercise:
     confidence: float
     solution_match: Mapping[str, Any] | None = None
     solution_integrity: Mapping[str, Any] | None = None
+    navigation: Mapping[str, Any] | None = None
     warnings: tuple[ValidationWarning, ...] = ()
     correction_trace: tuple[CorrectionTrace, ...] = ()
 
@@ -225,6 +227,7 @@ class ChessExercise:
             "solution": self.solution.to_dict() if self.solution else None,
             "solution_match": dict(self.solution_match) if self.solution_match else None,
             "solution_integrity": dict(self.solution_integrity) if self.solution_integrity else None,
+            "navigation": dict(self.navigation) if self.navigation else None,
             "validation": {
                 "confidence": self.confidence,
                 "warnings": [warning.to_dict() for warning in self.warnings],
@@ -251,6 +254,11 @@ class ChessExercise:
                 if isinstance(value.get("solution_integrity"), Mapping)
                 else None
             ),
+            navigation=(
+                dict(value.get("navigation"))
+                if isinstance(value.get("navigation"), Mapping)
+                else None
+            ),
             warnings=tuple(ValidationWarning.from_dict(item) for item in validation.get("warnings") or []),
             correction_trace=tuple(CorrectionTrace.from_dict(item) for item in value.get("correction_trace") or []),
         )
@@ -262,6 +270,7 @@ class ChessExerciseModel:
     warnings: tuple[ValidationWarning, ...] = ()
     reconciliation: Mapping[str, Any] | None = None
     integrity: Mapping[str, Any] | None = None
+    navigation: Mapping[str, Any] | None = None
     schema: str = field(default=CHESS_EXERCISE_MODEL_SCHEMA, init=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -274,6 +283,7 @@ class ChessExerciseModel:
             "warnings": [warning.to_dict() for warning in self.warnings],
             "solution_reconciliation": dict(self.reconciliation) if self.reconciliation else None,
             "solution_integrity": dict(self.integrity) if self.integrity else None,
+            "exercise_navigation": dict(self.navigation) if self.navigation else None,
             "exercises": [exercise.to_dict() for exercise in self.exercises],
         }
 
@@ -295,6 +305,11 @@ class ChessExerciseModel:
             integrity=(
                 dict(value.get("solution_integrity"))
                 if isinstance(value.get("solution_integrity"), Mapping)
+                else None
+            ),
+            navigation=(
+                dict(value.get("exercise_navigation"))
+                if isinstance(value.get("exercise_navigation"), Mapping)
                 else None
             ),
         )
@@ -565,11 +580,29 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
             )
         )
 
+    navigation_report = build_navigation_report(
+        [exercise.to_dict() for exercise in exercises],
+        default_document="reader.xhtml",
+    )
+    navigation_by_id = {record.exercise_id: record for record in navigation_report.records}
+    exercises = [
+        replace(
+            exercise,
+            navigation=(
+                navigation_by_id[exercise.exercise_id].to_dict()
+                if exercise.exercise_id in navigation_by_id
+                else None
+            ),
+        )
+        for exercise in exercises
+    ]
+
     return ChessExerciseModel(
         exercises=tuple(exercises),
         warnings=tuple(model_warnings),
         reconciliation=reconciliation_report.to_dict(),
         integrity=SolutionIntegrityReport(records=tuple(integrity_records)).to_dict(),
+        navigation=navigation_report.to_dict(),
     )
 
 
@@ -578,6 +611,7 @@ def exercise_to_reader_item(exercise: Mapping[str, Any]) -> dict[str, Any]:
     diagram = exercise.get("diagram") if isinstance(exercise.get("diagram"), Mapping) else {}
     solution = exercise.get("solution") if isinstance(exercise.get("solution"), Mapping) else {}
     integrity = exercise.get("solution_integrity") if isinstance(exercise.get("solution_integrity"), Mapping) else {}
+    navigation = exercise.get("navigation") if isinstance(exercise.get("navigation"), Mapping) else {}
     exercise_id = str(exercise.get("exercise_id") or "")
     return {
         "exercise_id": exercise_id,
@@ -601,6 +635,18 @@ def exercise_to_reader_item(exercise: Mapping[str, Any]) -> dict[str, Any]:
         "solution_integrity_findings": [
             str(item.get("code") or "")
             for item in integrity.get("findings") or []
+            if isinstance(item, Mapping) and item.get("code")
+        ],
+        "navigation_status": str(navigation.get("status") or "blocked"),
+        "exercise_anchor": str(navigation.get("exercise_anchor") or ""),
+        "solution_anchor": str(navigation.get("solution_anchor") or ""),
+        "solution_href": str(navigation.get("forward_href") or ""),
+        "exercise_href": str(navigation.get("backlink_href") or ""),
+        "solution_link_text": str(navigation.get("forward_text") or ""),
+        "backlink_text": str(navigation.get("backlink_text") or ""),
+        "navigation_findings": [
+            str(item.get("code") or "")
+            for item in navigation.get("findings") or []
             if isinstance(item, Mapping) and item.get("code")
         ],
     }

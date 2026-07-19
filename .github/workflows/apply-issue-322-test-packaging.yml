@@ -1,0 +1,50 @@
+name: Apply issue 322 test packaging
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Move focused tests into package
+        shell: bash
+        run: |
+          mkdir -p tests/chess
+          touch tests/__init__.py tests/chess/__init__.py
+          mv test_chess_exercise_reconciliation.py tests/chess/test_exercise_reconciliation.py
+          mv test_chess_exercise_model_reconciliation.py tests/chess/test_exercise_model_reconciliation.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/chess-solution-reconciliation.yml')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('"test_chess_exercise_reconciliation.py"', '"tests/chess/test_exercise_reconciliation.py"')
+          text = text.replace('"test_chess_exercise_model_reconciliation.py"', '"tests/chess/test_exercise_model_reconciliation.py"')
+          text = text.replace('test_chess_exercise_reconciliation \\\n            test_chess_exercise_model_reconciliation', 'tests.chess.test_exercise_reconciliation \\\n            tests.chess.test_exercise_model_reconciliation')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Remove one-time workflow
+        run: rm .github/workflows/apply-issue-322-test-packaging.yml
+
+      - name: Commit packaged tests
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Package canonical reconciliation tests (#322)"
+          git push origin HEAD:${{ github.head_ref }}

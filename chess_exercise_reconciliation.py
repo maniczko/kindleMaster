@@ -253,6 +253,8 @@ class ReconciliationReport:
                 "production_blocked": self.production_blocked,
                 "confidence_distribution": confidence,
             },
+            "exercise_identities": [identity.to_dict() for identity in self.exercise_identities],
+            "solution_identities": [identity.to_dict() for identity in self.solution_identities],
             "decisions": [decision.to_dict() for decision in self.decisions],
         }
 

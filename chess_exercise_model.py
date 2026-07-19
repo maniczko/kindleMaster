@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from chess_exercise_reconciliation import reconcile_exercise_solution_pairs
+
 
 CHESS_EXERCISE_MODEL_SCHEMA = "kindlemaster.chess_exercises.v1"
 
@@ -203,6 +205,7 @@ class ChessExercise:
     diagram: DiagramEvidence | None
     solution: SolutionEvidence | None
     confidence: float
+    solution_match: Mapping[str, Any] | None = None
     warnings: tuple[ValidationWarning, ...] = ()
     correction_trace: tuple[CorrectionTrace, ...] = ()
 
@@ -218,6 +221,7 @@ class ChessExercise:
             "game": self.game.to_dict(),
             "diagram": self.diagram.to_dict() if self.diagram else None,
             "solution": self.solution.to_dict() if self.solution else None,
+            "solution_match": dict(self.solution_match) if self.solution_match else None,
             "validation": {
                 "confidence": self.confidence,
                 "warnings": [warning.to_dict() for warning in self.warnings],
@@ -238,6 +242,7 @@ class ChessExercise:
             diagram=DiagramEvidence.from_dict(diagram) if isinstance(diagram, Mapping) else None,
             solution=SolutionEvidence.from_dict(solution) if isinstance(solution, Mapping) else None,
             confidence=float(validation.get("confidence") or 0.0),
+            solution_match=dict(value.get("solution_match")) if isinstance(value.get("solution_match"), Mapping) else None,
             warnings=tuple(ValidationWarning.from_dict(item) for item in validation.get("warnings") or []),
             correction_trace=tuple(CorrectionTrace.from_dict(item) for item in value.get("correction_trace") or []),
         )
@@ -247,6 +252,7 @@ class ChessExercise:
 class ChessExerciseModel:
     exercises: tuple[ChessExercise, ...]
     warnings: tuple[ValidationWarning, ...] = ()
+    reconciliation: Mapping[str, Any] | None = None
     schema: str = field(default=CHESS_EXERCISE_MODEL_SCHEMA, init=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -257,6 +263,7 @@ class ChessExerciseModel:
                 "warning_count": len(self.warnings) + sum(len(item.warnings) for item in self.exercises),
             },
             "warnings": [warning.to_dict() for warning in self.warnings],
+            "solution_reconciliation": dict(self.reconciliation) if self.reconciliation else None,
             "exercises": [exercise.to_dict() for exercise in self.exercises],
         }
 
@@ -270,11 +277,17 @@ class ChessExerciseModel:
         return cls(
             exercises=tuple(ChessExercise.from_dict(item) for item in value.get("exercises") or []),
             warnings=tuple(ValidationWarning.from_dict(item) for item in value.get("warnings") or []),
+            reconciliation=(
+                dict(value.get("solution_reconciliation"))
+                if isinstance(value.get("solution_reconciliation"), Mapping)
+                else None
+            ),
         )
 
 
 def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerciseModel:
     components: dict[str, dict[str, Mapping[str, Any]]] = {}
+    solution_candidates: list[dict[str, Any]] = []
     order: list[str] = []
     model_warnings: list[ValidationWarning] = []
 
@@ -297,6 +310,9 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                 components[exercise_id] = {}
                 order.append(exercise_id)
             kind = str(block.get("type"))
+            if kind == "solution":
+                solution_candidates.append({**dict(block), "_page_number": page_number})
+                continue
             if kind in components[exercise_id]:
                 model_warnings.append(
                     ValidationWarning(
@@ -308,13 +324,58 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                 continue
             components[exercise_id][kind] = {**dict(block), "_page_number": page_number}
 
+    reconciliation_inputs: list[dict[str, Any]] = []
+    for exercise_id in order:
+        component = components[exercise_id]
+        exercise = component.get("exercise", {})
+        diagram = component.get("diagram", {})
+        reconciliation_inputs.append(
+            {
+                **dict(exercise),
+                "exercise_id": exercise_id,
+                "printed_number": (
+                    exercise.get("printed_number")
+                    or exercise.get("exercise_number")
+                    or diagram.get("printed_number")
+                    or diagram.get("exercise_number")
+                ),
+                "raw_title": (
+                    diagram.get("caption")
+                    or exercise.get("raw_title")
+                    or exercise.get("title")
+                    or exercise.get("game_title")
+                ),
+                "players": exercise.get("players") or diagram.get("players"),
+                "location": exercise.get("location") or diagram.get("location"),
+                "year": exercise.get("year") or diagram.get("year"),
+                "source_page": (
+                    exercise.get("source_page")
+                    or diagram.get("source_page")
+                    or exercise.get("_page_number")
+                    or diagram.get("_page_number")
+                ),
+            }
+        )
+    reconciliation_report = reconcile_exercise_solution_pairs(reconciliation_inputs, solution_candidates)
+    reconciliation_decisions = {
+        decision.exercise_id: decision for decision in reconciliation_report.decisions
+    }
+
     exercises: list[ChessExercise] = []
     for exercise_id in order:
         component = components[exercise_id]
         exercise = component.get("exercise", {})
         diagram = component.get("diagram")
         pgn = component.get("pgn", {})
-        solution = component.get("solution")
+        decision = reconciliation_decisions.get(exercise_id)
+        solution = None
+        if (
+            decision
+            and decision.usable_with_review
+            and decision.selected_solution_index is not None
+            and 0 <= decision.selected_solution_index < len(solution_candidates)
+        ):
+            solution = solution_candidates[decision.selected_solution_index]
         source_page = int(
             exercise.get("source_page")
             or (diagram or {}).get("source_page")
@@ -336,12 +397,61 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
             warnings.append(ValidationWarning("MISSING_DIAGRAM", f"Exercise {exercise_id} has no diagram."))
         if not solution and not str(pgn.get("pgn") or pgn.get("book_line") or "").strip():
             warnings.append(ValidationWarning("MISSING_SOLUTION", f"Exercise {exercise_id} has no solution."))
+        if decision and solution_candidates:
+            if decision.status == "mismatch":
+                warnings.append(
+                    ValidationWarning(
+                        "SOLUTION_TITLE_MISMATCH",
+                        f"Exercise {exercise_id} has no solution with the same canonical number and normalized title.",
+                        severity="error",
+                    )
+                )
+            elif decision.status == "ambiguous":
+                warnings.append(
+                    ValidationWarning(
+                        "AMBIGUOUS_SOLUTION_IDENTITY",
+                        f"Exercise {exercise_id} has more than one plausible canonical solution.",
+                        severity="error",
+                    )
+                )
+            elif decision.status == "unmatched":
+                warnings.append(
+                    ValidationWarning(
+                        "UNMATCHED_SOLUTION_IDENTITY",
+                        f"Exercise {exercise_id} has no canonical solution candidate.",
+                        severity="error",
+                    )
+                )
+            elif decision.status == "legacy_id":
+                warnings.append(
+                    ValidationWarning(
+                        "CANONICAL_SOLUTION_IDENTITY_INCOMPLETE",
+                        f"Exercise {exercise_id} uses same-ID fallback because number or title evidence is incomplete.",
+                        severity="error",
+                    )
+                )
+            elif decision.reassigned:
+                warnings.append(
+                    ValidationWarning(
+                        "SOLUTION_IDENTITY_REASSIGNED",
+                        f"Exercise {exercise_id} was paired to {decision.selected_solution_id} by canonical identity.",
+                    )
+                )
 
         raw_title = str((diagram or {}).get("caption") or exercise.get("raw_title") or "").strip()
         normalized_title = _text(raw_title)
         traces: list[CorrectionTrace] = []
         if raw_title and raw_title != normalized_title:
             traces.append(CorrectionTrace("game.normalized_title", raw_title, normalized_title, "whitespace_normalization"))
+        if decision and decision.reassigned:
+            traces.append(
+                CorrectionTrace(
+                    "solution.exercise_id",
+                    decision.selected_solution_id,
+                    exercise_id,
+                    "canonical_number_and_normalized_title_match",
+                )
+            )
 
         diagram_evidence = None
         if diagram:
@@ -396,12 +506,17 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                 diagram=diagram_evidence,
                 solution=solution_evidence,
                 confidence=confidence,
+                solution_match=decision.to_dict() if decision else None,
                 warnings=tuple(warnings),
                 correction_trace=tuple(traces),
             )
         )
 
-    return ChessExerciseModel(exercises=tuple(exercises), warnings=tuple(model_warnings))
+    return ChessExerciseModel(
+        exercises=tuple(exercises),
+        warnings=tuple(model_warnings),
+        reconciliation=reconciliation_report.to_dict(),
+    )
 
 
 def exercise_to_reader_item(exercise: Mapping[str, Any]) -> dict[str, Any]:

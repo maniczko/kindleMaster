@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from chess_exercise_reconciliation import reconcile_exercise_solution_pairs
+from chess_solution_integrity import SolutionIntegrityReport, analyze_solution_integrity
 
 
 CHESS_EXERCISE_MODEL_SCHEMA = "kindlemaster.chess_exercises.v1"
@@ -206,6 +207,7 @@ class ChessExercise:
     solution: SolutionEvidence | None
     confidence: float
     solution_match: Mapping[str, Any] | None = None
+    solution_integrity: Mapping[str, Any] | None = None
     warnings: tuple[ValidationWarning, ...] = ()
     correction_trace: tuple[CorrectionTrace, ...] = ()
 
@@ -222,6 +224,7 @@ class ChessExercise:
             "diagram": self.diagram.to_dict() if self.diagram else None,
             "solution": self.solution.to_dict() if self.solution else None,
             "solution_match": dict(self.solution_match) if self.solution_match else None,
+            "solution_integrity": dict(self.solution_integrity) if self.solution_integrity else None,
             "validation": {
                 "confidence": self.confidence,
                 "warnings": [warning.to_dict() for warning in self.warnings],
@@ -243,6 +246,11 @@ class ChessExercise:
             solution=SolutionEvidence.from_dict(solution) if isinstance(solution, Mapping) else None,
             confidence=float(validation.get("confidence") or 0.0),
             solution_match=dict(value.get("solution_match")) if isinstance(value.get("solution_match"), Mapping) else None,
+            solution_integrity=(
+                dict(value.get("solution_integrity"))
+                if isinstance(value.get("solution_integrity"), Mapping)
+                else None
+            ),
             warnings=tuple(ValidationWarning.from_dict(item) for item in validation.get("warnings") or []),
             correction_trace=tuple(CorrectionTrace.from_dict(item) for item in value.get("correction_trace") or []),
         )
@@ -253,6 +261,7 @@ class ChessExerciseModel:
     exercises: tuple[ChessExercise, ...]
     warnings: tuple[ValidationWarning, ...] = ()
     reconciliation: Mapping[str, Any] | None = None
+    integrity: Mapping[str, Any] | None = None
     schema: str = field(default=CHESS_EXERCISE_MODEL_SCHEMA, init=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -264,6 +273,7 @@ class ChessExerciseModel:
             },
             "warnings": [warning.to_dict() for warning in self.warnings],
             "solution_reconciliation": dict(self.reconciliation) if self.reconciliation else None,
+            "solution_integrity": dict(self.integrity) if self.integrity else None,
             "exercises": [exercise.to_dict() for exercise in self.exercises],
         }
 
@@ -280,6 +290,11 @@ class ChessExerciseModel:
             reconciliation=(
                 dict(value.get("solution_reconciliation"))
                 if isinstance(value.get("solution_reconciliation"), Mapping)
+                else None
+            ),
+            integrity=(
+                dict(value.get("solution_integrity"))
+                if isinstance(value.get("solution_integrity"), Mapping)
                 else None
             ),
         )
@@ -362,6 +377,7 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
     }
 
     exercises: list[ChessExercise] = []
+    integrity_records = []
     for exercise_id in order:
         component = components[exercise_id]
         exercise = component.get("exercise", {})
@@ -491,6 +507,42 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                     commentary=str((solution or {}).get("commentary") or ""),
                 )
 
+        exercise_number = (
+            exercise.get("printed_number")
+            or exercise.get("exercise_number")
+            or (diagram or {}).get("printed_number")
+            or (diagram or {}).get("exercise_number")
+        )
+        integrity_record = analyze_solution_integrity(
+            exercise_id=exercise_id,
+            exercise_number=exercise_number,
+            source_page=source_page,
+            solution_page=(solution_evidence.source_page_number if solution_evidence else source_page),
+            text=(
+                solution_evidence.normalized_notation or solution_evidence.raw_text
+                if solution_evidence
+                else ""
+            ),
+            expected_side_to_move=(diagram_evidence.side_to_move if diagram_evidence else "unknown"),
+            expected_first_move_number=(
+                (solution or {}).get("expected_first_move_number")
+                or (solution or {}).get("first_move_number")
+                or (diagram or {}).get("expected_first_move_number")
+                or (diagram or {}).get("first_move_number")
+            ),
+        )
+        integrity_records.append(integrity_record)
+        for finding in integrity_record.findings:
+            if finding.code == "MISSING_SOLUTION_TEXT" and not solution_evidence:
+                continue
+            warnings.append(
+                ValidationWarning(
+                    finding.code,
+                    finding.message,
+                    severity=finding.severity,
+                )
+            )
+
         confidence_values = [value for value in ((diagram_evidence.fen_confidence if diagram_evidence else None),) if value is not None]
         confidence = min(confidence_values) if confidence_values else (1.0 if not warnings else 0.0)
         exercises.append(
@@ -507,6 +559,7 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
                 solution=solution_evidence,
                 confidence=confidence,
                 solution_match=decision.to_dict() if decision else None,
+                solution_integrity=integrity_record.to_dict(),
                 warnings=tuple(warnings),
                 correction_trace=tuple(traces),
             )
@@ -516,6 +569,7 @@ def build_chess_exercise_model(pages: Iterable[Mapping[str, Any]]) -> ChessExerc
         exercises=tuple(exercises),
         warnings=tuple(model_warnings),
         reconciliation=reconciliation_report.to_dict(),
+        integrity=SolutionIntegrityReport(records=tuple(integrity_records)).to_dict(),
     )
 
 
@@ -523,6 +577,7 @@ def exercise_to_reader_item(exercise: Mapping[str, Any]) -> dict[str, Any]:
     source = exercise.get("source") if isinstance(exercise.get("source"), Mapping) else {}
     diagram = exercise.get("diagram") if isinstance(exercise.get("diagram"), Mapping) else {}
     solution = exercise.get("solution") if isinstance(exercise.get("solution"), Mapping) else {}
+    integrity = exercise.get("solution_integrity") if isinstance(exercise.get("solution_integrity"), Mapping) else {}
     exercise_id = str(exercise.get("exercise_id") or "")
     return {
         "exercise_id": exercise_id,
@@ -542,4 +597,10 @@ def exercise_to_reader_item(exercise: Mapping[str, Any]) -> dict[str, Any]:
         "variations": list(solution.get("variations") or []),
         "commentary": str(solution.get("commentary") or ""),
         "solution_page": int(solution.get("source_page_number") or 0),
+        "solution_integrity_status": str(integrity.get("status") or "unknown"),
+        "solution_integrity_findings": [
+            str(item.get("code") or "")
+            for item in integrity.get("findings") or []
+            if isinstance(item, Mapping) and item.get("code")
+        ],
     }

@@ -8,6 +8,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from chess_exercise_navigation import validate_internal_links
+
 GATE_SCHEMA = "kindlemaster.chess.semantic_release_gate.v1"
 MODES = {"development", "strict", "release"}
 DEFAULT_ALLOWED_WARNINGS = frozenset({
@@ -184,12 +186,10 @@ class _DocumentParser(HTMLParser):
 
 
 def _validate_documents(documents: Mapping[str, str]) -> list[GateFinding]:
-    parsers: dict[str, _DocumentParser] = {}
     findings: list[GateFinding] = []
     for name, body in documents.items():
         parser = _DocumentParser()
         parser.feed(str(body or ""))
-        parsers[str(name)] = parser
         for item in parser.list_item_text:
             if re.match(r"^\d+\.(?:\.\.)?\s*[KQRBNOa-h]", item):
                 findings.append(
@@ -199,23 +199,25 @@ def _validate_documents(documents: Mapping[str, str]) -> list[GateFinding]:
                         source=str(name),
                     )
                 )
-    all_ids = {name: parser.ids for name, parser in parsers.items()}
-    for name, parser in parsers.items():
-        for href in parser.hrefs:
-            if href.startswith(("http:", "https:", "mailto:", "data:", "javascript:")) or "#" not in href:
-                continue
-            path, fragment = href.split("#", 1)
-            target = path or name
-            if target not in all_ids or fragment not in all_ids[target]:
-                findings.append(
-                    _finding(
-                        "ORPHAN_INTERNAL_FRAGMENT",
-                        f"{name} links to missing target {href}.",
-                        source=name,
-                    )
-                )
-    return findings
 
+    link_report = validate_internal_links(documents)
+    for duplicate in link_report.duplicate_anchors:
+        findings.append(
+            _finding(
+                "DUPLICATE_INTERNAL_ANCHOR",
+                f"Duplicate internal anchor: {duplicate}.",
+                source=duplicate.split("#", 1)[0],
+            )
+        )
+    for orphan in link_report.orphan_hrefs:
+        findings.append(
+            _finding(
+                "ORPHAN_INTERNAL_FRAGMENT",
+                f"Internal link has no matching target: {orphan}.",
+                source=orphan.split(" -> ", 1)[0],
+            )
+        )
+    return findings
 
 def _warning_codes(
     semantic_book: Mapping[str, Any], exercises: list[Mapping[str, Any]]

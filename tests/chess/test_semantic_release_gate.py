@@ -139,6 +139,25 @@ class SemanticReleaseGateTests(unittest.TestCase):
         report = evaluate_semantic_release_gate(payload, mode="strict")
         self.assertTrue(any(item.code == "ORPHAN_SEMANTIC_CONTENT" for item in report.findings))
 
+    def test_cross_directory_fragments_use_canonical_validator(self) -> None:
+        report = evaluate_semantic_release_gate(
+            book(accepted_exercise()),
+            mode="strict",
+            documents={
+                "exercises/chapter.xhtml": (
+                    '<article id="exercise-ex-1-1">'
+                    '<a href="../solutions/chapter.xhtml#solution-ex-1-1">solution</a>'
+                    '</article>'
+                ),
+                "solutions/chapter.xhtml": (
+                    '<section id="solution-ex-1-1">'
+                    '<a href="../exercises/chapter.xhtml#exercise-ex-1-1">back</a>'
+                    '</section>'
+                ),
+            },
+        )
+        self.assertFalse(any(item.code == "ORPHAN_INTERNAL_FRAGMENT" for item in report.findings))
+
     def test_orphan_fragment_is_blocked(self) -> None:
         report = evaluate_semantic_release_gate(
             book(accepted_exercise()),

@@ -14,6 +14,17 @@ _AMBIGUITY_MARGIN = 0.02
 _NUMBER_PATTERN = re.compile(r"^\D*(\d{1,4})\D*$")
 _YEAR_PATTERN = re.compile(r"\b(18\d{2}|19\d{2}|20\d{2})\b")
 _PLAYER_SPLIT_PATTERN = re.compile(r"\s+(?:-|–|—|vs\.?|v\.?)\s+", re.IGNORECASE)
+_IDENTITY_TRANSLITERATION = str.maketrans(
+    {
+        "ł": "l",
+        "đ": "d",
+        "ð": "d",
+        "þ": "th",
+        "æ": "ae",
+        "œ": "oe",
+        "ø": "o",
+    }
+)
 
 
 def _text(value: Any) -> str:
@@ -21,7 +32,7 @@ def _text(value: Any) -> str:
 
 
 def normalize_identity_text(value: Any) -> str:
-    raw = unicodedata.normalize("NFKD", _text(value).casefold())
+    raw = unicodedata.normalize("NFKD", _text(value).casefold().translate(_IDENTITY_TRANSLITERATION))
     without_marks = "".join(character for character in raw if not unicodedata.combining(character))
     normalized = re.sub(r"[^a-z0-9]+", " ", without_marks)
     return re.sub(r"\s+", " ", normalized).strip()

@@ -34,6 +34,8 @@ Each `ChessExercise` also exposes `solution_match` and reconciliation warnings.
 
 ## Validation scope
 
+Focused reconciliation tests live under `tests/chess` so they remain isolated from the repository's historical root-level test registry and governance coverage accounting. The dedicated Python 3.12/3.14 workflow runs them together with the existing semantic-model and chess-pipeline compatibility tests.
+
 Committed fixtures cover:
 
 - exact matches;

@@ -1,0 +1,43 @@
+name: Apply issue 321 model integration
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply model integration
+        run: python .github/scripts/apply_issue_321_model_integration.py
+
+      - name: Validate focused contracts
+        run: |
+          python -m unittest -v \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            test_chess_study_data_contracts
+
+      - name: Remove one-time patch machinery
+        run: |
+          rm .github/scripts/apply_issue_321_model_integration.py
+          rm .github/workflows/apply-issue-321-model-integration.yml
+
+      - name: Commit integrated model
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Integrate solution integrity evidence (#321)"
+          git push origin HEAD:${{ github.head_ref }}

@@ -18,6 +18,9 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+
       - name: Apply model and renderer integration
         run: python .github/scripts/apply_issue_326_navigation_integration.py
 

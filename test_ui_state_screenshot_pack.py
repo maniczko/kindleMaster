@@ -496,7 +496,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             lambda route: route.fulfill(status=200, content_type="application/json", body=_json_body(status_payload)),
         )
         page.route(
-            f"**/convert/download/{job_id}",
+            f"**/convert/download/{job_id}**",
             lambda route: route.fulfill(
                 status=200,
                 headers={

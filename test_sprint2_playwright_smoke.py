@@ -389,7 +389,7 @@ class Sprint2PlaywrightRuntimeSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            f"**/convert/download/{job_id}",
+            f"**/convert/download/{job_id}**",
             lambda route: (
                 evidence.__setitem__("download_attempted", True),
                 route.fulfill(

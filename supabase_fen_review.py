@@ -76,6 +76,18 @@ DATABASE_ROW_FIELDS = frozenset(
 )
 
 
+class SupabaseFenReviewConflictError(RuntimeError):
+    pass
+
+
+class SupabaseFenReviewSessionClosedError(RuntimeError):
+    pass
+
+
+class SupabaseFenReviewOwnershipError(RuntimeError):
+    pass
+
+
 class SupabaseFenReviewClient:
     def __init__(
         self,
@@ -90,22 +102,52 @@ class SupabaseFenReviewClient:
     def available(self) -> bool:
         return self.config.enabled and self.config.configured
 
-    def load_review(self, *, artifact_id: str) -> dict[str, Any] | None:
+    def load_review(
+        self,
+        *,
+        artifact_id: str,
+        source_document_sha256: str = "",
+        owner_user_id: str = "",
+    ) -> dict[str, Any] | None:
         self._ensure_available()
-        session_query = urllib.parse.urlencode(
-            {
-                "artifact_id": f"eq.{artifact_id}",
-                "select": "artifact_id,source_document_sha256,schema_version,status,summary,row_count,saved_at",
-                "limit": "1",
-            }
-        )
+        session_filters = {
+            "artifact_id": f"eq.{artifact_id}",
+            "select": (
+                "artifact_id,source_document_sha256,schema_version,status,summary,"
+                "row_count,revision,saved_at,closed_at"
+            ),
+            "limit": "1",
+        }
+        if owner_user_id:
+            # Legacy ownerless sessions may be claimed once; owned sessions stay private.
+            session_filters["or"] = f"(owner_user_id.eq.{owner_user_id},owner_user_id.is.null)"
+        session_query = urllib.parse.urlencode(session_filters)
         sessions = self._request(f"/rest/v1/chess_fen_review_sessions?{session_query}", method="GET")
+        reused_from_artifact_id = ""
+        if (not isinstance(sessions, list) or not sessions) and source_document_sha256 and owner_user_id:
+            reuse_query = urllib.parse.urlencode(
+                {
+                    "source_document_sha256": f"eq.{source_document_sha256}",
+                    "owner_user_id": f"eq.{owner_user_id}",
+                    "select": (
+                        "artifact_id,source_document_sha256,schema_version,status,summary,"
+                        "row_count,revision,saved_at,closed_at"
+                    ),
+                    "order": "updated_at.desc",
+                    "limit": "1",
+                }
+            )
+            sessions = self._request(f"/rest/v1/chess_fen_review_sessions?{reuse_query}", method="GET")
+            if isinstance(sessions, list) and sessions:
+                reused_from_artifact_id = str(sessions[0].get("artifact_id") or "")
         if not isinstance(sessions, list) or not sessions:
             return None
 
+        label_artifact_id = reused_from_artifact_id or artifact_id
+
         label_query = urllib.parse.urlencode(
             {
-                "artifact_id": f"eq.{artifact_id}",
+                "artifact_id": f"eq.{label_artifact_id}",
                 "select": "row_payload",
                 "order": "review_index.asc.nullslast,diagram_fingerprint.asc",
             }
@@ -125,11 +167,15 @@ class SupabaseFenReviewClient:
         return {
             "schema": str(session.get("schema_version") or "kindlemaster.fen_review_progress.v1"),
             "status": str(session.get("status") or "active"),
+            "session_status": str(session.get("status") or "active"),
+            "revision": int(session.get("revision") or 0),
+            "closed_at": str(session.get("closed_at") or ""),
             "source_document_sha256": str(session.get("source_document_sha256") or ""),
             "rows": rows,
             "summary": dict(session.get("summary") or {}),
             "saved_at": str(session.get("saved_at") or ""),
             "storage": "database",
+            "reused_from_artifact_id": reused_from_artifact_id,
         }
 
     def save_review(
@@ -140,21 +186,37 @@ class SupabaseFenReviewClient:
         rows: Sequence[Mapping[str, Any]],
         summary: Mapping[str, Any],
         owner_user_id: str = "",
+        expected_revision: int = 0,
+        action: str = "save",
+        change_source: str = "autosave",
     ) -> dict[str, Any]:
         self._ensure_available()
         saved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        result = self._request(
-            f"/rest/v1/rpc/{SAVE_REVIEW_RPC}",
-            method="POST",
-            payload={
-                "p_artifact_id": artifact_id,
-                "p_owner_user_id": owner_user_id or None,
-                "p_source_document_sha256": source_document_sha256,
-                "p_rows": [_database_row(row) for row in rows],
-                "p_summary": dict(summary),
-                "p_saved_at": saved_at,
-            },
-        )
+        try:
+            result = self._request(
+                f"/rest/v1/rpc/{SAVE_REVIEW_RPC}",
+                method="POST",
+                payload={
+                    "p_artifact_id": artifact_id,
+                    "p_owner_user_id": owner_user_id or None,
+                    "p_source_document_sha256": source_document_sha256,
+                    "p_rows": [_database_row(row) for row in rows],
+                    "p_summary": dict(summary),
+                    "p_saved_at": saved_at,
+                    "p_expected_revision": int(expected_revision),
+                    "p_action": action,
+                    "p_change_source": change_source,
+                },
+            )
+        except Exception as error:
+            message = str(error)
+            if "fen_review_revision_conflict" in message:
+                raise SupabaseFenReviewConflictError(message) from error
+            if "fen_review_session_closed" in message:
+                raise SupabaseFenReviewSessionClosedError(message) from error
+            if "fen_review_owner_mismatch" in message:
+                raise SupabaseFenReviewOwnershipError(message) from error
+            raise
         if not isinstance(result, Mapping):
             raise RuntimeError("supabase_fen_review_invalid_save_response")
         payload = dict(result)
@@ -166,6 +228,8 @@ class SupabaseFenReviewClient:
                 "submitted_count": len(rows),
                 "summary": dict(payload.get("summary") or summary),
                 "storage": "database",
+                "session_status": str(payload.get("session_status") or "active"),
+                "revision": int(payload.get("revision") or expected_revision),
             }
         )
         return payload

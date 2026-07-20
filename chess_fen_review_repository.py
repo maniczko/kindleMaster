@@ -5,13 +5,21 @@ from pathlib import Path
 from typing import Any
 
 from chess_fen_review_store import (
+    FenReviewConflictError,
+    FenReviewOwnershipError,
+    FenReviewSessionClosedError,
     FenReviewStoreError,
     load_fen_review_progress,
     persist_fen_review_progress_snapshot,
     prepare_fen_review_progress,
     save_fen_review_progress,
 )
-from supabase_fen_review import SupabaseFenReviewClient
+from supabase_fen_review import (
+    SupabaseFenReviewClient,
+    SupabaseFenReviewConflictError,
+    SupabaseFenReviewOwnershipError,
+    SupabaseFenReviewSessionClosedError,
+)
 
 
 class ChessFenReviewRepository:
@@ -20,10 +28,12 @@ class ChessFenReviewRepository:
         review_dir: str | Path,
         *,
         artifact_id: str,
+        owner_user_id: str = "",
         cloud_client: SupabaseFenReviewClient | None = None,
     ) -> None:
         self.review_dir = Path(review_dir)
         self.artifact_id = str(artifact_id or "").strip()
+        self.owner_user_id = str(owner_user_id or "").strip()
         self.cloud_client = cloud_client or SupabaseFenReviewClient()
 
     def load(self) -> dict[str, Any]:
@@ -31,7 +41,15 @@ class ChessFenReviewRepository:
         if not self.cloud_client.available:
             return local_payload
         try:
-            database_payload = self.cloud_client.load_review(artifact_id=self.artifact_id)
+            load_options = {"artifact_id": self.artifact_id}
+            if self.owner_user_id:
+                load_options.update(
+                    {
+                        "source_document_sha256": _source_digest(local_payload["rows"]),
+                        "owner_user_id": self.owner_user_id,
+                    }
+                )
+            database_payload = self.cloud_client.load_review(**load_options)
         except Exception:
             return {
                 **local_payload,
@@ -48,12 +66,22 @@ class ChessFenReviewRepository:
         database_digest = str(database_payload.get("source_document_sha256") or "")
         if expected_digest and database_digest != expected_digest:
             raise FenReviewStoreError("SHA raportu w bazie nie zgadza się z artefaktem źródłowym.")
-        return load_fen_review_progress(
+        payload = load_fen_review_progress(
             self.review_dir,
             persisted_rows=database_payload["rows"],
             persisted_saved_at=str(database_payload.get("saved_at") or ""),
             storage="database",
         )
+        reused_from_artifact_id = str(database_payload.get("reused_from_artifact_id") or "")
+        payload.update(
+            {
+                "revision": 0 if reused_from_artifact_id else int(database_payload.get("revision") or 0),
+                "session_status": "active" if reused_from_artifact_id else str(database_payload.get("session_status") or "active"),
+                "closed_at": "" if reused_from_artifact_id else str(database_payload.get("closed_at") or ""),
+                "reused_from_artifact_id": reused_from_artifact_id,
+            }
+        )
+        return payload
 
     def save(
         self,
@@ -61,8 +89,15 @@ class ChessFenReviewRepository:
         *,
         source_digest: str = "",
         owner_user_id: str = "",
+        expected_revision: int = 0,
+        action: str = "save",
+        change_source: str = "autosave",
     ) -> dict[str, Any]:
+        if action not in {"save", "close", "reopen"}:
+            raise FenReviewStoreError("Nieznana akcja sesji oznaczania.")
         if not self.cloud_client.available:
+            if action != "save":
+                raise FenReviewStoreError("Zamknięcie i ponowne otwarcie zestawu wymaga działającej bazy danych.")
             return save_fen_review_progress(
                 self.review_dir,
                 submitted_rows,
@@ -71,7 +106,10 @@ class ChessFenReviewRepository:
             )
 
         try:
-            existing = self.cloud_client.load_review(artifact_id=self.artifact_id)
+            existing = self.cloud_client.load_review(
+                artifact_id=self.artifact_id,
+                owner_user_id=owner_user_id,
+            )
             prepared = prepare_fen_review_progress(
                 self.review_dir,
                 submitted_rows,
@@ -79,16 +117,32 @@ class ChessFenReviewRepository:
                 source_digest=source_digest,
                 existing_rows=existing["rows"] if existing else None,
             )
+            if action == "close" and (
+                int(prepared["summary"].get("pending") or 0) > 0
+                or int(prepared["summary"].get("invalid") or 0) > 0
+            ):
+                raise FenReviewStoreError("Zestaw można zamknąć dopiero po poprawnym zakończeniu wszystkich diagramów.")
             database_payload = self.cloud_client.save_review(
                 artifact_id=self.artifact_id,
                 source_document_sha256=str(prepared["source_document_sha256"]),
                 rows=prepared["rows"],
                 summary=prepared["summary"],
                 owner_user_id=owner_user_id,
+                expected_revision=expected_revision,
+                action=action,
+                change_source=change_source,
             )
+        except SupabaseFenReviewConflictError as error:
+            raise FenReviewConflictError("Zapis jest nieaktualny. Wczytaj nowszą wersję przed ponowną próbą.") from error
+        except SupabaseFenReviewSessionClosedError as error:
+            raise FenReviewSessionClosedError("Zestaw jest zamknięty. Otwórz go ponownie przed edycją.") from error
+        except SupabaseFenReviewOwnershipError as error:
+            raise FenReviewOwnershipError("Zestaw należy do innego użytkownika.") from error
         except FenReviewStoreError:
             raise
-        except Exception:
+        except Exception as error:
+            if action != "save":
+                raise FenReviewStoreError("Nie udało się zapisać stanu zestawu w bazie danych.") from error
             fallback = save_fen_review_progress(
                 self.review_dir,
                 submitted_rows,

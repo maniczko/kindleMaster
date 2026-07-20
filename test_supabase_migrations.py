@@ -57,6 +57,36 @@ class SupabaseMigrationTests(unittest.TestCase):
         self.assertIn("label_status = 'verified'", sql)
         self.assertIn("piece_labels_verified is true", sql)
 
+    def test_fen_review_versioning_is_revision_guarded_and_owner_scoped(self) -> None:
+        migration = Path("supabase/migrations/20260720095704_version_chess_fen_review_labels.sql")
+        self.assertTrue(migration.exists(), "Supabase FEN review versioning migration is missing.")
+        sql = migration.read_text(encoding="utf-8").lower()
+
+        for table in ("chess_fen_review_label_history", "chess_fen_dataset_versions"):
+            self.assertIn(f"create table if not exists public.{table}", sql)
+            self.assertIn(f"alter table public.{table} enable row level security", sql)
+        self.assertIn("fen_review_revision_conflict", sql)
+        self.assertIn("fen_review_close_requires_complete_valid_rows", sql)
+        self.assertIn("previous_payload jsonb", sql)
+        self.assertIn("new_payload jsonb not null", sql)
+        self.assertIn("(select auth.uid()) = owner_user_id", sql)
+        self.assertIn("p_expected_revision bigint", sql)
+        self.assertIn("pg_advisory_xact_lock", sql)
+        self.assertIn("security invoker", sql)
+        self.assertNotIn("security definer", sql)
+
+    def test_fen_review_owner_foreign_keys_are_indexed(self) -> None:
+        migration = Path("supabase/migrations/20260720095829_index_chess_fen_review_ownership.sql")
+        self.assertTrue(migration.exists(), "Supabase FEN review ownership index migration is missing.")
+        sql = migration.read_text(encoding="utf-8").lower()
+
+        self.assertIn("chess_fen_review_sessions_owner_source_updated_idx", sql)
+        self.assertIn("owner_user_id", sql)
+        self.assertIn("source_document_sha256", sql)
+        self.assertIn("chess_fen_review_sessions_closed_by_idx", sql)
+        self.assertIn("closed_by_user_id", sql)
+        self.assertIn("chess_fen_dataset_versions_owner_created_idx", sql)
+
     def test_evidence_review_queue_is_backend_only_and_revision_guarded(self) -> None:
         migration = Path("supabase/migrations/20260717150334_chess_evidence_review_queue.sql")
         self.assertTrue(migration.exists(), "Supabase evidence review migration is missing.")

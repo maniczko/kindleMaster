@@ -1413,6 +1413,8 @@ class AppAsyncConvertTests(unittest.TestCase):
         rebuilt = app_module._rebuild_job_from_local_artifact_dir(job_dir)
 
         self.assertIsNotNone(rebuilt)
+        self.assertTrue(rebuilt["recovered_from_artifacts"])
+        self.assertTrue(rebuilt["restored_from_artifacts"])
         artifacts = rebuilt["artifacts"]
         self.assertEqual(artifacts["chess_pgn_html"]["filename"], "chess_games.html")
         self.assertEqual(artifacts["chess_glyph_diagnostics"]["filename"], "chess_glyph_diagnostics.json")

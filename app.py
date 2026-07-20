@@ -2288,6 +2288,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
             "error": str(report_job.get("error") or ""),
             "error_code": str(report_job.get("error_code") or ""),
             "artifact_storage": _artifact_storage_status(),
+            "recovered_from_artifacts": True,
             "restored_from_artifacts": True,
         }
     )
@@ -4917,7 +4918,7 @@ def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool
             source_path = _normalize_temp_artifact_path(job.get("source_path", ""))
             output_path = _normalize_temp_artifact_path(job.get("output_path", ""))
 
-            if job.get("recovered_from_artifacts"):
+            if job.get("recovered_from_artifacts") or job.get("restored_from_artifacts"):
                 if source_path:
                     active_paths.add(source_path)
                 if output_path:

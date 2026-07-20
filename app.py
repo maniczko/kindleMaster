@@ -4039,6 +4039,35 @@ def _load_supabase_conversion_jobs(token: str, user_id: str, *, limit: int) -> d
     return jobs
 
 
+def _delete_supabase_conversion_job(token: str, user_id: str, job_id: str) -> dict:
+    if not token or not user_id or not job_id:
+        return {"status": "skipped", "provider": "supabase", "reason": "missing_identity_or_job"}
+    query = (
+        "/rest/v1/conversion_jobs"
+        f"?job_id=eq.{quote(job_id, safe='')}"
+        f"&user_id=eq.{quote(user_id, safe='')}"
+    )
+    status, payload = _supabase_request_json(
+        query,
+        token=token,
+        method="DELETE",
+        prefer="return=representation",
+    )
+    if status in {200, 204}:
+        deleted = isinstance(payload, list) and bool(payload)
+        return {
+            "status": "deleted" if deleted else "missing",
+            "provider": "supabase",
+            "http_status": status,
+        }
+    return {
+        "status": "failed",
+        "provider": "supabase",
+        "http_status": status,
+        "error": "conversion_job_delete_failed",
+    }
+
+
 def _merge_cloud_jobs_into_store_for_request(*, limit: int | None = None) -> dict:
     user, token = _authenticated_request_context()
     if not user or not token:
@@ -5629,7 +5658,37 @@ def convert_job_delete(job_id: str):
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
+    cloud_user, cloud_token = _authenticated_request_context()
+    if not job and cloud_user and cloud_token:
+        _merge_cloud_jobs_into_store_for_request(limit=_resolve_conversion_job_history_limit())
+        job = _get_conversion_job(job_id)
     if not job:
+        if cloud_user and cloud_token:
+            cloud_delete = _delete_supabase_conversion_job(
+                cloud_token,
+                str(cloud_user.get("id") or ""),
+                job_id,
+            )
+            if cloud_delete.get("status") != "failed":
+                response = jsonify(
+                    {
+                        "success": True,
+                        "job_id": job_id,
+                        "status": "already_missing",
+                        "cleanup": {"status": "skipped", "reason": "job_missing"},
+                        "cloud_delete": cloud_delete,
+                    }
+                )
+                apply_no_store_headers(response.headers)
+                return response
+            return _json_error(
+                "Nie udalo sie usunac publikacji z biblioteki.",
+                error_code="conversion_job_cloud_delete_failed",
+                status_code=502,
+                phase="delete",
+                job_id=job_id,
+                retryable=True,
+            )
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -5647,6 +5706,23 @@ def convert_job_delete(job_id: str):
             retryable=True,
         )
 
+    cloud_delete = {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
+    if cloud_user and cloud_token:
+        cloud_delete = _delete_supabase_conversion_job(
+            cloud_token,
+            str(cloud_user.get("id") or ""),
+            job_id,
+        )
+        if cloud_delete.get("status") == "failed":
+            return _json_error(
+                "Nie udalo sie usunac publikacji z biblioteki.",
+                error_code="conversion_job_cloud_delete_failed",
+                status_code=502,
+                phase="delete",
+                job_id=job_id,
+                retryable=True,
+            )
+
     deleted = _CONVERSION_JOB_STORE.delete(job_id)
     if not deleted:
         return _json_error(
@@ -5658,12 +5734,6 @@ def convert_job_delete(job_id: str):
         )
 
     cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted)
-    cloud_user, cloud_token = _authenticated_request_context()
-    cloud_delete = (
-        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
-        if cloud_user and cloud_token
-        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
-    )
     behavior_signal = _record_user_behavior_signal_safely(
         job_id=job_id,
         job=deleted,

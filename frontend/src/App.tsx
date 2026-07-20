@@ -583,13 +583,23 @@ function App() {
     const label = jobDisplayName(job) || "tę publikację";
     const confirmed = window.confirm(`Usunąć publikację „${label}” z biblioteki? Tej operacji nie można cofnąć.`);
     if (!confirmed) return;
-    const response = await apiFetch(`/convert/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.success === false) {
-      throw new Error(payload.error || "Nie udało się usunąć publikacji.");
+    try {
+      const response = await apiFetch(`/convert/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 404) {
+        setJobs((current) => current.filter((item) => item.job_id !== job.job_id));
+        setActiveJob((current) => (current?.job_id === job.job_id ? null : current));
+        setError("Publikacja nie istnieje juz na serwerze. Usunieto nieaktualny wpis z biblioteki.");
+        return;
+      }
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.error || "Nie udało się usunąć publikacji.");
+      }
+      setJobs((current) => current.filter((item) => item.job_id !== job.job_id));
+      setActiveJob((current) => (current?.job_id === job.job_id ? null : current));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Nie udalo sie usunac publikacji.");
     }
-    setJobs((current) => current.filter((item) => item.job_id !== job.job_id));
-    setActiveJob((current) => (current?.job_id === job.job_id ? null : current));
   }
 
   async function pollJob(jobId: string, seed: ConversionJobPayload): Promise<ConversionJobPayload> {

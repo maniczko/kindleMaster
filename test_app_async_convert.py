@@ -1238,6 +1238,67 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIsNotNone(app_module._get_conversion_job(job_id))
 
+    def test_delete_missing_cloud_job_is_idempotent_for_authenticated_library(self) -> None:
+        job_id = "cloud-only-delete-job"
+        with patch("app._authenticated_request_context", return_value=({"id": "user-1"}, "unit-token")), patch(
+            "app._merge_cloud_jobs_into_store_for_request",
+            return_value={"status": "synced", "provider": "supabase", "imported": 0},
+        ), patch(
+            "app._delete_supabase_conversion_job",
+            return_value={"status": "missing", "provider": "supabase", "http_status": 200},
+        ) as cloud_delete:
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["status"], "already_missing")
+        cloud_delete.assert_called_once_with("unit-token", "user-1", job_id)
+
+    def test_delete_cloud_job_rehydrates_before_removing_it(self) -> None:
+        job_id = "rehydrated-cloud-delete-job"
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="cloud.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        job["status"] = "ready"
+
+        def hydrate_cloud_job(**_kwargs) -> dict:
+            app_module._CONVERSION_JOB_STORE.create(job)
+            return {"status": "synced", "provider": "supabase", "imported": 1}
+
+        with patch("app._authenticated_request_context", return_value=({"id": "user-1"}, "unit-token")), patch(
+            "app._merge_cloud_jobs_into_store_for_request",
+            side_effect=hydrate_cloud_job,
+        ), patch(
+            "app._delete_supabase_conversion_job",
+            return_value={"status": "deleted", "provider": "supabase", "http_status": 200},
+        ) as cloud_delete:
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "deleted")
+        self.assertIsNone(app_module._get_conversion_job(job_id))
+        cloud_delete.assert_called_once_with("unit-token", "user-1", job_id)
+
+    def test_delete_supabase_conversion_job_uses_owner_scoped_query(self) -> None:
+        with patch(
+            "app._supabase_request_json",
+            return_value=(200, [{"job_id": "cloud-delete-job"}]),
+        ) as request_json:
+            result = app_module._delete_supabase_conversion_job("unit-token", "user-1", "cloud-delete-job")
+
+        self.assertEqual(result["status"], "deleted")
+        request_json.assert_called_once_with(
+            "/rest/v1/conversion_jobs?job_id=eq.cloud-delete-job&user_id=eq.user-1",
+            token="unit-token",
+            method="DELETE",
+            prefer="return=representation",
+        )
+
     def test_convert_library_filters_ready_jobs_and_exposes_report_links(self) -> None:
         now = datetime.now(UTC)
         ready_id = "library-ready-job"

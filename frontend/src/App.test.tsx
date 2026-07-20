@@ -1995,6 +1995,53 @@ describe("Premium React shell", () => {
     confirmSpy.mockRestore();
   });
 
+  it("dismisses a stale library publication when its delete endpoint returns 404", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/convert/jobs/stale-job" && init?.method === "DELETE") {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({ success: false, error: "Nie znaleziono zadania konwersji." }),
+        };
+      }
+      if (url.startsWith("/convert/jobs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                job_id: "stale-job",
+                filename: "stale-job.pdf",
+                source_type: "pdf",
+                status: "ready",
+                output_size_bytes: 2048,
+                quality_state: { release_verdict: "release_ready", premium_ready: true },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/user/profile") {
+        return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      }
+      if (url === "/convert/delivery/config") {
+        return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
+    await user.click(await screen.findByRole("button", { name: "Usuń publikację stale-job.pdf" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "stale-job.pdf" })).not.toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledWith("/convert/jobs/stale-job", expect.objectContaining({ method: "DELETE" }));
+    confirmSpy.mockRestore();
+  });
+
   it("lets file details send the final EPUB to Kindle and hides the details report card", async () => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

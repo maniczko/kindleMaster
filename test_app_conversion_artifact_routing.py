@@ -1099,6 +1099,8 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             archive.writestr(f"{crop_root}/{overlay_name}", self.TEST_PNG)
             archive.writestr("../../outside.png", self.TEST_PNG)
             archive.writestr(f"{crop_root}/unexpected.txt", b"not an image")
+            for index in range(3_127):
+                archive.writestr(f"reports/support-{index:04d}.json", b"{}")
         semantic_index.write_text(
             f"""
             <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
@@ -1137,7 +1139,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(health["missing_optional_asset_count"], 0)
         self.assertEqual(health["asset_recovery"]["status"], "recovered")
         self.assertEqual(health["asset_recovery"]["recovered_count"], 3)
-        self.assertEqual(health["asset_recovery"]["ignored_count"], 2)
+        self.assertEqual(health["asset_recovery"]["ignored_count"], 3_129)
         self.assertFalse((job_root / "outside.png").exists())
         mtimes = {path.name: path.stat().st_mtime_ns for path in target_dir.glob("*.png")}
 

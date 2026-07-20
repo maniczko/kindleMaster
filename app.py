@@ -640,7 +640,7 @@ _TWO_CROP_REVIEW_ZIP_NAME = "chess_fen_two_crop_review_artifacts.zip"
 _TWO_CROP_REVIEW_MEMBER_RE = re.compile(
     r"review/chess_fen/two_crop/(?P<filename>[A-Za-z0-9_.-]+_(?P<kind>board|marker|overlay)\.png)"
 )
-_TWO_CROP_RECOVERY_MAX_MEMBERS = 2_000
+_TWO_CROP_RECOVERY_MAX_MEMBERS = 4_096
 _TWO_CROP_RECOVERY_MAX_MEMBER_BYTES = 20 * 1024 * 1024
 _TWO_CROP_RECOVERY_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _TWO_CROP_RECOVERY_MAX_COMPRESSION_RATIO = 200

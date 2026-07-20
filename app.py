@@ -3839,6 +3839,87 @@ def _save_supabase_conversion_job(token: str, user_id: str, job_id: str, job: di
     return {"status": "synced", "provider": "supabase", "error": ""}
 
 
+def _delete_supabase_conversion_job(token: str, user_id: str, job_id: str) -> dict:
+    """Delete one owned cloud job and its stored artifacts without orphaning history rows."""
+    if not token or not user_id or not job_id:
+        return {"status": "skipped", "provider": "supabase", "reason": "missing_identity"}
+
+    artifact_path = (
+        "/rest/v1/conversion_artifacts"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        f"&job_id=eq.{quote(job_id, safe='')}"
+        "&select=storage_bucket,storage_path"
+    )
+    artifact_status, artifact_payload = _supabase_request_json(artifact_path, token=token)
+    if artifact_status != 200 or not isinstance(artifact_payload, list):
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "error": f"artifact_lookup_failed_{artifact_status}",
+        }
+
+    paths_by_bucket: dict[str, list[str]] = {}
+    for artifact in artifact_payload:
+        if not isinstance(artifact, dict):
+            continue
+        bucket = str(artifact.get("storage_bucket") or SUPABASE_ARTIFACT_BUCKET).strip()
+        storage_path = str(artifact.get("storage_path") or "").strip()
+        if not bucket or not storage_path:
+            continue
+        paths_by_bucket.setdefault(bucket, []).append(storage_path)
+
+    deleted_object_count = 0
+    for bucket, storage_paths in paths_by_bucket.items():
+        unique_paths = list(dict.fromkeys(storage_paths))
+        for offset in range(0, len(unique_paths), 1000):
+            batch = unique_paths[offset : offset + 1000]
+            storage_status, _storage_payload = _supabase_request_json(
+                f"/storage/v1/object/{quote(bucket, safe='')}",
+                token=token,
+                method="DELETE",
+                payload={"prefixes": batch},
+            )
+            if storage_status != 200:
+                return {
+                    "status": "failed",
+                    "provider": "supabase",
+                    "error": f"storage_delete_failed_{storage_status}",
+                    "deleted_object_count": deleted_object_count,
+                }
+            deleted_object_count += len(batch)
+
+    job_path = (
+        "/rest/v1/conversion_jobs"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        f"&job_id=eq.{quote(job_id, safe='')}"
+    )
+    job_status, job_payload = _supabase_request_json(
+        job_path,
+        token=token,
+        method="DELETE",
+        prefer="return=representation",
+    )
+    if job_status != 200:
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "error": f"job_delete_failed_{job_status}",
+            "deleted_object_count": deleted_object_count,
+        }
+    if not isinstance(job_payload, list) or not job_payload:
+        return {
+            "status": "missing",
+            "provider": "supabase",
+            "reason": "job_not_found",
+            "deleted_object_count": deleted_object_count,
+        }
+    return {
+        "status": "deleted",
+        "provider": "supabase",
+        "deleted_object_count": deleted_object_count,
+    }
+
+
 def _save_supabase_conversion_artifact(
     token: str,
     *,
@@ -5626,9 +5707,19 @@ def convert_jobs():
 
 @app.route("/convert/jobs/<job_id>", methods=["DELETE"])
 def convert_job_delete(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
+    cloud_user, cloud_token = _authenticated_request_context()
+    if not job and cloud_user and cloud_token:
+        job = _load_supabase_conversion_jobs(
+            cloud_token,
+            str(cloud_user.get("id") or ""),
+            limit=MAX_CONVERSION_JOB_HISTORY_LIMIT,
+        ).get(job_id)
     if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",
@@ -5647,8 +5738,24 @@ def convert_job_delete(job_id: str):
             retryable=True,
         )
 
+    cloud_delete = (
+        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
+        if cloud_user and cloud_token
+        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
+    )
+    if cloud_delete.get("status") == "failed":
+        return _json_error(
+            "Nie udało się usunąć publikacji z historii konta. Spróbuj ponownie.",
+            error_code="conversion_job_cloud_delete_failed",
+            status_code=502,
+            phase="delete",
+            job_id=job_id,
+            retryable=True,
+            extra={"cloud_delete": cloud_delete},
+        )
+
     deleted = _CONVERSION_JOB_STORE.delete(job_id)
-    if not deleted:
+    if not deleted and not bool(job.get("cloud")):
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -5657,16 +5764,10 @@ def convert_job_delete(job_id: str):
             job_id=job_id,
         )
 
-    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted)
-    cloud_user, cloud_token = _authenticated_request_context()
-    cloud_delete = (
-        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
-        if cloud_user and cloud_token
-        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
-    )
+    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted or job)
     behavior_signal = _record_user_behavior_signal_safely(
         job_id=job_id,
-        job=deleted,
+        job=deleted or job,
         event_type="job_deleted",
     )
     response = jsonify(

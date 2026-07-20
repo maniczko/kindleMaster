@@ -1238,6 +1238,88 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIsNotNone(app_module._get_conversion_job(job_id))
 
+    def test_authenticated_delete_removes_cloud_history_before_local_state(self) -> None:
+        job_id = "authenticated-delete-job"
+        user_id = "12345678-1234-1234-1234-123456789012"
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="delete-me.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        job["status"] = "ready"
+        app_module._CONVERSION_JOB_STORE.create(job)
+        requests: list[dict] = []
+
+        def fake_supabase_request(path, **kwargs):
+            requests.append({"path": path, **kwargs})
+            if path.startswith("/rest/v1/conversion_artifacts"):
+                return 200, [{"storage_bucket": "kindlemaster-artifacts", "storage_path": f"{user_id}/{job_id}/output/delete-me.epub"}]
+            if path.startswith("/storage/v1/object/"):
+                return 200, []
+            if path.startswith("/rest/v1/conversion_jobs"):
+                return 200, [{"job_id": job_id}]
+            self.fail(f"Unexpected Supabase request: {path}")
+
+        with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(
+            app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")
+        ), patch.object(app_module, "_supabase_request_json", side_effect=fake_supabase_request):
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["cloud_delete"]["status"], "deleted")
+        self.assertIsNone(app_module._get_conversion_job(job_id))
+        self.assertEqual([request.get("method", "GET") for request in requests], ["GET", "DELETE", "DELETE"])
+        self.assertIn("/storage/v1/object/kindlemaster-artifacts", requests[1]["path"])
+        self.assertEqual(requests[2]["prefer"], "return=representation")
+
+    def test_authenticated_delete_keeps_local_state_when_cloud_delete_fails(self) -> None:
+        job_id = "authenticated-delete-failure"
+        user_id = "12345678-1234-1234-1234-123456789012"
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="delete-me.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        job["status"] = "ready"
+        app_module._CONVERSION_JOB_STORE.create(job)
+
+        with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(
+            app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")
+        ), patch.object(app_module, "_supabase_request_json", return_value=(503, {})):
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["error_code"], "conversion_job_cloud_delete_failed")
+        self.assertIsNotNone(app_module._get_conversion_job(job_id))
+
+    def test_authenticated_delete_removes_cloud_only_history_item(self) -> None:
+        job_id = "cloud-only-delete-job"
+        user_id = "12345678-1234-1234-1234-123456789012"
+        cloud_job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="cloud-only.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        cloud_job.update({"status": "ready", "cloud": True})
+
+        with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(
+            app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")
+        ), patch.object(app_module, "_load_supabase_conversion_jobs", return_value={job_id: cloud_job}), patch.object(
+            app_module, "_delete_supabase_conversion_job", return_value={"status": "deleted", "provider": "supabase"}
+        ) as cloud_delete:
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "deleted")
+        cloud_delete.assert_called_once_with("token", user_id, job_id)
+
     def test_convert_library_filters_ready_jobs_and_exposes_report_links(self) -> None:
         now = datetime.now(UTC)
         ready_id = "library-ready-job"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,11 @@ def evaluate_chess_fen_corpus(
     allow_empty: bool = False,
 ) -> dict[str, Any]:
     """Evaluate every manifest case that declares a chess FEN seed dataset."""
+    overall_started = time.perf_counter()
     manifest_file = Path(manifest_path)
+    stage_started = time.perf_counter()
     manifest = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
+    manifest_load_elapsed = round(time.perf_counter() - stage_started, 4)
     cases = [
         case
         for case in manifest.get("cases", [])
@@ -50,13 +54,20 @@ def evaluate_chess_fen_corpus(
     total_false_positive_count = 0
     total_case_count = 0
     total_exact_fen_count = 0
+    label_validation_total_elapsed = 0.0
+    recognizer_total_elapsed = 0.0
+    font_board_total_elapsed = 0.0
 
     for case in cases:
+        case_started = time.perf_counter()
         labels_path = _resolve_repo_path(case["chess_fen_seed_labels"])
         template_dir = _resolve_template_dir(case, template_root=template_root)
         min_exact_accuracy = float(case.get("chess_fen_seed_exact_accuracy_min") or default_min_exact_accuracy)
         min_seed_label_count = max(1, int(case.get("chess_fen_seed_min_count") or default_min_seed_label_count))
+        stage_started = time.perf_counter()
         label_validation = validate_chess_fen_labels(labels_path)
+        label_validation_elapsed = round(time.perf_counter() - stage_started, 4)
+        label_validation_total_elapsed += label_validation_elapsed
         if label_validation["status"] != "passed":
             result_summary = {
                 "id": case.get("id", ""),
@@ -78,6 +89,11 @@ def evaluate_chess_fen_corpus(
                 "false_positive_rate": 0.0,
                 "square_accuracy": 0.0,
                 "label_validation": label_validation,
+                "timing_breakdown": {
+                    "label_validation": label_validation_elapsed,
+                    "recognizer_evaluation": 0.0,
+                    "total": round(time.perf_counter() - case_started, 4),
+                },
             }
             results.append(result_summary)
             failed_case_count += 1
@@ -105,17 +121,25 @@ def evaluate_chess_fen_corpus(
                 "square_accuracy": 0.0,
                 "label_validation": label_validation,
                 "failure_reason": "seed_label_count_below_minimum",
+                "timing_breakdown": {
+                    "label_validation": label_validation_elapsed,
+                    "recognizer_evaluation": 0.0,
+                    "total": round(time.perf_counter() - case_started, 4),
+                },
             }
             results.append(result_summary)
             failed_case_count += 1
             total_case_count += int(label_validation["label_count"])
             continue
+        stage_started = time.perf_counter()
         result = evaluate_chess_fen_recognizer(
             labels_path,
             template_dir=template_dir,
             min_confidence=min_confidence,
             min_exact_accuracy=min_exact_accuracy,
         )
+        recognizer_elapsed = round(time.perf_counter() - stage_started, 4)
+        recognizer_total_elapsed += recognizer_elapsed
         result_summary = {
             "id": case.get("id", ""),
             "document_class": case.get("document_class", ""),
@@ -141,6 +165,13 @@ def evaluate_chess_fen_corpus(
                 "valid_label_count": label_validation["valid_label_count"],
                 "issue_count": label_validation["issue_count"],
             },
+            "template_cache": dict(result.get("template_cache") or {}),
+            "timing_breakdown": {
+                "label_validation": label_validation_elapsed,
+                "recognizer_evaluation": recognizer_elapsed,
+                "total": round(time.perf_counter() - case_started, 4),
+            },
+            "recognizer_timing_breakdown": dict(result.get("timing_breakdown") or {}),
         }
         results.append(result_summary)
         failed_case_count += int(result["status"] != "passed")
@@ -149,12 +180,16 @@ def evaluate_chess_fen_corpus(
         total_exact_fen_count += int(result["exact_fen_count"])
 
     for case in font_board_cases:
+        case_started = time.perf_counter()
         labels_path = _resolve_repo_path(case["chess_fen_font_board_candidate_labels"])
         min_candidate_fen_coverage = float(case.get("chess_fen_candidate_fen_coverage_min") or 0.90)
+        stage_started = time.perf_counter()
         result = evaluate_chess_font_board_candidates(
             labels_path,
             min_candidate_fen_coverage=min_candidate_fen_coverage,
         )
+        font_board_elapsed = round(time.perf_counter() - stage_started, 4)
+        font_board_total_elapsed += font_board_elapsed
         result_summary = {
             "id": case.get("id", ""),
             "document_class": case.get("document_class", ""),
@@ -175,6 +210,10 @@ def evaluate_chess_fen_corpus(
             "invalid_candidate_fen_count": result["invalid_candidate_fen_count"],
             "policy": result["policy"],
             "reasons": result["reasons"],
+            "timing_breakdown": {
+                "font_board_candidate_evaluation": font_board_elapsed,
+                "total": round(time.perf_counter() - case_started, 4),
+            },
         }
         font_board_results.append(result_summary)
         font_board_failed_count += int(result["status"] != "review_ready")
@@ -230,6 +269,13 @@ def evaluate_chess_fen_corpus(
         "total_false_positive_count": total_false_positive_count,
         "reasons": reasons,
         "next_required_actions": next_required_actions,
+        "timing_breakdown": {
+            "manifest_load": manifest_load_elapsed,
+            "label_validation": round(label_validation_total_elapsed, 4),
+            "recognizer_evaluation": round(recognizer_total_elapsed, 4),
+            "font_board_candidate_evaluation": round(font_board_total_elapsed, 4),
+            "total": round(time.perf_counter() - overall_started, 4),
+        },
         "cases": results,
         "font_board_candidate_profiles": font_board_results,
     }

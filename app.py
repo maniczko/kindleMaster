@@ -2623,8 +2623,39 @@ def _ensure_local_fen_review_artifact(job_id: str, job: dict) -> dict | None:
         return None
     configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
     root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
-    review_path = (root / safe_job_id / "review" / "fen_manual_review.html").resolve()
-    if not _is_path_under(review_path, root) or not review_path.is_file():
+    job_root = (root / safe_job_id).resolve()
+    review_path = (job_root / "review" / "fen_manual_review.html").resolve()
+    if not _is_path_under(review_path, root):
+        return None
+    if not review_path.is_file():
+        _recover_semantic_reader_assets_from_zip(safe_job_id)
+        artifacts = dict(job.get("artifacts", {}) or {})
+        diagrams_artifact = artifacts.get("chess_diagrams")
+        diagrams_path = _resolve_local_artifact_path(
+            diagrams_artifact if isinstance(diagrams_artifact, dict) else None
+        )
+        if diagrams_path is None:
+            fallback = (job_root / "report" / "chess_diagrams.json").resolve()
+            diagrams_path = fallback if _is_path_under(fallback, job_root) and fallback.is_file() else None
+        input_artifact = artifacts.get("input")
+        source_path = _resolve_local_artifact_path(
+            input_artifact if isinstance(input_artifact, dict) else None
+        )
+        if diagrams_path is None:
+            return None
+        try:
+            from chess_fen_review_builder import build_conversion_fen_review
+
+            build_conversion_fen_review(
+                job_root,
+                artifact_id=safe_job_id,
+                diagrams_path=diagrams_path,
+                source_path=source_path,
+            )
+        except Exception as exc:
+            app.logger.warning("Automatic FEN review build failed for %s: %s", safe_job_id, exc)
+            return None
+    if not review_path.is_file():
         return None
     artifact = _local_artifact_metadata(safe_job_id, ArtifactKind.REPORT, review_path)
     artifact["download_url"] = f"/convert/artifact/{safe_job_id}/chess_fen_review"

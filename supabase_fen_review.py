@@ -124,6 +124,7 @@ class SupabaseFenReviewClient:
         session_query = urllib.parse.urlencode(session_filters)
         sessions = self._request(f"/rest/v1/chess_fen_review_sessions?{session_query}", method="GET")
         reused_from_artifact_id = ""
+        preloaded_rows: list[dict[str, Any]] | None = None
         if (not isinstance(sessions, list) or not sessions) and source_document_sha256 and owner_user_id:
             reuse_query = urllib.parse.urlencode(
                 {
@@ -140,14 +141,71 @@ class SupabaseFenReviewClient:
             sessions = self._request(f"/rest/v1/chess_fen_review_sessions?{reuse_query}", method="GET")
             if isinstance(sessions, list) and sessions:
                 reused_from_artifact_id = str(sessions[0].get("artifact_id") or "")
+        if (not isinstance(sessions, list) or not sessions) and source_document_sha256 and owner_user_id:
+            # Older review sessions did not persist owner/source columns. Reuse
+            # them only when their row payloads prove the exact same source SHA.
+            legacy_query = urllib.parse.urlencode(
+                {
+                    "source_document_sha256": "is.null",
+                    "owner_user_id": "is.null",
+                    "select": (
+                        "artifact_id,source_document_sha256,schema_version,status,summary,"
+                        "row_count,revision,saved_at,closed_at"
+                    ),
+                    "order": "updated_at.desc",
+                    "limit": "25",
+                }
+            )
+            legacy_sessions = self._request(
+                f"/rest/v1/chess_fen_review_sessions?{legacy_query}",
+                method="GET",
+            )
+            for candidate in legacy_sessions if isinstance(legacy_sessions, list) else []:
+                candidate_artifact_id = str(candidate.get("artifact_id") or "")
+                if not candidate_artifact_id or not self._job_owned_by(
+                    artifact_id=candidate_artifact_id,
+                    owner_user_id=owner_user_id,
+                ):
+                    continue
+                candidate_rows = self._load_label_rows(candidate_artifact_id)
+                candidate_digests = _row_source_digests(candidate_rows)
+                if candidate_digests == {source_document_sha256}:
+                    sessions = [candidate]
+                    reused_from_artifact_id = candidate_artifact_id
+                    preloaded_rows = candidate_rows
+                    break
         if not isinstance(sessions, list) or not sessions:
             return None
 
         label_artifact_id = reused_from_artifact_id or artifact_id
+        rows = preloaded_rows if preloaded_rows is not None else self._load_label_rows(label_artifact_id)
+        session = dict(sessions[0])
+        expected_count = int(session.get("row_count") or 0)
+        if expected_count != len(rows):
+            raise RuntimeError("supabase_fen_review_row_count_mismatch")
+        session_digest = str(session.get("source_document_sha256") or "").strip()
+        row_digests = _row_source_digests(rows)
+        if session_digest and row_digests and row_digests != {session_digest}:
+            raise RuntimeError("supabase_fen_review_source_digest_mismatch")
+        resolved_source_digest = session_digest or (next(iter(row_digests)) if len(row_digests) == 1 else "")
+        return {
+            "schema": str(session.get("schema_version") or "kindlemaster.fen_review_progress.v1"),
+            "status": str(session.get("status") or "active"),
+            "session_status": str(session.get("status") or "active"),
+            "revision": int(session.get("revision") or 0),
+            "closed_at": str(session.get("closed_at") or ""),
+            "source_document_sha256": resolved_source_digest,
+            "rows": rows,
+            "summary": dict(session.get("summary") or {}),
+            "saved_at": str(session.get("saved_at") or ""),
+            "storage": "database",
+            "reused_from_artifact_id": reused_from_artifact_id,
+        }
 
+    def _load_label_rows(self, artifact_id: str) -> list[dict[str, Any]]:
         label_query = urllib.parse.urlencode(
             {
-                "artifact_id": f"eq.{label_artifact_id}",
+                "artifact_id": f"eq.{artifact_id}",
                 "select": "row_payload",
                 "order": "review_index.asc.nullslast,diagram_fingerprint.asc",
             }
@@ -155,28 +213,23 @@ class SupabaseFenReviewClient:
         labels = self._request(f"/rest/v1/chess_fen_review_labels?{label_query}", method="GET")
         if not isinstance(labels, list):
             raise RuntimeError("supabase_fen_review_invalid_labels")
-        rows = [
+        return [
             dict(label["row_payload"])
             for label in labels
             if isinstance(label, Mapping) and isinstance(label.get("row_payload"), Mapping)
         ]
-        session = dict(sessions[0])
-        expected_count = int(session.get("row_count") or 0)
-        if expected_count != len(rows):
-            raise RuntimeError("supabase_fen_review_row_count_mismatch")
-        return {
-            "schema": str(session.get("schema_version") or "kindlemaster.fen_review_progress.v1"),
-            "status": str(session.get("status") or "active"),
-            "session_status": str(session.get("status") or "active"),
-            "revision": int(session.get("revision") or 0),
-            "closed_at": str(session.get("closed_at") or ""),
-            "source_document_sha256": str(session.get("source_document_sha256") or ""),
-            "rows": rows,
-            "summary": dict(session.get("summary") or {}),
-            "saved_at": str(session.get("saved_at") or ""),
-            "storage": "database",
-            "reused_from_artifact_id": reused_from_artifact_id,
-        }
+
+    def _job_owned_by(self, *, artifact_id: str, owner_user_id: str) -> bool:
+        ownership_query = urllib.parse.urlencode(
+            {
+                "job_id": f"eq.{artifact_id}",
+                "user_id": f"eq.{owner_user_id}",
+                "select": "job_id",
+                "limit": "1",
+            }
+        )
+        rows = self._request(f"/rest/v1/conversion_jobs?{ownership_query}", method="GET")
+        return isinstance(rows, list) and len(rows) == 1
 
     def save_review(
         self,
@@ -278,4 +331,12 @@ def _database_row(row: Mapping[str, Any]) -> dict[str, Any]:
         key: value
         for key, value in row.items()
         if key in DATABASE_ROW_FIELDS
+    }
+
+
+def _row_source_digests(rows: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {
+        str(row.get("source_document_sha256") or row.get("source_artifact_sha256") or "").strip()
+        for row in rows
+        if str(row.get("source_document_sha256") or row.get("source_artifact_sha256") or "").strip()
     }

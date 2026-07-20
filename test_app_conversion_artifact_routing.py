@@ -126,6 +126,77 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             "",
         )
 
+    def test_fen_review_is_built_on_demand_from_conversion_diagnostics(self) -> None:
+        job_id = "fen-review-on-demand"
+        job_root = self._artifact_root(job_id)
+        input_path = job_root / "input" / "study.pdf"
+        report_path = job_root / "report" / "chess_diagrams.json"
+        crop_dir = job_root / "review" / "chess_fen" / "two_crop"
+        input_path.parent.mkdir(parents=True)
+        report_path.parent.mkdir(parents=True)
+        crop_dir.mkdir(parents=True)
+        input_path.write_bytes(b"%PDF-1.4\nsource")
+        for name in ("board.png", "marker.png", "marker-search.png", "overlay.png"):
+            self._write_test_png(crop_dir / name)
+        squares = [{"square": str(index), "piece": "", "confidence": 0.99} for index in range(64)]
+        squares[4]["piece"] = "k"
+        squares[60]["piece"] = "K"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "diagram_count": 1,
+                    "records": [
+                        {
+                            "id": "layout-chess-p010-d01",
+                            "page_number": 10,
+                            "caption": "Strona 10, diagram 1",
+                            "board_crop_path": "review/chess_fen/two_crop/board.png",
+                            "side_marker_crop_path": "review/chess_fen/two_crop/marker.png",
+                            "side_marker_search_crop_path": "review/chess_fen/two_crop/marker-search.png",
+                            "debug_overlay_path": "review/chess_fen/two_crop/overlay.png",
+                            "side_to_move": "b",
+                            "side_marker_status": "trusted_marker",
+                            "model_runtime": {
+                                "validation_fen": "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
+                                "confidence": 0.995,
+                                "squares": squares,
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        input_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.INPUT, input_path)
+        diagrams_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, report_path)
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "filename": "study.pdf",
+                "source_type": "pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "artifacts": {"input": input_artifact, "chess_diagrams": diagrams_artifact},
+            }
+
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"layout-chess-p010-d01", response.data)
+        draft_path = job_root / "review" / "fen_manual_draft.jsonl"
+        row = json.loads(draft_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(len(row["square_labels"]), 64)
+        self.assertIn("chess_fen_review", app_module._CONVERSION_JOBS[job_id]["artifacts"])
+        asset_response = self.client.get(
+            f"/convert/artifact/{job_id}/{row['board_crop_rel_path']}"
+        )
+        self.assertEqual(asset_response.status_code, 200)
+        self.assertEqual(asset_response.data, self.TEST_PNG)
+        response.close()
+        asset_response.close()
+
     def test_recovered_fen_review_is_served_with_source_bound_crop_assets(self) -> None:
         job_id = "fen-review-artifact"
         job_root = self._artifact_root(job_id)

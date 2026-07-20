@@ -167,6 +167,44 @@ class SupabaseFenReviewTests(unittest.TestCase):
         self.assertIn("owner_user_id=eq.11111111-1111-1111-1111-111111111111", transport.calls[1]["url"])
         self.assertIn("artifact_id=eq.artifact-old", transport.calls[2]["url"])
 
+    def test_load_review_recovers_source_bound_ownerless_legacy_session(self) -> None:
+        transport = FakeTransport()
+        transport.queue([])
+        transport.queue([])
+        transport.queue(
+            [
+                {
+                    "artifact_id": "artifact-legacy",
+                    "source_document_sha256": None,
+                    "schema_version": "kindlemaster.fen_review_progress.v1",
+                    "status": "complete",
+                    "summary": {"total": 1, "pending": 0},
+                    "row_count": 1,
+                    "revision": 0,
+                    "saved_at": "2026-07-16T12:00:00Z",
+                }
+            ]
+        )
+        transport.queue([{"job_id": "artifact-legacy"}])
+        transport.queue([{"row_payload": self._row()}])
+        client = SupabaseFenReviewClient(self._config(), transport=transport)
+
+        result = client.load_review(
+            artifact_id="artifact-new",
+            source_document_sha256="a" * 64,
+            owner_user_id="11111111-1111-1111-1111-111111111111",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["reused_from_artifact_id"], "artifact-legacy")
+        self.assertEqual(result["source_document_sha256"], "a" * 64)
+        self.assertIn("source_document_sha256=is.null", transport.calls[2]["url"])
+        self.assertIn("owner_user_id=is.null", transport.calls[2]["url"])
+        self.assertIn("job_id=eq.artifact-legacy", transport.calls[3]["url"])
+        self.assertIn("user_id=eq.11111111-1111-1111-1111-111111111111", transport.calls[3]["url"])
+        self.assertIn("artifact_id=eq.artifact-legacy", transport.calls[4]["url"])
+
     def test_load_review_limits_current_artifact_to_owner_or_unclaimed_legacy_session(self) -> None:
         transport = FakeTransport()
         transport.queue([])
@@ -180,6 +218,33 @@ class SupabaseFenReviewTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("owner_user_id.eq.11111111-1111-1111-1111-111111111111", transport.calls[0]["url"])
         self.assertIn("owner_user_id.is.null", transport.calls[0]["url"])
+
+    def test_load_review_does_not_reuse_legacy_session_owned_by_another_user(self) -> None:
+        transport = FakeTransport()
+        transport.queue([])
+        transport.queue([])
+        transport.queue(
+            [
+                {
+                    "artifact_id": "artifact-legacy",
+                    "source_document_sha256": None,
+                    "row_count": 1,
+                    "summary": {},
+                }
+            ]
+        )
+        transport.queue([])
+        client = SupabaseFenReviewClient(self._config(), transport=transport)
+
+        result = client.load_review(
+            artifact_id="artifact-new",
+            source_document_sha256="a" * 64,
+            owner_user_id="11111111-1111-1111-1111-111111111111",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(transport.calls), 4)
+        self.assertIn("conversion_jobs", transport.calls[3]["url"])
 
 
 if __name__ == "__main__":

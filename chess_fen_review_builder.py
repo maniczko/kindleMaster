@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -13,6 +12,7 @@ from chess_fen_review_ui import render_fen_manual_review_html
 
 
 _PIECES = frozenset({"", "K", "Q", "R", "B", "N", "P", "k", "q", "r", "b", "n", "p"})
+_SAFE_FILENAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 
 
 class FenReviewBuildError(RuntimeError):
@@ -20,17 +20,17 @@ class FenReviewBuildError(RuntimeError):
 
 
 def build_conversion_fen_review(
-    job_root: str | Path,
     *,
     artifact_id: str,
     diagrams_path: str | Path,
-    source_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build the persistent 8x8 review bundle from conversion diagnostics."""
-    root = Path(job_root).resolve()
     diagrams_file = Path(diagrams_path).resolve()
-    if not _is_under(diagrams_file, root) or not diagrams_file.is_file():
-        raise FenReviewBuildError("chess_diagrams.json is missing or outside the artifact root")
+    if diagrams_file.name != "chess_diagrams.json" or diagrams_file.parent.name != "report":
+        raise FenReviewBuildError("chess_diagrams.json must use the canonical artifact layout")
+    root = diagrams_file.parent.parent
+    if not diagrams_file.is_file():
+        raise FenReviewBuildError("chess_diagrams.json is missing")
 
     payload = _read_json(diagrams_file)
     records = payload.get("records") if isinstance(payload, Mapping) else None
@@ -40,7 +40,7 @@ def build_conversion_fen_review(
     review_dir = root / "review"
     assets_dir = review_dir / "fen_manual_assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
-    source_file = _safe_source_file(source_path, root)
+    source_file = _canonical_input_file(root)
     source_digest = _sha256_file(source_file or diagrams_file)
     source_binding = "source_pdf_sha256" if source_file is not None else "artifact_report_sha256"
     report_digest = _sha256_file(diagrams_file)
@@ -61,7 +61,7 @@ def build_conversion_fen_review(
             missing_boards.append(diagram_id)
             continue
 
-        board = _materialize_asset(board_source, assets_dir, diagram_id, "board")
+        board = _materialize_asset(board_source, assets_dir, index, "board")
         marker_source = _first_source_asset(
             root,
             record,
@@ -80,14 +80,14 @@ def build_conversion_fen_review(
             "debug_context_crop_path",
             "debug_overlay_path",
         )
-        marker = _materialize_optional_asset(marker_source, assets_dir, diagram_id, "marker")
+        marker = _materialize_optional_asset(marker_source, assets_dir, index, "marker")
         marker_search = _materialize_optional_asset(
             marker_search_source,
             assets_dir,
-            diagram_id,
+            index,
             "marker-search",
         )
-        context = _materialize_optional_asset(context_source, assets_dir, diagram_id, "context")
+        context = _materialize_optional_asset(context_source, assets_dir, index, "context")
 
         runtime = record.get("model_runtime") if isinstance(record.get("model_runtime"), Mapping) else {}
         squares = runtime.get("squares") if isinstance(runtime, Mapping) else []
@@ -219,19 +219,47 @@ def _read_json(path: Path) -> Any:
         raise FenReviewBuildError(f"cannot read {path.name}: {error}") from error
 
 
-def _safe_source_file(value: str | Path | None, root: Path) -> Path | None:
-    if value is None:
+def _canonical_input_file(root: Path) -> Path | None:
+    input_dir = _named_child(root, "input", directory_only=True)
+    if input_dir is None:
         return None
-    candidate = Path(value).resolve()
-    return candidate if _is_under(candidate, root) and candidate.is_file() else None
+    try:
+        files = [Path(entry.path) for entry in os.scandir(input_dir) if entry.is_file(follow_symlinks=False)]
+    except OSError:
+        return None
+    return files[0] if len(files) == 1 else None
 
 
 def _resolve_source_asset(root: Path, value: object) -> Path | None:
     relative = str(value or "").replace("\\", "/").strip().lstrip("/")
-    if not relative or any(part in {"", ".", ".."} for part in relative.split("/")):
+    parts = relative.split("/")
+    if len(parts) != 4 or parts[:3] != ["review", "chess_fen", "two_crop"]:
         return None
-    candidate = root.joinpath(*relative.split("/")).resolve()
-    return candidate if _is_under(candidate, root) and candidate.is_file() else None
+    filename = parts[3]
+    if not filename or filename in {".", ".."} or any(char not in _SAFE_FILENAME_CHARS for char in filename):
+        return None
+    review_dir = _named_child(root, "review", directory_only=True)
+    chess_fen_dir = _named_child(review_dir, "chess_fen", directory_only=True) if review_dir else None
+    two_crop_dir = _named_child(chess_fen_dir, "two_crop", directory_only=True) if chess_fen_dir else None
+    return _named_child(two_crop_dir, filename) if two_crop_dir else None
+
+
+def _named_child(directory: Path, name: str, *, directory_only: bool = False) -> Path | None:
+    if not name or "/" in name or "\\" in name or name in {".", ".."}:
+        return None
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name != name:
+                    continue
+                if directory_only and not entry.is_dir(follow_symlinks=False):
+                    return None
+                if not directory_only and not entry.is_file(follow_symlinks=False):
+                    return None
+                return Path(entry.path)
+    except OSError:
+        return None
+    return None
 
 
 def _first_source_asset(root: Path, record: Mapping[str, Any], *keys: str) -> Path | None:
@@ -245,17 +273,18 @@ def _first_source_asset(root: Path, record: Mapping[str, Any], *keys: str) -> Pa
 def _materialize_optional_asset(
     source: Path | None,
     assets_dir: Path,
-    diagram_id: str,
+    asset_index: int,
     kind: str,
 ) -> tuple[Path, str] | None:
-    return _materialize_asset(source, assets_dir, diagram_id, kind) if source is not None else None
+    return _materialize_asset(source, assets_dir, asset_index, kind) if source is not None else None
 
 
-def _materialize_asset(source: Path, assets_dir: Path, diagram_id: str, kind: str) -> tuple[Path, str]:
+def _materialize_asset(source: Path, assets_dir: Path, asset_index: int, kind: str) -> tuple[Path, str]:
     digest = _sha256_file(source)
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", diagram_id).strip("-.") or "diagram"
+    if kind not in {"board", "context", "marker", "marker-search"}:
+        raise FenReviewBuildError("unsupported review asset kind")
     suffix = source.suffix.lower() if source.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
-    target = assets_dir / f"{safe_id}_{kind}_{digest[:12]}{suffix}"
+    target = assets_dir / f"diagram-{max(1, int(asset_index)):04d}_{kind}_{digest[:12]}{suffix}"
     if target.is_file() and _sha256_file(target) != digest:
         raise FenReviewBuildError(f"existing review asset has invalid content: {target.name}")
     if not target.is_file():

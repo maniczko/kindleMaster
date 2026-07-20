@@ -64,10 +64,8 @@ class ChessFenReviewBuilderTests(unittest.TestCase):
             )
 
             result = build_conversion_fen_review(
-                root,
                 artifact_id="artifact-1",
                 diagrams_path=diagrams_path,
-                source_path=input_path,
             )
 
             draft_path = root / "review" / "fen_manual_draft.jsonl"
@@ -101,7 +99,6 @@ class ChessFenReviewBuilderTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FenReviewBuildError, "missing board assets"):
                 build_conversion_fen_review(
-                    root,
                     artifact_id="artifact-1",
                     diagrams_path=diagrams_path,
                 )

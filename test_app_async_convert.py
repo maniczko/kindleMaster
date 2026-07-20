@@ -1334,6 +1334,15 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.get_json()["status"], "already_missing")
         cloud_delete.assert_called_once_with("token", user_id, job_id)
 
+    def test_anonymous_delete_is_idempotent_when_local_history_is_already_missing(self) -> None:
+        response = self.client.delete("/convert/jobs/missing-local-delete-job")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["status"], "already_missing")
+        self.assertEqual(payload["cloud_delete"]["reason"], "anonymous_or_local")
+
     def test_convert_library_filters_ready_jobs_and_exposes_report_links(self) -> None:
         now = datetime.now(UTC)
         ready_id = "library-ready-job"

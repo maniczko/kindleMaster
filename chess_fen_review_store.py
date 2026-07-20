@@ -321,9 +321,30 @@ def _normalize_progress_row(base_row: Mapping[str, Any], submitted: Mapping[str,
 
 def _merge_rows(seed_rows: Sequence[Mapping[str, Any]], progress_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     progress_by_fingerprint = {_fingerprint(row): row for row in progress_rows if _fingerprint(row)}
+    seed_digest = _source_digest(seed_rows)
+    progress_digest = _source_digest(progress_rows)
+    progress_by_diagram_id: dict[str, Mapping[str, Any]] = {}
+    if seed_digest and seed_digest == progress_digest:
+        progress_ids: dict[str, list[Mapping[str, Any]]] = {}
+        seed_id_counts: dict[str, int] = {}
+        for row in progress_rows:
+            diagram_id = str(row.get("diagram_id") or "").strip()
+            if diagram_id:
+                progress_ids.setdefault(diagram_id, []).append(row)
+        for row in seed_rows:
+            diagram_id = str(row.get("diagram_id") or "").strip()
+            if diagram_id:
+                seed_id_counts[diagram_id] = seed_id_counts.get(diagram_id, 0) + 1
+        progress_by_diagram_id = {
+            diagram_id: candidates[0]
+            for diagram_id, candidates in progress_ids.items()
+            if len(candidates) == 1 and seed_id_counts.get(diagram_id) == 1
+        }
     merged = []
     for seed in seed_rows:
         progress = progress_by_fingerprint.get(_fingerprint(seed))
+        if progress is None:
+            progress = progress_by_diagram_id.get(str(seed.get("diagram_id") or "").strip())
         if progress is None:
             merged.append(dict(seed))
             continue

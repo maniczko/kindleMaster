@@ -2621,11 +2621,43 @@ def _ensure_local_fen_review_artifact(job_id: str, job: dict) -> dict | None:
     safe_job_id = str(job_id or "").strip()
     if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
         return None
-    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
-    root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
-    review_path = (root / safe_job_id / "review" / "fen_manual_review.html").resolve()
-    if not _is_path_under(review_path, root) or not review_path.is_file():
+    artifacts = dict(job.get("artifacts", {}) or {})
+    job_root = _artifact_job_root_for_id(safe_job_id)
+    if job_root is None:
         return None
+    review_dir = _named_artifact_child(job_root, "review", directory_only=True)
+    review_path = (
+        _named_artifact_child(review_dir, "fen_manual_review.html")
+        if review_dir is not None
+        else None
+    )
+    if review_path is None:
+        diagrams_artifact = artifacts.get("chess_diagrams")
+        diagrams_path = _resolve_local_artifact_path(
+            diagrams_artifact if isinstance(diagrams_artifact, dict) else None
+        )
+        if diagrams_path is None:
+            report_dir = _named_artifact_child(job_root, "report", directory_only=True)
+            diagrams_path = (
+                _named_artifact_child(report_dir, "chess_diagrams.json")
+                if report_dir is not None
+                else None
+            )
+        if diagrams_path is None or not _is_path_under(diagrams_path, job_root):
+            return None
+        try:
+            from chess_fen_review_builder import build_conversion_fen_review
+
+            result = build_conversion_fen_review(
+                artifact_id=safe_job_id,
+                diagrams_path=diagrams_path,
+            )
+        except Exception as exc:
+            app.logger.warning("Automatic FEN review build failed: %s", type(exc).__name__)
+            return None
+        review_path = Path(str(result.get("review_html") or ""))
+        if not review_path.is_file() or not _is_path_under(review_path, job_root):
+            return None
     artifact = _local_artifact_metadata(safe_job_id, ArtifactKind.REPORT, review_path)
     artifact["download_url"] = f"/convert/artifact/{safe_job_id}/chess_fen_review"
     artifact["label"] = "Oznaczanie FEN i markerow"

@@ -116,6 +116,46 @@ class ChessFenReviewStoreTests(unittest.TestCase):
                     source_digest="b" * 64,
                 )
 
+    def test_load_reuses_progress_by_diagram_id_when_source_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir) / "review"
+            seed = self._seed_row("1" * 64, diagram_id="p001-d1")
+            self._write_seed(review_dir, [seed])
+            cells = [""] * 64
+            cells[4] = "k"
+            cells[60] = "K"
+            legacy = {
+                **seed,
+                "diagram_fingerprint": "2" * 64,
+                "square_labels": cells,
+                "piece_labels_verified": True,
+                "manual_side_to_move": "w",
+                "manual_side_evidence": "marker",
+                "manual_visible_marker": "outline_triangle",
+                "board_crop_label": "correct",
+                "marker_crop_label": "clear",
+                "label_status": "verified",
+                "verified_by": "PM",
+            }
+
+            payload = load_fen_review_progress(review_dir, persisted_rows=[legacy], storage="database")
+
+            self.assertEqual(payload["summary"]["verified"], 1)
+            self.assertEqual(payload["rows"][0]["diagram_fingerprint"], "1" * 64)
+            self.assertEqual(payload["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+
+    def test_load_does_not_reuse_diagram_id_when_source_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir) / "review"
+            seed = self._seed_row("1" * 64, diagram_id="p001-d1")
+            self._write_seed(review_dir, [seed])
+            foreign = {**seed, "diagram_fingerprint": "2" * 64, "source_document_sha256": "b" * 64}
+
+            payload = load_fen_review_progress(review_dir, persisted_rows=[foreign], storage="database")
+
+            self.assertEqual(payload["summary"]["pending"], 1)
+            self.assertEqual(payload["rows"][0]["diagram_fingerprint"], "1" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()

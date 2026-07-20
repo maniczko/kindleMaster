@@ -283,10 +283,12 @@ def build_artifact_storage(
     *,
     local_root: str | Path = DEFAULT_LOCAL_ARTIFACT_ROOT,
 ) -> LocalArtifactStorage | R2ArtifactStorage:
-    config = ArtifactStorageConfig.from_env(environ)
+    env = os.environ if environ is None else environ
+    config = ArtifactStorageConfig.from_env(env)
     if config.is_remote_requested and config.is_remote_configured:
         return R2ArtifactStorage(config)
-    return LocalArtifactStorage(local_root)
+    configured_local_root = _first_env(env, "KINDLEMASTER_ARTIFACT_ROOT")
+    return LocalArtifactStorage(configured_local_root or local_root)
 
 
 def _first_env(env: Mapping[str, str], *names: str) -> str:

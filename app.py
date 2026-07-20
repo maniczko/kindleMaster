@@ -22,6 +22,8 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
 
+from bs4 import BeautifulSoup
+
 from app_runtime_services import (
     DEFAULT_DEBUG,
     DEFAULT_PORT,
@@ -575,7 +577,11 @@ def _render_chess_pgn_semantic_artifact(
         html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
     html_text = _sanitize_chess_reader_html(html_text)
     asset_base = f"/convert/artifact/{quote(job_id)}/{asset_route}/"
-    html_text = _rewrite_semantic_chess_asset_urls(html_text, asset_base=asset_base)
+    html_text = _rewrite_semantic_chess_asset_urls(
+        html_text,
+        asset_base=asset_base,
+        semantic_index=semantic_index,
+    )
     response = app.make_response(html_text)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -619,20 +625,87 @@ def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: 
     return semantic_index if routing.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE else None
 
 
-def _rewrite_semantic_chess_asset_urls(html_text: str, *, asset_base: str) -> str:
-    replacements = {
-        'href="styles.css"': f'href="{asset_base}styles.css"',
-        "href='styles.css'": f"href='{asset_base}styles.css'",
-        'src="app.js"': f'src="{asset_base}app.js"',
-        "src='app.js'": f"src='{asset_base}app.js'",
-        'href="assets/': f'href="{asset_base}assets/',
-        "href='assets/": f"href='{asset_base}assets/",
-        'src="assets/': f'src="{asset_base}assets/',
-        "src='assets/": f"src='{asset_base}assets/",
-    }
-    for old, new in replacements.items():
-        html_text = html_text.replace(old, new)
-    return html_text
+_SEMANTIC_READER_ASSET_ATTR_RE = re.compile(
+    r"(?P<prefix>\b(?:src|href|poster)\s*=\s*(?P<quote>['\"]))(?P<url>.*?)(?P=quote)",
+    flags=re.IGNORECASE,
+)
+_SEMANTIC_READER_ASSET_HEALTH_CACHE: dict[str, dict[str, object]] = {}
+_SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK = threading.Lock()
+_SEMANTIC_READER_ASSET_HEALTH_CACHE_MAX = 128
+_SEMANTIC_READER_JOB_ROOT_PREFIXES = ("input/", "log/", "output/", "report/", "reports/", "review/")
+
+
+def _safe_semantic_reader_asset_path(value: object) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw or raw.startswith(("#", "/", "//")):
+        return ""
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return ""
+    decoded_path = urllib.parse.unquote(parsed.path).replace("\\", "/")
+    parts: list[str] = []
+    for part in decoded_path.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                parts.append(part)
+            elif parts[-1] == "..":
+                parts.append(part)
+            else:
+                parts.pop()
+            continue
+        if ":" in part or "\x00" in part:
+            return ""
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _semantic_chess_job_dir(semantic_index: Path) -> Path:
+    semantic_root = semantic_index.parent.resolve()
+    return semantic_root.parent if semantic_root.name == "semantic_chess_html" else semantic_root
+
+
+def _semantic_reader_asset_route_path(value: object, semantic_index: Path | None = None) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    safe_path = _safe_semantic_reader_asset_path(raw)
+    if not safe_path:
+        return ""
+    if not safe_path.startswith("../"):
+        return safe_path
+    if semantic_index is None:
+        return ""
+    semantic_root = semantic_index.parent.resolve()
+    job_root = _semantic_chess_job_dir(semantic_index)
+    candidate = (semantic_root / urllib.parse.unquote(urllib.parse.urlsplit(raw).path)).resolve()
+    if candidate == job_root or job_root in candidate.parents:
+        return candidate.relative_to(job_root).as_posix()
+    return ""
+
+
+def _rewrite_semantic_chess_asset_urls(
+    html_text: str,
+    *,
+    asset_base: str,
+    semantic_index: Path | None = None,
+) -> str:
+    normalized_base = asset_base.rstrip("/") + "/"
+
+    def replace(match: re.Match[str]) -> str:
+        raw_url = match.group("url")
+        route_path = _semantic_reader_asset_route_path(raw_url, semantic_index)
+        if not route_path:
+            return match.group(0)
+        suffix = ""
+        parsed = urllib.parse.urlsplit(raw_url)
+        if parsed.query:
+            suffix += f"?{parsed.query}"
+        if parsed.fragment:
+            suffix += f"#{parsed.fragment}"
+        rewritten = f"{normalized_base}{quote(route_path, safe='/')}{suffix}"
+        return f"{match.group('prefix')}{rewritten}{match.group('quote')}"
+
+    return _SEMANTIC_READER_ASSET_ATTR_RE.sub(replace, html_text)
 
 
 def _artifact_job_dir_from_path(path: Path) -> Path | None:
@@ -1205,7 +1278,159 @@ def _semantic_chess_index_is_final_reader(path: Path | None) -> bool:
 def _semantic_chess_reader_health_gate(semantic_index: Path | None) -> dict:
     if semantic_index is None:
         return {}
-    return _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
+    stored = _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
+    if not stored:
+        return {}
+    asset_health = _semantic_reader_asset_health(semantic_index)
+    blockers = [str(value) for value in stored.get("blockers", []) or [] if str(value)]
+    warnings = [str(value) for value in stored.get("warnings", []) or [] if str(value)]
+    if asset_health["missing_required_asset_count"]:
+        blockers.append("missing_reader_assets")
+    if asset_health["missing_optional_asset_count"]:
+        warnings.append("missing_optional_reader_assets")
+    stored.update(asset_health)
+    stored["blockers"] = list(dict.fromkeys(blockers))
+    stored["warnings"] = list(dict.fromkeys(warnings))
+    if stored["blockers"]:
+        stored["decision"] = "fail"
+        stored["status"] = "FAIL"
+    elif stored["warnings"]:
+        stored["decision"] = "pass"
+        stored["status"] = "PASS_WITH_WARNINGS"
+    return stored
+
+
+def _semantic_reader_asset_is_optional(node: object, asset_path: str) -> bool:
+    classes = " ".join(getattr(node, "get", lambda *_: [])("class", []) or []).lower()
+    alt = str(getattr(node, "get", lambda *_: "")("alt", "") or "").lower()
+    normalized = asset_path.lower()
+    return "debug" in classes or "debug overlay" in alt or normalized.endswith("_overlay.png")
+
+
+def _semantic_reader_asset_candidate_paths(semantic_index: Path, safe_path: str) -> tuple[Path, ...]:
+    semantic_root = semantic_index.parent
+    job_root = semantic_root.parent if semantic_root.name == "semantic_chess_html" else semantic_root
+    roots = (
+        (job_root, semantic_root)
+        if safe_path.lower().startswith(_SEMANTIC_READER_JOB_ROOT_PREFIXES)
+        else (semantic_root, job_root)
+    )
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.append(root / safe_path)
+    return tuple(candidates)
+
+
+def _resolve_semantic_chess_asset_path(semantic_index: Path, asset_path: object) -> Path | None:
+    safe_path = _safe_semantic_reader_asset_path(asset_path)
+    if not safe_path or safe_path.startswith("../"):
+        return None
+    for candidate in _semantic_reader_asset_candidate_paths(semantic_index, safe_path):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _path_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _cached_semantic_reader_asset_health(semantic_index: Path) -> dict[str, object] | None:
+    cache_key = str(semantic_index.resolve())
+    with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+        cached = _SEMANTIC_READER_ASSET_HEALTH_CACHE.get(cache_key)
+    if not cached or cached.get("index_signature") != _path_signature(semantic_index):
+        return None
+    directory_signatures = cached.get("directory_signatures")
+    if not isinstance(directory_signatures, dict):
+        return None
+    for raw_path, signature in directory_signatures.items():
+        if _path_signature(Path(raw_path)) != signature:
+            return None
+    health = cached.get("health")
+    return dict(health) if isinstance(health, dict) else None
+
+
+def _store_semantic_reader_asset_health(
+    semantic_index: Path,
+    *,
+    directories: set[Path],
+    health: dict[str, object],
+) -> None:
+    cache_key = str(semantic_index.resolve())
+    entry = {
+        "index_signature": _path_signature(semantic_index),
+        "directory_signatures": {str(path): _path_signature(path) for path in sorted(directories)},
+        "health": dict(health),
+    }
+    with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+        if len(_SEMANTIC_READER_ASSET_HEALTH_CACHE) >= _SEMANTIC_READER_ASSET_HEALTH_CACHE_MAX:
+            oldest_key = next(iter(_SEMANTIC_READER_ASSET_HEALTH_CACHE))
+            _SEMANTIC_READER_ASSET_HEALTH_CACHE.pop(oldest_key, None)
+        _SEMANTIC_READER_ASSET_HEALTH_CACHE[cache_key] = entry
+
+
+def _semantic_reader_asset_health(semantic_index: Path) -> dict[str, object]:
+    cached = _cached_semantic_reader_asset_health(semantic_index)
+    if cached is not None:
+        return cached
+    try:
+        html_text = semantic_index.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {
+            "referenced_image_asset_count": 0,
+            "missing_required_asset_count": 1,
+            "missing_optional_asset_count": 0,
+            "missing_required_asset_paths": ["index.html"],
+            "missing_optional_asset_paths": [],
+        }
+    soup = BeautifulSoup(html_text, "html.parser")
+    referenced_count = 0
+    missing_required: list[str] = []
+    missing_optional: list[str] = []
+    asset_directories: set[Path] = set()
+    image_references: list[tuple[object, str, tuple[Path, ...]]] = []
+    for image in soup.find_all("img"):
+        raw_src = str(image.get("src") or "").strip()
+        route_path = _semantic_reader_asset_route_path(raw_src, semantic_index)
+        if not route_path:
+            if raw_src and urllib.parse.urlsplit(raw_src).scheme in {"http", "https", "data"}:
+                continue
+            missing_required.append(raw_src or "<empty-src>")
+            continue
+        referenced_count += 1
+        candidates = _semantic_reader_asset_candidate_paths(semantic_index, route_path)
+        asset_directories.update(candidate.parent for candidate in candidates)
+        image_references.append((image, route_path, candidates))
+
+    directory_files: dict[Path, set[str]] = {}
+    for directory in asset_directories:
+        try:
+            with os.scandir(directory) as entries:
+                directory_files[directory] = {entry.name for entry in entries if entry.is_file()}
+        except OSError:
+            directory_files[directory] = set()
+
+    for image, route_path, candidates in image_references:
+        if any(candidate.name in directory_files.get(candidate.parent, set()) for candidate in candidates):
+            continue
+        target = missing_optional if _semantic_reader_asset_is_optional(image, route_path) else missing_required
+        target.append(route_path)
+    health = {
+        "referenced_image_asset_count": referenced_count,
+        "missing_required_asset_count": len(missing_required),
+        "missing_optional_asset_count": len(missing_optional),
+        "missing_required_asset_paths": missing_required[:25],
+        "missing_optional_asset_paths": missing_optional[:25],
+    }
+    _store_semantic_reader_asset_health(semantic_index, directories=asset_directories, health=health)
+    return health
 
 
 def _missing_final_reader_health_gate(semantic_index: Path | None) -> dict:
@@ -1257,6 +1482,11 @@ def _final_reader_health_summary(
         "board_crop_count",
         "empty_img_src_count",
         "asset_missing_empty_src_count",
+        "referenced_image_asset_count",
+        "missing_required_asset_count",
+        "missing_optional_asset_count",
+        "missing_required_asset_paths",
+        "missing_optional_asset_paths",
         "diagrams_total",
         "fen_accepted",
     ):
@@ -6380,9 +6610,8 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
     semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
     if semantic_index is None:
         return _final_reader_missing_response(job_id, artifact_path, artifact)
-    root = semantic_index.parent.resolve()
-    requested = (root / asset_path).resolve()
-    if root not in requested.parents and requested != root:
+    safe_asset_path = _safe_semantic_reader_asset_path(asset_path)
+    if not safe_asset_path or safe_asset_path.startswith("../"):
         return _json_error(
             "Nieprawidłowa ścieżka artefaktu.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -6390,7 +6619,8 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
             phase="download",
             job_id=job_id,
         )
-    if not requested.is_file():
+    requested = _resolve_semantic_chess_asset_path(semantic_index, safe_asset_path)
+    if requested is None:
         return _json_error(
             "Nie znaleziono assetu semantycznego HTML.",
             error_code=ERROR_MISSING_OUTPUT,

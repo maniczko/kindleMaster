@@ -228,6 +228,7 @@ RUNTIME_TESTS = [
     "test_runtime_waitress_smoke.py",
     "test_browser_polling_e2e.py",
     "test_sprint2_playwright_smoke.py",
+    "test_chess_reader_asset_playwright.py",
     "test_browser_privacy_diagnostics.py",
     "test_ui_state_screenshot_pack.py",
 ]

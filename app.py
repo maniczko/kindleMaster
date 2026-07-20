@@ -5720,7 +5720,36 @@ def convert_job_delete(job_id: str):
             str(cloud_user.get("id") or ""),
             limit=MAX_CONVERSION_JOB_HISTORY_LIMIT,
         ).get(job_id)
+        if job:
+            job["cloud"] = True
     if not job:
+        if cloud_user and cloud_token:
+            cloud_delete = _delete_supabase_conversion_job(
+                cloud_token,
+                str(cloud_user.get("id") or ""),
+                job_id,
+            )
+            if cloud_delete.get("status") != "failed":
+                response = jsonify(
+                    {
+                        "success": True,
+                        "job_id": job_id,
+                        "status": "already_missing",
+                        "cleanup": {"status": "skipped", "reason": "job_missing"},
+                        "cloud_delete": cloud_delete,
+                    }
+                )
+                apply_no_store_headers(response.headers)
+                return response
+            return _json_error(
+                "Nie udalo sie usunac publikacji z historii konta.",
+                error_code="conversion_job_cloud_delete_failed",
+                status_code=502,
+                phase="delete",
+                job_id=job_id,
+                retryable=True,
+                extra={"cloud_delete": cloud_delete},
+            )
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,

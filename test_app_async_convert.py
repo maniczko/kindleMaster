@@ -1307,7 +1307,7 @@ class AppAsyncConvertTests(unittest.TestCase):
             filename="cloud-only.pdf",
             created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
-        cloud_job.update({"status": "ready", "cloud": True})
+        cloud_job.update({"status": "ready"})
 
         with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(
             app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")
@@ -1318,6 +1318,20 @@ class AppAsyncConvertTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["status"], "deleted")
+        cloud_delete.assert_called_once_with("token", user_id, job_id)
+
+    def test_authenticated_delete_is_idempotent_when_cloud_history_is_already_missing(self) -> None:
+        job_id = "missing-cloud-delete-job"
+        user_id = "12345678-1234-1234-1234-123456789012"
+        with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(
+            app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")
+        ), patch.object(app_module, "_load_supabase_conversion_jobs", return_value={}), patch.object(
+            app_module, "_delete_supabase_conversion_job", return_value={"status": "missing", "provider": "supabase"}
+        ) as cloud_delete:
+            response = self.client.delete(f"/convert/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "already_missing")
         cloud_delete.assert_called_once_with("token", user_id, job_id)
 
     def test_convert_library_filters_ready_jobs_and_exposes_report_links(self) -> None:

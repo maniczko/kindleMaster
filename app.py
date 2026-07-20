@@ -16,6 +16,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -633,6 +634,16 @@ _SEMANTIC_READER_ASSET_HEALTH_CACHE: dict[str, dict[str, object]] = {}
 _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK = threading.Lock()
 _SEMANTIC_READER_ASSET_HEALTH_CACHE_MAX = 128
 _SEMANTIC_READER_JOB_ROOT_PREFIXES = ("input/", "log/", "output/", "report/", "reports/", "review/")
+_SEMANTIC_READER_ASSET_RECOVERY_CACHE: dict[str, dict[str, object]] = {}
+_SEMANTIC_READER_ASSET_RECOVERY_LOCK = threading.Lock()
+_TWO_CROP_REVIEW_ZIP_NAME = "chess_fen_two_crop_review_artifacts.zip"
+_TWO_CROP_REVIEW_MEMBER_RE = re.compile(
+    r"review/chess_fen/two_crop/(?P<filename>[A-Za-z0-9_.-]+_(?P<kind>board|marker|overlay)\.png)"
+)
+_TWO_CROP_RECOVERY_MAX_MEMBERS = 2_000
+_TWO_CROP_RECOVERY_MAX_MEMBER_BYTES = 20 * 1024 * 1024
+_TWO_CROP_RECOVERY_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+_TWO_CROP_RECOVERY_MAX_COMPRESSION_RATIO = 200
 
 
 def _safe_semantic_reader_asset_path(value: object) -> str:
@@ -683,13 +694,20 @@ def _semantic_reader_index_for_job(job_id: object) -> Path | None:
     safe_job_id = str(job_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
         return None
-    job_root = _named_artifact_child(ARTIFACT_ROOT, safe_job_id, directory_only=True)
+    job_root = _artifact_job_root_for_id(safe_job_id)
     if job_root is None:
         return None
     semantic_root = _named_artifact_child(job_root, "semantic_chess_html", directory_only=True)
     if semantic_root is None:
         return None
     return _named_artifact_child(semantic_root, "index.html")
+
+
+def _artifact_job_root_for_id(job_id: object) -> Path | None:
+    safe_job_id = str(job_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+    return _named_artifact_child(ARTIFACT_ROOT, safe_job_id, directory_only=True)
 
 
 def _semantic_reader_asset_route_path(value: object, semantic_index: Path | None = None) -> str:
@@ -1294,6 +1312,7 @@ def _semantic_chess_reader_health_gate(job_id: object) -> dict:
     semantic_index = _semantic_reader_index_for_job(job_id)
     if semantic_index is None:
         return {}
+    asset_recovery = _recover_semantic_reader_assets_from_zip(job_id)
     stored = _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
     if not stored:
         return {}
@@ -1305,6 +1324,7 @@ def _semantic_chess_reader_health_gate(job_id: object) -> dict:
     if asset_health["missing_optional_asset_count"]:
         warnings.append("missing_optional_reader_assets")
     stored.update(asset_health)
+    stored["asset_recovery"] = asset_recovery
     stored["blockers"] = list(dict.fromkeys(blockers))
     stored["warnings"] = list(dict.fromkeys(warnings))
     if stored["blockers"]:
@@ -1388,6 +1408,130 @@ def _path_signature(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return stat.st_mtime_ns, stat.st_size
+
+
+def _two_crop_recovery_source(job_id: object) -> tuple[Path, Path] | None:
+    job_root = _artifact_job_root_for_id(job_id)
+    if job_root is None:
+        return None
+    report_root = _named_artifact_child(job_root, "report", directory_only=True)
+    if report_root is None:
+        return None
+    archive_path = _named_artifact_child(report_root, _TWO_CROP_REVIEW_ZIP_NAME)
+    return (job_root, archive_path) if archive_path is not None else None
+
+
+def _two_crop_recovery_directory(job_root: Path) -> Path:
+    return job_root / "review" / "chess_fen" / "two_crop"
+
+
+def _two_crop_recovery_cache_key(job_root: Path) -> str:
+    return str(job_root)
+
+
+def _recover_semantic_reader_assets_from_zip(job_id: object) -> dict[str, object]:
+    source = _two_crop_recovery_source(job_id)
+    if source is None:
+        return {"status": "unavailable", "reason": "two_crop_review_zip_missing", "recovered_count": 0}
+    job_root, archive_path = source
+    target_dir = _two_crop_recovery_directory(job_root)
+    cache_key = _two_crop_recovery_cache_key(job_root)
+    archive_signature = _path_signature(archive_path)
+    target_signature = _path_signature(target_dir)
+    with _SEMANTIC_READER_ASSET_RECOVERY_LOCK:
+        cached = _SEMANTIC_READER_ASSET_RECOVERY_CACHE.get(cache_key)
+        if (
+            cached
+            and cached.get("archive_signature") == archive_signature
+            and cached.get("target_signature") == target_signature
+        ):
+            result = dict(cached.get("result") or {})
+            result["cached"] = True
+            return result
+
+        recovered_count = 0
+        existing_count = 0
+        ignored_count = 0
+        rejected_count = 0
+        total_uncompressed_bytes = 0
+        kind_counts = {"board": 0, "marker": 0, "overlay": 0}
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
+                if len(members) > _TWO_CROP_RECOVERY_MAX_MEMBERS:
+                    raise ValueError("two_crop_zip_member_limit_exceeded")
+                for info in members:
+                    if info.is_dir():
+                        ignored_count += 1
+                        continue
+                    match = _TWO_CROP_REVIEW_MEMBER_RE.fullmatch(info.filename)
+                    if match is None:
+                        ignored_count += 1
+                        continue
+                    if info.file_size < 1 or info.file_size > _TWO_CROP_RECOVERY_MAX_MEMBER_BYTES:
+                        rejected_count += 1
+                        continue
+                    total_uncompressed_bytes += info.file_size
+                    if total_uncompressed_bytes > _TWO_CROP_RECOVERY_MAX_TOTAL_BYTES:
+                        raise ValueError("two_crop_zip_uncompressed_limit_exceeded")
+                    compression_ratio = info.file_size / max(1, info.compress_size)
+                    if compression_ratio > _TWO_CROP_RECOVERY_MAX_COMPRESSION_RATIO:
+                        rejected_count += 1
+                        continue
+                    filename = match.group("filename")
+                    target = target_dir / filename
+                    if target.exists():
+                        existing_count += 1
+                        kind_counts[match.group("kind")] += 1
+                        continue
+                    payload = archive.read(info)
+                    if len(payload) != info.file_size:
+                        rejected_count += 1
+                        continue
+                    try:
+                        with target.open("xb") as output:
+                            output.write(payload)
+                    except FileExistsError:
+                        existing_count += 1
+                    except OSError:
+                        target.unlink(missing_ok=True)
+                        raise
+                    else:
+                        recovered_count += 1
+                    kind_counts[match.group("kind")] += 1
+        except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
+            result = {
+                "status": "failed",
+                "reason": str(error),
+                "recovered_count": recovered_count,
+                "existing_count": existing_count,
+                "ignored_count": ignored_count,
+                "rejected_count": rejected_count,
+            }
+        else:
+            result = {
+                "status": "recovered" if recovered_count else "already_recovered",
+                "reason": "",
+                "recovered_count": recovered_count,
+                "existing_count": existing_count,
+                "ignored_count": ignored_count,
+                "rejected_count": rejected_count,
+                "board_count": kind_counts["board"],
+                "marker_count": kind_counts["marker"],
+                "overlay_count": kind_counts["overlay"],
+            }
+
+        semantic_index = _semantic_reader_index_for_job(job_id)
+        if semantic_index is not None:
+            with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+                _SEMANTIC_READER_ASSET_HEALTH_CACHE.pop(str(semantic_index), None)
+        _SEMANTIC_READER_ASSET_RECOVERY_CACHE[cache_key] = {
+            "archive_signature": archive_signature,
+            "target_signature": _path_signature(target_dir),
+            "result": dict(result),
+        }
+        return result
 
 
 def _cached_semantic_reader_asset_health(semantic_index: Path) -> dict[str, object] | None:
@@ -1568,6 +1712,7 @@ def _final_reader_health_summary(
         "missing_optional_asset_count",
         "missing_required_asset_paths",
         "missing_optional_asset_paths",
+        "asset_recovery",
         "diagrams_total",
         "fen_accepted",
     ):
@@ -2072,6 +2217,11 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         None,
     )
     chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
+    chess_diagrams_file = _first_file(job_dir / "report", "chess_diagrams.json")
+    chess_fen_two_crop_review_artifacts_file = _first_file(
+        job_dir / "report",
+        _TWO_CROP_REVIEW_ZIP_NAME,
+    )
     chess_fen_review_file = _first_file(job_dir / "review", "fen_manual_review.html")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
     if input_file is None and output_file is None and quality_json_file is None and chess_fen_review_file is None:
@@ -2179,6 +2329,24 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         )
         artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
         artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
+    if chess_diagrams_file is not None:
+        artifacts["chess_diagrams"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_diagrams_file,
+        )
+        artifacts["chess_diagrams"]["download_url"] = f"/convert/artifact/{job_id}/chess_diagrams"
+        artifacts["chess_diagrams"]["label"] = "Chess diagrams"
+    if chess_fen_two_crop_review_artifacts_file is not None:
+        artifacts["chess_fen_two_crop_review_artifacts"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_fen_two_crop_review_artifacts_file,
+        )
+        artifacts["chess_fen_two_crop_review_artifacts"]["download_url"] = (
+            f"/convert/artifact/{job_id}/chess_fen_two_crop_review_artifacts"
+        )
+        artifacts["chess_fen_two_crop_review_artifacts"]["label"] = "Chess FEN two-crop review artifacts"
     if chess_fen_review_file is not None:
         artifacts["chess_fen_review"] = _local_artifact_metadata(
             job_id,

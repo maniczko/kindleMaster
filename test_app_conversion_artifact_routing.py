@@ -5,6 +5,7 @@ import json
 import shutil
 import tempfile
 import unittest
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1069,6 +1070,85 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
 
         reader_response.close()
         status_response.close()
+
+    def test_yusupov_reader_recovers_two_crop_assets_from_retained_zip(self) -> None:
+        job_id = "routing-yusupov-reader-zip-recovery"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body>Source evidence.</body></html>",
+        )
+        semantic_index = self._write_final_reader_sidecar(source_html, diagrams_total=1)
+        job_root = source_html.parents[1]
+        report_dir = job_root / "report"
+        (report_dir / "recovery.quality.json").write_text(
+            json.dumps({"job": {"job_id": job_id, "status": "ready", "filename": "Yusupov.pdf"}}),
+            encoding="utf-8",
+        )
+        (report_dir / "chess_diagrams.json").write_text(
+            json.dumps({"schema": "kindlemaster.yusupov_style_chess_diagrams.v1", "diagrams": []}),
+            encoding="utf-8",
+        )
+        crop_root = "review/chess_fen/two_crop"
+        board_name = "notation_layout_p010_01_board.png"
+        marker_name = "notation_layout_p010_01_marker.png"
+        overlay_name = "notation_layout_p010_01_overlay.png"
+        archive_path = report_dir / "chess_fen_two_crop_review_artifacts.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(f"{crop_root}/{board_name}", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/{marker_name}", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/{overlay_name}", self.TEST_PNG)
+            archive.writestr("../../outside.png", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/unexpected.txt", b"not an image")
+        semantic_index.write_text(
+            f"""
+            <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+              <article class="card">
+                <img src="{crop_root}/{board_name}" alt="source crop">
+                <img src="{crop_root}/{marker_name}" alt="side marker crop">
+                <img src="{crop_root}/{overlay_name}" alt="debug overlay">
+              </article>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+
+        target_dir = job_root / "review" / "chess_fen" / "two_crop"
+        self.assertFalse(target_dir.exists())
+        rebuilt = app_module._rebuild_job_from_local_artifact_dir(job_root)
+        self.assertIsNotNone(rebuilt)
+        assert rebuilt is not None
+        self.assertIn("chess_diagrams", rebuilt["artifacts"])
+        self.assertIn("chess_fen_two_crop_review_artifacts", rebuilt["artifacts"])
+
+        self.assertTrue(target_dir.exists())
+        reader_response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        asset_responses = [
+            self.client.get(f"/convert/artifact/{job_id}/chess_reader_asset/{crop_root}/{name}")
+            for name in (board_name, marker_name, overlay_name)
+        ]
+
+        self.assertEqual(reader_response.status_code, 200)
+        self.assertEqual([response.status_code for response in asset_responses], [200, 200, 200])
+        self.assertTrue(all(response.data == self.TEST_PNG for response in asset_responses))
+        health = status_response.get_json()["final_reader_health"]
+        self.assertEqual(health["status"], "PASS")
+        self.assertEqual(health["missing_required_asset_count"], 0)
+        self.assertEqual(health["missing_optional_asset_count"], 0)
+        self.assertEqual(health["asset_recovery"]["status"], "recovered")
+        self.assertEqual(health["asset_recovery"]["recovered_count"], 3)
+        self.assertEqual(health["asset_recovery"]["ignored_count"], 2)
+        self.assertFalse((job_root / "outside.png").exists())
+        mtimes = {path.name: path.stat().st_mtime_ns for path in target_dir.glob("*.png")}
+
+        repeated_health = self.client.get(f"/convert/status/{job_id}").get_json()["final_reader_health"]
+        self.assertTrue(repeated_health["asset_recovery"]["cached"])
+        self.assertEqual(mtimes, {path.name: path.stat().st_mtime_ns for path in target_dir.glob("*.png")})
+
+        reader_response.close()
+        status_response.close()
+        for response in asset_responses:
+            response.close()
 
     def test_status_exposes_engine_analysis_gate_summary(self) -> None:
         job_id = "routing-engine-analysis-gate"

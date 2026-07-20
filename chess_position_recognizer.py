@@ -99,6 +99,11 @@ MIN_DOMINANT_CONTENT_CROP_GRID = 0.34
 MIN_EMPTY_VS_PIECE_ERROR_MARGIN = 0.003
 MIN_RECOGNITION_TRIM_GRID_CONFIDENCE = 0.34
 MIN_RECOGNITION_TRIM_SCORE_GAIN = 0.04
+_LOADED_TEMPLATE_CACHE_LIMIT = 8
+_LOADED_TEMPLATE_CACHE: dict[
+    tuple[str, tuple[tuple[str, int, int], ...]],
+    dict[str, list[Image.Image]],
+] = {}
 _PREPARED_TEMPLATE_CACHE_LIMIT = 8
 _PREPARED_TEMPLATE_CACHE: dict[tuple[tuple[str, tuple[int, ...]], ...], dict[str, np.ndarray]] = {}
 
@@ -558,6 +563,13 @@ def detect_board_candidates_in_page_image(
 
 
 def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image]]:
+    templates, _cache_info = _load_piece_templates_with_cache_info(template_dir)
+    return templates
+
+
+def _load_piece_templates_with_cache_info(
+    template_dir: str | Path,
+) -> tuple[dict[str, list[Image.Image]], dict[str, Any]]:
     """Load piece-cell templates from a directory.
 
     Filenames should start with a FEN piece marker (`K_*.png`, `p-dark.png`) or
@@ -565,8 +577,24 @@ def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image
     """
     root = Path(template_dir)
     if not root.exists() or not root.is_dir():
-        return {}
+        return {}, {
+            "cache_hit": False,
+            "template_dir": str(root),
+            "template_file_count": 0,
+            "template_variant_count": 0,
+        }
+    cache_key = _loaded_template_cache_key(root)
+    if cache_key is not None:
+        cached = _LOADED_TEMPLATE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, {
+                "cache_hit": True,
+                "template_dir": str(root),
+                "template_file_count": sum(len(images) for images in cached.values()),
+                "template_variant_count": sum(len(images) for images in cached.values()),
+            }
     templates: dict[str, list[Image.Image]] = {}
+    template_file_count = 0
     for path in sorted(root.iterdir()):
         if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
             continue
@@ -578,7 +606,37 @@ def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image
         except Exception:
             continue
         templates.setdefault(label, []).append(image)
-    return templates
+        template_file_count += 1
+    if cache_key is not None:
+        if len(_LOADED_TEMPLATE_CACHE) >= _LOADED_TEMPLATE_CACHE_LIMIT:
+            _LOADED_TEMPLATE_CACHE.pop(next(iter(_LOADED_TEMPLATE_CACHE)))
+        _LOADED_TEMPLATE_CACHE[cache_key] = templates
+    return templates, {
+        "cache_hit": False,
+        "template_dir": str(root),
+        "template_file_count": template_file_count,
+        "template_variant_count": sum(len(images) for images in templates.values()),
+    }
+
+
+def _loaded_template_cache_key(root: Path) -> tuple[str, tuple[tuple[str, int, int], ...]] | None:
+    try:
+        parts = tuple(
+            (
+                path.name,
+                int(path.stat().st_mtime_ns),
+                int(path.stat().st_size),
+            )
+            for path in sorted(root.iterdir())
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        )
+    except OSError:
+        return None
+    try:
+        resolved_root = str(root.resolve())
+    except OSError:
+        resolved_root = str(root)
+    return resolved_root, parts
 
 
 def normalize_board_crop_for_templates(image: Image.Image) -> Image.Image:
@@ -928,6 +986,7 @@ def _piece_template_cache_key(piece_templates: Mapping[str, Iterable[Any]]) -> t
 
 
 def _clear_piece_template_cache() -> None:
+    _LOADED_TEMPLATE_CACHE.clear()
     _PREPARED_TEMPLATE_CACHE.clear()
 
 

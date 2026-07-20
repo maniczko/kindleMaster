@@ -102,6 +102,33 @@ class ConversionCleanupTTLContractTests(unittest.TestCase):
         self.assertTrue(output_path.exists())
         self.assertIsNotNone(app_module._get_conversion_job("active-job"))
 
+    def test_cleanup_preserves_restored_artifact_job_and_persistent_files(self) -> None:
+        now = datetime.now(UTC)
+        old_time = now - timedelta(seconds=app_module.CONVERSION_JOB_RETENTION_SECONDS + 120)
+        source_path = self.upload_dir / "restored.pdf"
+        source_path.write_bytes(b"%PDF-restored")
+        output_path = self.upload_dir / "restored.epub"
+        output_path.write_bytes(b"restored-epub")
+
+        with patch.object(app_module, "UPLOAD_DIR", str(self.upload_dir)):
+            with app_module._CONVERSION_JOBS_LOCK:
+                app_module._CONVERSION_JOBS["restored-job"] = {
+                    "job_id": "restored-job",
+                    "status": "ready",
+                    "created_at": old_time.isoformat().replace("+00:00", "Z"),
+                    "updated_at": old_time.isoformat().replace("+00:00", "Z"),
+                    "source_path": str(source_path),
+                    "output_path": str(output_path),
+                    "restored_from_artifacts": True,
+                }
+
+            result = app_module._cleanup_expired_conversion_jobs(now=now, force=True)
+
+        self.assertEqual(result["removed_jobs"], 0)
+        self.assertTrue(source_path.exists())
+        self.assertTrue(output_path.exists())
+        self.assertIsNotNone(app_module._get_conversion_job("restored-job"))
+
     def test_cleanup_hook_removes_old_orphan_files_from_upload_dir(self) -> None:
         now = datetime.now(UTC)
         orphan_source = self.upload_dir / "orphan.pdf"

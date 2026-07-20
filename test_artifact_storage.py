@@ -54,6 +54,17 @@ class ArtifactStorageTests(unittest.TestCase):
         self.assertEqual(storage.availability()["provider"], "local")
         self.assertEqual(storage.availability()["status"], "available")
 
+    def test_local_storage_uses_configured_artifact_root(self) -> None:
+        configured_root = Path("/data/output/artifacts")
+
+        storage = build_artifact_storage(
+            {"KINDLEMASTER_ARTIFACT_ROOT": str(configured_root)},
+            local_root=Path("output/artifacts"),
+        )
+
+        self.assertIsInstance(storage, LocalArtifactStorage)
+        self.assertEqual(storage.root, configured_root)
+
     def test_configured_r2_reports_unavailable_without_boto3(self) -> None:
         config = ArtifactStorageConfig.from_env(
             {

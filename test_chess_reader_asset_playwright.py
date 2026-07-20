@@ -38,7 +38,7 @@ def _wait_for_server(base_url: str, process: subprocess.Popen[bytes], timeout_se
         if process.poll() is not None:
             raise RuntimeError(f"KindleMaster runtime stopped before startup (code={process.returncode}).")
         try:
-            with urllib.request.urlopen(f"{base_url}/", timeout=2) as response:
+            with urllib.request.urlopen(f"{base_url}/auth/config", timeout=2) as response:
                 if response.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError, OSError) as exc:

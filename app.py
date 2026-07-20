@@ -5750,13 +5750,17 @@ def convert_job_delete(job_id: str):
                 retryable=True,
                 extra={"cloud_delete": cloud_delete},
             )
-        return _json_error(
-            "Nie znaleziono zadania konwersji.",
-            error_code=ERROR_MISSING_OUTPUT,
-            status_code=404,
-            phase="delete",
-            job_id=job_id,
+        response = jsonify(
+            {
+                "success": True,
+                "job_id": job_id,
+                "status": "already_missing",
+                "cleanup": {"status": "skipped", "reason": "job_missing"},
+                "cloud_delete": {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"},
+            }
         )
+        apply_no_store_headers(response.headers)
+        return response
     if is_active_conversion_status(str(job.get("status") or "")):
         return _json_error(
             "Nie można usunąć publikacji, która jest jeszcze przetwarzana.",

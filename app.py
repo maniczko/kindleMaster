@@ -6653,13 +6653,25 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         return _final_reader_missing_response(job_id, artifact_path, artifact)
     if key == "chess_fen_review":
         from chess_fen_review_repository import ChessFenReviewRepository
+        from chess_fen_review_store import load_fen_review_progress
         from chess_fen_review_ui import render_fen_manual_review_html
 
         try:
-            review_payload = ChessFenReviewRepository(
-                artifact_path.parent,
-                artifact_id=job_id,
-            ).load()
+            auth_context = _resolve_request_auth_context()
+            authorized_job = (
+                _get_conversion_job_for_auth(job_id, auth_context)
+                if auth_context.authenticated and not auth_context.error
+                else None
+            )
+            review_payload = (
+                ChessFenReviewRepository(
+                    artifact_path.parent,
+                    artifact_id=job_id,
+                    owner_user_id=auth_context.user_id,
+                ).load()
+                if authorized_job is not None
+                else load_fen_review_progress(artifact_path.parent)
+            )
             review_rows = list(review_payload.get("rows") or [])
             response = app.response_class(
                 render_fen_manual_review_html(
@@ -6695,14 +6707,27 @@ def convert_artifact_download(job_id: str, artifact_key: str):
 
 @app.route("/convert/artifact/<job_id>/chess_fen_review_progress", methods=["GET", "PUT"])
 def convert_fen_manual_review_progress(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
+    auth_config = load_supabase_auth_config()
+    if auth_config.enabled and auth_config.configured and not auth_context.authenticated:
+        return _json_auth_error(
+            AuthContext(
+                error="Logowanie jest wymagane do zapisu oznaczeń w bazie.",
+                error_code="auth_required",
+                status_code=401,
+            )
+        )
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
-    job = _get_conversion_job(job_id)
+    job = _get_conversion_job_for_auth(job_id, auth_context)
     if not job:
         _ensure_local_artifact_history_loaded()
-        job = _get_conversion_job(job_id)
+        job = _get_conversion_job_for_auth(job_id, auth_context)
     if not job:
-        job = _restore_local_artifact_job_by_id(job_id)
+        restored = _restore_local_artifact_job_by_id(job_id)
+        job = _get_conversion_job_for_auth(job_id, auth_context) if restored else None
     if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",
@@ -6722,9 +6747,18 @@ def convert_fen_manual_review_progress(job_id: str):
         )
 
     from chess_fen_review_repository import ChessFenReviewRepository
-    from chess_fen_review_store import FenReviewStoreError
+    from chess_fen_review_store import (
+        FenReviewConflictError,
+        FenReviewOwnershipError,
+        FenReviewSessionClosedError,
+        FenReviewStoreError,
+    )
 
-    repository = ChessFenReviewRepository(review_dir, artifact_id=job_id)
+    repository = ChessFenReviewRepository(
+        review_dir,
+        artifact_id=job_id,
+        owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
+    )
 
     try:
         if request.method == "GET":
@@ -6736,11 +6770,46 @@ def convert_fen_manual_review_progress(job_id: str):
             rows = submitted.get("rows")
             if not isinstance(rows, list):
                 raise FenReviewStoreError("Pole rows musi by? list? rekord?w.")
+            try:
+                expected_revision = int(submitted.get("expected_revision") or 0)
+            except (TypeError, ValueError) as error:
+                raise FenReviewStoreError("Pole expected_revision musi być liczbą całkowitą.") from error
+            if expected_revision < 0:
+                raise FenReviewStoreError("Pole expected_revision nie może być ujemne.")
+            action = str(submitted.get("action") or "save").strip().lower()
+            change_source = str(submitted.get("change_source") or "autosave").strip().lower()
             payload = repository.save(
                 rows,
                 source_digest=str(submitted.get("source_digest") or ""),
-                owner_user_id=str(job.get("user_id") or ""),
+                owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
+                expected_revision=expected_revision,
+                action=action,
+                change_source=change_source,
             )
+    except FenReviewConflictError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_revision_conflict",
+            status_code=409,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except FenReviewSessionClosedError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_session_closed",
+            status_code=409,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except FenReviewOwnershipError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_owner_mismatch",
+            status_code=403,
+            phase="fen_review",
+            job_id=job_id,
+        )
     except FenReviewStoreError as exc:
         return _json_error(
             str(exc),

@@ -279,7 +279,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <main class="shell">
     <header class="hero"><div><div class="eyebrow">KindleMaster · etykiety źródłowe</div><h1>Oznacz figury, nie zapis FEN</h1><p>Model wstępnie wypełnia planszę. Popraw błędne pola, potwierdź 64 pola i niezależnie sprawdź marker. Pełny FEN powstanie automatycznie.</p></div><div class="source"><b>Artefakt:</b> __ARTIFACT_ID__<br><b>Powiązanie:</b> __SOURCE_BINDING__<br><b>SHA:</b> __SOURCE_DIGEST__</div></header>
     <section class="guide" aria-label="Instrukcja"><div class="guide-step"><b>1. Crop planszy</b><span>Jeśli brakuje rzędu albo widzisz dwa diagramy, oznacz zły crop. Nie zgaduj.</span></div><div class="guide-step"><b>2. Siatka 8×8</b><span>Wybierz figurę i klikaj tylko pola różniące się od sugestii. Potem potwierdź 64 pola.</span></div><div class="guide-step"><b>3. Marker</b><span>△ = białe, ▼ = czarne. Strona ruchu trafia do wygenerowanego FEN.</span></div></section>
-    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading">Łączenie z zapisem…</span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
+    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading">Łączenie z zapisem…</span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
     <section class="review-grid">__CARDS__</section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -292,6 +292,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const stateKey = 'kindlemaster.fen-manual.piece-grid-v2.' + (__SOURCE_KEY__ || artifactId || 'local');
     const reviewerKey = stateKey + '.reviewer';
     const localModifiedKey = stateKey + '.modifiedAt';
+    const conflictKey = stateKey + '.revisionConflict';
     const serverProgressUrl = artifactId && artifactId !== 'local' ? `/convert/artifact/${encodeURIComponent(artifactId)}/chess_fen_review_progress` : '';
     const pieceGlyphs = {'':'',K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
     const pieceNames = {'':'puste',K:'biały król',Q:'biały hetman',R:'biała wieża',B:'biały goniec',N:'biały skoczek',P:'biały pion',k:'czarny król',q:'czarny hetman',r:'czarna wieża',b:'czarny goniec',n:'czarny skoczek',p:'czarny pion'};
@@ -303,10 +304,47 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     let serverSavePending = false;
     let serverSaveInFlight = false;
     let stateRevision = 0;
+    let serverRevision = 0;
+    let sessionStatus = 'active';
     try { state = JSON.parse(localStorage.getItem(stateKey) || '{}'); } catch { state = {}; }
     const reviewer = document.getElementById('reviewer');
     const saveState = document.getElementById('save-state');
+    const toggleSession = document.getElementById('toggle-session');
     reviewer.value = localStorage.getItem(reviewerKey) || '';
+
+    function storedAccessToken() {
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index) || '';
+        if (!key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+        try {
+          const value = JSON.parse(localStorage.getItem(key) || '{}');
+          const candidates = [
+            value,
+            Array.isArray(value) ? value[0] : null,
+            value && value.currentSession,
+            value && value.session
+          ];
+          for (const candidate of candidates) {
+            if (candidate && typeof candidate.access_token === 'string') return candidate.access_token;
+          }
+        } catch {}
+      }
+      return '';
+    }
+    function serverHeaders(extra={}) {
+      const token = storedAccessToken();
+      return token ? {...extra,Authorization:`Bearer ${token}`} : extra;
+    }
+    function applySessionStatus(status) {
+      sessionStatus = status === 'complete' ? 'complete' : 'active';
+      const closed = sessionStatus === 'complete';
+      toggleSession.textContent = closed ? 'Otwórz ponownie' : 'Zamknij zestaw';
+      toggleSession.classList.toggle('primary', !closed);
+      for (const card of cards) {
+        for (const control of card.querySelectorAll('button,input,select,textarea')) control.disabled = closed;
+      }
+      reviewer.disabled = closed;
+    }
 
     const form = card => card.querySelector('.form');
     const seedRow = card => seed[Number(card.dataset.index)];
@@ -470,6 +508,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       palette.setAttribute('aria-busy','false');
       board.setAttribute('aria-busy','false');
       card.dataset.editorReady = 'true';
+      if (sessionStatus === 'complete') for (const control of card.querySelectorAll('button,input,select,textarea')) control.disabled = true;
       for (const choice of card.querySelectorAll('.piece-choice')) choice.addEventListener('click',()=>{card._selectedPiece=choice.dataset.piece||'';renderBoard(card)});
       for (const square of card.querySelectorAll('.board-square')) {
         square.addEventListener('click',()=>{card._squareLabels[Number(square.dataset.squareIndex)]=card._selectedPiece||'';resetGridVerification(card);save(card)});
@@ -552,13 +591,14 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     function loadCandidate(card) { card._squareLabels=candidateCells(card);resetGridVerification(card);save(card);toast('Przywrócono sugestię modelu. Sprawdź wszystkie 64 pola.'); }
     function setSaveState(value,message) { saveState.dataset.state=value;saveState.textContent=message; }
     function scheduleServerSave() {
+      if (sessionStatus === 'complete') return;
       serverSavePending = true;
       if (!serverProgressUrl) { setSaveState('local','Zapis lokalny; serwer niedostępny'); return; }
       setSaveState('pending','Zmiany czekają na zapis');
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(()=>saveAllToServer(false),1200);
+      saveTimer = setTimeout(()=>saveAllToServer('save',false),1200);
     }
-    async function saveAllToServer(showToast=true) {
+    async function saveAllToServer(action='save',showToast=true) {
       if (!serverProgressUrl || serverSaveInFlight) return false;
       clearTimeout(saveTimer);
       serverSaveInFlight = true;
@@ -567,21 +607,35 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       try {
         const response = await fetch(serverProgressUrl,{
           method:'PUT',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({source_digest:sourceDigest,rows:cards.map(rowFor)})
+          headers:serverHeaders({'Content-Type':'application/json'}),
+          body:JSON.stringify({
+            source_digest:sourceDigest,
+            rows:cards.map(rowFor),
+            expected_revision:serverRevision,
+            action,
+            change_source:action === 'save' ? (showToast ? 'manual_save' : 'autosave') : action
+          })
         });
         const payload = await response.json().catch(()=>({}));
-        if (!response.ok || payload.success !== true) throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+        if (!response.ok || payload.success !== true) {
+          const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
+          error.conflict = response.status === 409;
+          throw error;
+        }
+        serverRevision = Number(payload.revision || serverRevision);
+        applySessionStatus(payload.session_status || sessionStatus);
+        localStorage.removeItem(conflictKey);
         serverSavePending = savingRevision !== stateRevision;
         localStorage.setItem(localModifiedKey,payload.saved_at || nowIso());
         if (serverSavePending) scheduleServerSave();
         else setSaveState('saved',`Zapisano ${new Date(payload.saved_at || Date.now()).toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}`);
-        if (showToast) toast(`Postęp zapisany: ${payload.summary?.completed || 0} zakończonych, ${payload.summary?.verified || 0} zweryfikowanych, ${payload.summary?.pending || 0} oczekujących.`);
+        if (showToast) toast(action === 'close' ? 'Zestaw zamknięty i zapisany jako wersja danych treningowych.' : action === 'reopen' ? 'Zestaw ponownie otwarty do edycji.' : `Postęp zapisany: ${payload.summary?.completed || 0} zakończonych, ${payload.summary?.verified || 0} zweryfikowanych, ${payload.summary?.pending || 0} oczekujących.`);
         return true;
       } catch (error) {
         serverSavePending = true;
-        setSaveState('error','Błąd zapisu; dane są w tej przeglądarce');
-        if (showToast) toast(`Nie udało się zapisać na serwerze: ${error.message}`);
+        if (error.conflict) localStorage.setItem(conflictKey,'true');
+        setSaveState('error',error.conflict ? 'Konflikt wersji; wczytaj nowszy zapis' : 'Błąd zapisu; dane są w tej przeglądarce');
+        if (showToast || error.conflict) toast(error.conflict ? 'Inna sesja zapisała nowszą wersję. Twoje zmiany pozostały lokalnie; odśwież dane przed kolejnym zapisem.' : `Nie udało się zapisać na serwerze: ${error.message}`);
         return false;
       } finally {
         serverSaveInFlight = false;
@@ -591,11 +645,13 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       if (!serverProgressUrl) { setSaveState('local','Zapis lokalny; użyj eksportu JSONL'); return; }
       setSaveState('loading','Wczytywanie zapisu z serwera…');
       try {
-        const response = await fetch(serverProgressUrl,{headers:{Accept:'application/json'}});
+        const response = await fetch(serverProgressUrl,{headers:serverHeaders({Accept:'application/json'})});
         const payload = await response.json().catch(()=>({}));
         if (!response.ok || payload.success !== true || !Array.isArray(payload.rows)) throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
         const localModifiedAt = Date.parse(localStorage.getItem(localModifiedKey) || '') || 0;
         const serverSavedAt = Date.parse(payload.saved_at || '') || 0;
+        serverRevision = Number(payload.revision || 0);
+        applySessionStatus(payload.session_status || 'active');
         const keepLocal = Object.keys(state).length > 0 && localModifiedAt > serverSavedAt;
         if (!keepLocal) {
           state = {};
@@ -613,7 +669,11 @@ _PAGE_TEMPLATE = r"""<!doctype html>
           refresh();
         } else {
           serverSavePending = true;
-          scheduleServerSave();
+          if (localStorage.getItem(conflictKey) === 'true') {
+            setSaveState('error','Konflikt wersji; sprawdź lokalne zmiany i zapisz ręcznie');
+          } else {
+            scheduleServerSave();
+          }
         }
         if (!serverSavePending) setSaveState('saved',payload.saved_at ? `Wczytano zapis ${new Date(payload.saved_at).toLocaleString('pl-PL')}` : 'Gotowe do zapisu na serwerze');
       } catch (error) {
@@ -646,7 +706,8 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     for(const id of ['search','status-filter','priority-filter'])document.getElementById(id).addEventListener('input',filterCards);
     document.getElementById('next-pending').addEventListener('click',nextPending);
     const evidenceReviewButton=document.createElement('button');evidenceReviewButton.type='button';evidenceReviewButton.textContent='Markery bbox';evidenceReviewButton.addEventListener('click',()=>{window.location.href='chess_evidence_review';});document.getElementById('import-jsonl').before(evidenceReviewButton);
-    document.getElementById('save-server').addEventListener('click',()=>saveAllToServer(true));
+    document.getElementById('save-server').addEventListener('click',()=>saveAllToServer('save',true));
+    toggleSession.addEventListener('click',()=>saveAllToServer(sessionStatus === 'complete' ? 'reopen' : 'close',true));
     document.addEventListener('keydown',event=>{if(event.altKey&&event.key.toLowerCase()==='n'){event.preventDefault();nextPending();}});
     document.getElementById('import-jsonl').addEventListener('click',()=>document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change',async event=>{

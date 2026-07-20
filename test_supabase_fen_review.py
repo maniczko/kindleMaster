@@ -63,6 +63,7 @@ class SupabaseFenReviewTests(unittest.TestCase):
                     "status": "active",
                     "summary": {"total": 1, "pending": 1},
                     "row_count": 1,
+                    "revision": 4,
                     "saved_at": "2026-07-16T12:00:00Z",
                 }
             ]
@@ -76,6 +77,7 @@ class SupabaseFenReviewTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result["storage"], "database")
         self.assertEqual(result["rows"][0]["diagram_id"], "p001-d1")
+        self.assertEqual(result["revision"], 4)
         self.assertIn("/rest/v1/chess_fen_review_sessions?", transport.calls[0]["url"])
         self.assertIn("/rest/v1/chess_fen_review_labels?", transport.calls[1]["url"])
         self.assertEqual(transport.calls[0]["headers"]["Authorization"], "Bearer service-role-secret")
@@ -124,11 +126,60 @@ class SupabaseFenReviewTests(unittest.TestCase):
         self.assertEqual(body["p_rows"][0]["diagram_fingerprint"], "1" * 64)
         self.assertEqual(len(body["p_rows"][0]["square_labels"]), 64)
         self.assertEqual(body["p_rows"][0]["id"], "p001-d1")
+        self.assertEqual(body["p_expected_revision"], 0)
+        self.assertEqual(body["p_action"], "save")
+        self.assertEqual(body["p_change_source"], "autosave")
         self.assertTrue(body["p_rows"][0]["square_diff_ack"])
         self.assertNotIn("source_pdf", body["p_rows"][0])
         self.assertNotIn("crop_path", body["p_rows"][0])
         self.assertEqual(result["storage"], "database")
         self.assertEqual(result["submitted_count"], 1)
+
+    def test_load_review_reuses_latest_owned_source_session(self) -> None:
+        transport = FakeTransport()
+        transport.queue([])
+        transport.queue(
+            [
+                {
+                    "artifact_id": "artifact-old",
+                    "source_document_sha256": "a" * 64,
+                    "schema_version": "kindlemaster.fen_review_progress.v2",
+                    "status": "complete",
+                    "summary": {"total": 1, "pending": 0},
+                    "row_count": 1,
+                    "revision": 8,
+                    "saved_at": "2026-07-16T12:00:00Z",
+                }
+            ]
+        )
+        transport.queue([{"row_payload": self._row()}])
+        client = SupabaseFenReviewClient(self._config(), transport=transport)
+
+        result = client.load_review(
+            artifact_id="artifact-new",
+            source_document_sha256="a" * 64,
+            owner_user_id="11111111-1111-1111-1111-111111111111",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["reused_from_artifact_id"], "artifact-old")
+        self.assertIn("owner_user_id=eq.11111111-1111-1111-1111-111111111111", transport.calls[1]["url"])
+        self.assertIn("artifact_id=eq.artifact-old", transport.calls[2]["url"])
+
+    def test_load_review_limits_current_artifact_to_owner_or_unclaimed_legacy_session(self) -> None:
+        transport = FakeTransport()
+        transport.queue([])
+        client = SupabaseFenReviewClient(self._config(), transport=transport)
+
+        result = client.load_review(
+            artifact_id="artifact-1",
+            owner_user_id="11111111-1111-1111-1111-111111111111",
+        )
+
+        self.assertIsNone(result)
+        self.assertIn("owner_user_id.eq.11111111-1111-1111-1111-111111111111", transport.calls[0]["url"])
+        self.assertIn("owner_user_id.is.null", transport.calls[0]["url"])
 
 
 if __name__ == "__main__":

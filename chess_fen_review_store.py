@@ -34,6 +34,18 @@ class FenReviewStoreError(ValueError):
     pass
 
 
+class FenReviewConflictError(FenReviewStoreError):
+    pass
+
+
+class FenReviewSessionClosedError(FenReviewStoreError):
+    pass
+
+
+class FenReviewOwnershipError(FenReviewStoreError):
+    pass
+
+
 def load_fen_review_progress(
     review_dir: str | Path,
     *,

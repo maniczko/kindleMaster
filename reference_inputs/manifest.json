@@ -53,7 +53,7 @@
       "notes": "Dense handbook fixture for heading, TOC, and text-cleanup regression.",
       "source_path": "<generated-fallback:dense_business_guide_pdf>",
       "target_path": "reference_inputs/pdf/dense_business_guide.pdf",
-      "size_bytes": 5326
+      "size_bytes": 5316
     },
     {
       "id": "diagram_training_book_pdf",
@@ -66,7 +66,7 @@
       "notes": "Training/diagram-heavy PDF for layout-sensitive smoke runs.",
       "source_path": "<generated-fallback:diagram_training_book_pdf>",
       "target_path": "reference_inputs/pdf/diagram_training_book.pdf",
-      "size_bytes": 5346
+      "size_bytes": 5336
     },
     {
       "id": "fundamenty_scan_chess_pdf",
@@ -83,7 +83,7 @@
       "chess_fen_seed_exact_accuracy_min": 0.9,
       "source_path": "<generated-fallback:fundamenty_scan_chess_pdf>",
       "target_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "size_bytes": 5393
+      "size_bytes": 5383
     },
     {
       "id": "fundamenty_scan_chess_holdout_pdf",
@@ -98,9 +98,9 @@
       "chess_fen_seed_labels": "reference_inputs/chess_fen/labels/fundamenty_seed_positions_holdout.jsonl",
       "chess_fen_template_profile": "fundamenty_merida_like",
       "chess_fen_seed_exact_accuracy_min": 0.9,
-      "source_path": "<generated-fallback:fundamenty_scan_chess_pdf>",
+      "source_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
       "target_path": "reference_inputs/pdf/fundamenty_1_1_scan_chess.pdf",
-      "size_bytes": 5393
+      "size_bytes": 5383
     },
     {
       "id": "magazine_layout_pdf",
@@ -179,7 +179,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38819
+      "size_bytes": 38816
     },
     {
       "id": "no_heading_document_docx",
@@ -192,7 +192,7 @@
       "generator": "no_heading_document",
       "source_path": "<generated:no_heading_document>",
       "target_path": "reference_inputs/docx/no_heading_document.docx",
-      "size_bytes": 35563
+      "size_bytes": 35560
     }
   ]
 }

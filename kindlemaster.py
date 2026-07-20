@@ -190,6 +190,7 @@ CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
     "test_premium_corpus_smoke_batches.py",
     "test_corpus_gate.py",
+    "test_chess_fen_evaluation.py",
     "test_chess_fen_recognition.py",
     "test_golden_epub_regression.py",
 ]

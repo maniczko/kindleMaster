@@ -859,6 +859,7 @@ def _deterministic_ensemble_contract_blockers(
     source_crop_hash = str(candidate.get("source_crop_hash") or evidence.get("source_crop_hash") or "").strip()
     local_model_evidence = bool(evidence.get("local_model_candidate"))
     template_evidence = bool(evidence.get("template_candidate"))
+    model_template_agreement = evidence.get("model_template_agreement")
     square_alternatives_checked = bool(evidence.get("square_alternatives_checked"))
     python_chess_valid = bool(evidence.get("python_chess_valid"))
     validate_fen_passed = bool(
@@ -874,6 +875,7 @@ def _deterministic_ensemble_contract_blockers(
         "source_crop_hash_present": bool(source_crop_hash),
         "local_model_candidate": local_model_evidence,
         "template_candidate": template_evidence,
+        "model_template_agreement": model_template_agreement,
         "square_alternatives_checked": square_alternatives_checked,
     }
     if not python_chess_valid:
@@ -904,11 +906,18 @@ def _deterministic_ensemble_contract_blockers(
                 "message": "Deterministic ensemble candidates require checked per-square alternatives.",
             }
         )
-    if not (local_model_evidence or template_evidence):
+    if not local_model_evidence or not template_evidence:
         blockers.append(
             {
-                "code": "no_template_or_model_agreement",
-                "message": "Deterministic ensemble candidates require local model or template evidence.",
+                "code": "model_template_consensus_missing",
+                "message": "Deterministic ensemble candidates require both local-model and template evidence.",
+            }
+        )
+    elif model_template_agreement is not True:
+        blockers.append(
+            {
+                "code": "model_template_conflict",
+                "message": "Local-model and template board placements must match exactly.",
             }
         )
     if score_margin < min_score_margin:
@@ -934,6 +943,7 @@ def _deterministic_ensemble_placement_blockers(
     source_crop_hash = str(candidate.get("source_crop_hash") or evidence.get("source_crop_hash") or "").strip()
     local_model_evidence = bool(evidence.get("local_model_candidate"))
     template_evidence = bool(evidence.get("template_candidate"))
+    model_template_agreement = evidence.get("model_template_agreement")
     square_alternatives_checked = bool(evidence.get("square_alternatives_checked"))
     blockers: list[dict[str, Any]] = []
     trace["deterministic_ensemble_placement_evidence"] = {
@@ -942,6 +952,7 @@ def _deterministic_ensemble_placement_blockers(
         "source_crop_hash_present": bool(source_crop_hash),
         "local_model_candidate": local_model_evidence,
         "template_candidate": template_evidence,
+        "model_template_agreement": model_template_agreement,
         "square_alternatives_checked": square_alternatives_checked,
     }
     if not source_crop_hash:
@@ -958,11 +969,18 @@ def _deterministic_ensemble_placement_blockers(
                 "message": "Deterministic ensemble placement candidates require checked per-square alternatives.",
             }
         )
-    if not (local_model_evidence or template_evidence):
+    if not local_model_evidence or not template_evidence:
         blockers.append(
             {
-                "code": "no_template_or_model_agreement",
-                "message": "Deterministic ensemble placement candidates require local model or template evidence.",
+                "code": "model_template_consensus_missing",
+                "message": "Deterministic ensemble placement candidates require both local-model and template evidence.",
+            }
+        )
+    elif model_template_agreement is not True:
+        blockers.append(
+            {
+                "code": "model_template_conflict",
+                "message": "Local-model and template board placements must match exactly.",
             }
         )
     if score_margin < min_score_margin:

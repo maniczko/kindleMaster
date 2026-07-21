@@ -1,0 +1,1149 @@
+{
+  "schema": "kindlemaster.fen_square_classifier.portable.v1",
+  "status": "ready",
+  "model_type": "rbf_svm_hog",
+  "model_name": "chess_fen_square_rbf_svm_v2",
+  "profile": "yusupov-dataset-v2",
+  "feature_schema": "grayscale16_hog4x4_projection_v1",
+  "feature_count": 512,
+  "classes": [
+    "B",
+    "K",
+    "N",
+    "P",
+    "Q",
+    "R",
+    "b",
+    "empty",
+    "k",
+    "n",
+    "p",
+    "q",
+    "r"
+  ],
+  "created_at": "2026-07-21T18:27:43.652788Z",
+  "artifact_path": "models/chess/chess_fen_square_yusupov_v2.npz",
+  "artifact_sha256": "95d2a653155ec3168a44f2635c9bc4b150dbf5c087cfe725eaab0f116fab813f",
+  "source_artifact_sha256": "d6c9510a380695e3f339cfa3a9296f0e1331716f77a21f9ccd35f666b1be4217",
+  "source_manifest_sha256": "744eb044dffeec5c4fe15d5492e26ae11124454c9cc45ba82ae9f23e31fc02e2",
+  "training_data": {
+    "dataset_sha256": "78e4385aeb1f595171d8370be84afd2573051ab790458c4d819ab29c00466201",
+    "split_counts": {
+      "train": 10880,
+      "val": 3648,
+      "holdout": 1728
+    },
+    "split_integrity": {
+      "status": "passed",
+      "group_count": 104,
+      "diagram_count": 254,
+      "leaked_groups": [],
+      "leaked_diagrams": [],
+      "incomplete_boards": [],
+      "policy": "A page or chapter group and all 64 squares from each diagram must stay in exactly one split."
+    }
+  },
+  "benchmark_comparison": {
+    "split": "holdout",
+    "baseline": {
+      "model_type": "feature_centroid",
+      "square_accuracy": 0.1545,
+      "exact_board_accuracy": 0.0
+    },
+    "candidate": {
+      "model_type": "rbf_svm_hog",
+      "square_accuracy": 0.983796,
+      "exact_board_accuracy": 0.703704
+    },
+    "delta": {
+      "square_accuracy": 0.829296,
+      "exact_board_accuracy": 0.703704
+    }
+  },
+  "calibration": {
+    "method": "temperature_scaling",
+    "source_split": "val",
+    "temperature": 0.303601
+  },
+  "acceptance": {
+    "source_split": "val",
+    "board_confidence": "board_evidence_v2",
+    "threshold": 0.963637,
+    "piece_confidence_threshold": 0.963604,
+    "king_confidence_threshold": 0.964115,
+    "policy": "Abstain unless board, occupied-piece and king evidence clear validation-calibrated zero-false thresholds."
+  },
+  "ood_detection": {
+    "method": "scaled_class_centroid_l2",
+    "source_split": "train",
+    "quantile": 0.99,
+    "distance_threshold": 1.412992586716347,
+    "holdout_used_for_tuning": false
+  },
+  "decoding": {
+    "policy": "exactly_one_king_per_color",
+    "confidence": "assigned_class_probability"
+  },
+  "orientation": {
+    "value": "white_bottom",
+    "source": "fixed_edition_profile",
+    "version": "yusupov-orientation-v1"
+  },
+  "marker_calibration": {
+    "calibration_version": "yusupov-marker-reliability-v1",
+    "source_profile": "yusupov-fundamentals",
+    "classifier_version": "marker_adaptive_v3",
+    "source_split": "calibration",
+    "artifact_path": "models/chess/chess_marker_calibration_yusupov_v1.json",
+    "artifact_sha256": "7a9f374834d6748ab6f163cbc4acd41a90d68e8c305440f89a337dc57dd9a84e"
+  },
+  "validation": {
+    "sample_count": 3648,
+    "exact_square_count": 3593,
+    "square_accuracy": 0.984923,
+    "piece_accuracy": 0.960503,
+    "board_count": 57,
+    "exact_board_count": 40,
+    "exact_board_accuracy": 0.701754,
+    "exact_fen_placement_count": 40,
+    "exact_fen_placement_accuracy": 0.701754,
+    "confusion": {
+      "B": {
+        "B": 44,
+        "P": 2,
+        "empty": 1
+      },
+      "K": {
+        "K": 54,
+        "P": 1,
+        "R": 2
+      },
+      "N": {
+        "N": 50,
+        "P": 4,
+        "empty": 1
+      },
+      "P": {
+        "B": 1,
+        "K": 1,
+        "P": 268,
+        "R": 1,
+        "empty": 4,
+        "p": 2
+      },
+      "Q": {
+        "P": 1,
+        "Q": 41,
+        "r": 1
+      },
+      "R": {
+        "R": 74,
+        "empty": 2
+      },
+      "b": {
+        "P": 1,
+        "b": 47,
+        "r": 3
+      },
+      "empty": {
+        "B": 2,
+        "K": 2,
+        "P": 3,
+        "Q": 1,
+        "R": 1,
+        "empty": 2523,
+        "p": 2
+      },
+      "k": {
+        "b": 1,
+        "k": 54,
+        "r": 2
+      },
+      "n": {
+        "k": 1,
+        "n": 46,
+        "p": 1
+      },
+      "p": {
+        "empty": 2,
+        "k": 1,
+        "p": 280,
+        "r": 1
+      },
+      "q": {
+        "Q": 3,
+        "b": 1,
+        "q": 35
+      },
+      "r": {
+        "P": 1,
+        "b": 1,
+        "k": 1,
+        "r": 77
+      }
+    },
+    "per_class_accuracy": {
+      "B": 0.93617,
+      "K": 0.947368,
+      "N": 0.909091,
+      "P": 0.967509,
+      "Q": 0.953488,
+      "R": 0.973684,
+      "b": 0.921569,
+      "empty": 0.995659,
+      "k": 0.947368,
+      "n": 0.958333,
+      "p": 0.985915,
+      "q": 0.897436,
+      "r": 0.9625
+    },
+    "confidence": [
+      {
+        "lower": 0.0,
+        "upper": 0.1,
+        "count": 6,
+        "mean_confidence": 0.023443,
+        "accuracy": 0.0
+      },
+      {
+        "lower": 0.3,
+        "upper": 0.4,
+        "count": 1,
+        "mean_confidence": 0.343398,
+        "accuracy": 0.0
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "count": 3641,
+        "mean_confidence": 0.970041,
+        "accuracy": 0.986817
+      }
+    ],
+    "error_analysis": [
+      {
+        "diagram_id": "layout-chess-p077-d01",
+        "errors": [
+          {
+            "square": "a2",
+            "expected": "q",
+            "predicted": "Q",
+            "confidence": 0.963363
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "q->Q": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p077-d02",
+        "errors": [
+          {
+            "square": "a5",
+            "expected": "q",
+            "predicted": "b",
+            "confidence": 0.036083
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "q->b": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p077-d03",
+        "errors": [
+          {
+            "square": "b1",
+            "expected": "N",
+            "predicted": "P",
+            "confidence": 0.963005
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "N->P": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p086-d02",
+        "errors": [
+          {
+            "square": "a8",
+            "expected": "r",
+            "predicted": "P",
+            "confidence": 0.967842
+          },
+          {
+            "square": "b8",
+            "expected": "empty",
+            "predicted": "P",
+            "confidence": 0.343398
+          },
+          {
+            "square": "d8",
+            "expected": "q",
+            "predicted": "Q",
+            "confidence": 0.963308
+          },
+          {
+            "square": "b7",
+            "expected": "b",
+            "predicted": "P",
+            "confidence": 0.963882
+          },
+          {
+            "square": "e7",
+            "expected": "b",
+            "predicted": "r",
+            "confidence": 0.902433
+          },
+          {
+            "square": "a6",
+            "expected": "p",
+            "predicted": "empty",
+            "confidence": 0.964526
+          },
+          {
+            "square": "b6",
+            "expected": "empty",
+            "predicted": "p",
+            "confidence": 0.962298
+          },
+          {
+            "square": "b5",
+            "expected": "p",
+            "predicted": "empty",
+            "confidence": 0.966167
+          },
+          {
+            "square": "e5",
+            "expected": "N",
+            "predicted": "empty",
+            "confidence": 0.96373
+          },
+          {
+            "square": "g5",
+            "expected": "B",
+            "predicted": "P",
+            "confidence": 0.963518
+          },
+          {
+            "square": "d4",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.965495
+          },
+          {
+            "square": "f4",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.963496
+          },
+          {
+            "square": "h4",
+            "expected": "empty",
+            "predicted": "B",
+            "confidence": 0.964483
+          },
+          {
+            "square": "b3",
+            "expected": "empty",
+            "predicted": "P",
+            "confidence": 0.964224
+          },
+          {
+            "square": "c3",
+            "expected": "N",
+            "predicted": "P",
+            "confidence": 0.963299
+          },
+          {
+            "square": "e3",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.964859
+          },
+          {
+            "square": "g3",
+            "expected": "empty",
+            "predicted": "P",
+            "confidence": 0.963945
+          },
+          {
+            "square": "h3",
+            "expected": "Q",
+            "predicted": "P",
+            "confidence": 0.963137
+          },
+          {
+            "square": "b2",
+            "expected": "P",
+            "predicted": "R",
+            "confidence": 0.964585
+          },
+          {
+            "square": "c2",
+            "expected": "B",
+            "predicted": "empty",
+            "confidence": 0.963313
+          },
+          {
+            "square": "f2",
+            "expected": "empty",
+            "predicted": "R",
+            "confidence": 0.964108
+          },
+          {
+            "square": "g2",
+            "expected": "P",
+            "predicted": "K",
+            "confidence": 0.963476
+          },
+          {
+            "square": "h2",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.964174
+          },
+          {
+            "square": "a1",
+            "expected": "R",
+            "predicted": "empty",
+            "confidence": 0.965829
+          },
+          {
+            "square": "f1",
+            "expected": "R",
+            "predicted": "empty",
+            "confidence": 0.968354
+          },
+          {
+            "square": "g1",
+            "expected": "K",
+            "predicted": "P",
+            "confidence": 0.963682
+          }
+        ],
+        "error_count": 26,
+        "confusion_pairs": {
+          "B->P": 1,
+          "B->empty": 1,
+          "K->P": 1,
+          "N->P": 1,
+          "N->empty": 1,
+          "P->K": 1,
+          "P->R": 1,
+          "P->empty": 4,
+          "Q->P": 1,
+          "R->empty": 2,
+          "b->P": 1,
+          "b->r": 1,
+          "empty->B": 1,
+          "empty->P": 3,
+          "empty->R": 1,
+          "empty->p": 1,
+          "p->empty": 2,
+          "q->Q": 1,
+          "r->P": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p087-d01",
+        "errors": [
+          {
+            "square": "f8",
+            "expected": "b",
+            "predicted": "r",
+            "confidence": 0.963585
+          },
+          {
+            "square": "g2",
+            "expected": "B",
+            "predicted": "P",
+            "confidence": 0.96358
+          }
+        ],
+        "error_count": 2,
+        "confusion_pairs": {
+          "B->P": 1,
+          "b->r": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p094-d01",
+        "errors": [
+          {
+            "square": "e5",
+            "expected": "q",
+            "predicted": "Q",
+            "confidence": 0.96556
+          },
+          {
+            "square": "c2",
+            "expected": "n",
+            "predicted": "k",
+            "confidence": 2e-06
+          },
+          {
+            "square": "f2",
+            "expected": "k",
+            "predicted": "b",
+            "confidence": 0.998536
+          }
+        ],
+        "error_count": 3,
+        "confusion_pairs": {
+          "k->b": 1,
+          "n->k": 1,
+          "q->Q": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p126-d05",
+        "errors": [
+          {
+            "square": "g3",
+            "expected": "N",
+            "predicted": "P",
+            "confidence": 0.963729
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "N->P": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p134-d05",
+        "errors": [
+          {
+            "square": "g8",
+            "expected": "b",
+            "predicted": "r",
+            "confidence": 0.96439
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "b->r": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p134-d06",
+        "errors": [
+          {
+            "square": "h4",
+            "expected": "P",
+            "predicted": "p",
+            "confidence": 0.961733
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "P->p": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p158-d03",
+        "errors": [
+          {
+            "square": "a7",
+            "expected": "K",
+            "predicted": "R",
+            "confidence": 0.967291
+          },
+          {
+            "square": "a6",
+            "expected": "empty",
+            "predicted": "K",
+            "confidence": 2e-06
+          }
+        ],
+        "error_count": 2,
+        "confusion_pairs": {
+          "K->R": 1,
+          "empty->K": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p174-d02",
+        "errors": [
+          {
+            "square": "b1",
+            "expected": "empty",
+            "predicted": "Q",
+            "confidence": 0.961812
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "empty->Q": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p195-d01",
+        "errors": [
+          {
+            "square": "a8",
+            "expected": "empty",
+            "predicted": "p",
+            "confidence": 0.962384
+          },
+          {
+            "square": "g8",
+            "expected": "k",
+            "predicted": "r",
+            "confidence": 0.96521
+          },
+          {
+            "square": "f7",
+            "expected": "p",
+            "predicted": "r",
+            "confidence": 0.964867
+          },
+          {
+            "square": "h6",
+            "expected": "p",
+            "predicted": "k",
+            "confidence": 0.035114
+          },
+          {
+            "square": "b4",
+            "expected": "P",
+            "predicted": "B",
+            "confidence": 0.964055
+          },
+          {
+            "square": "b3",
+            "expected": "Q",
+            "predicted": "r",
+            "confidence": 0.964609
+          }
+        ],
+        "error_count": 6,
+        "confusion_pairs": {
+          "P->B": 1,
+          "Q->r": 1,
+          "empty->p": 1,
+          "k->r": 1,
+          "p->k": 1,
+          "p->r": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p197-d01",
+        "errors": [
+          {
+            "square": "d2",
+            "expected": "N",
+            "predicted": "P",
+            "confidence": 0.966035
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "N->P": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p198-d04",
+        "errors": [
+          {
+            "square": "b5",
+            "expected": "empty",
+            "predicted": "B",
+            "confidence": 0.961963
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "empty->B": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p198-d05",
+        "errors": [
+          {
+            "square": "d4",
+            "expected": "P",
+            "predicted": "p",
+            "confidence": 0.96286
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "P->p": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p228-d01",
+        "errors": [
+          {
+            "square": "b8",
+            "expected": "k",
+            "predicted": "r",
+            "confidence": 0.963732
+          },
+          {
+            "square": "c8",
+            "expected": "r",
+            "predicted": "b",
+            "confidence": 0.963191
+          },
+          {
+            "square": "d8",
+            "expected": "empty",
+            "predicted": "K",
+            "confidence": 0.034966
+          },
+          {
+            "square": "a3",
+            "expected": "K",
+            "predicted": "R",
+            "confidence": 0.964824
+          },
+          {
+            "square": "f2",
+            "expected": "r",
+            "predicted": "k",
+            "confidence": 0.034494
+          }
+        ],
+        "error_count": 5,
+        "confusion_pairs": {
+          "K->R": 1,
+          "empty->K": 1,
+          "k->r": 1,
+          "r->b": 1,
+          "r->k": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p228-d06",
+        "errors": [
+          {
+            "square": "h8",
+            "expected": "n",
+            "predicted": "p",
+            "confidence": 0.963716
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "n->p": 1
+        }
+      }
+    ],
+    "acceptance": {
+      "threshold": 0.963637,
+      "piece_confidence_threshold": 0.963604,
+      "king_confidence_threshold": 0.964115,
+      "accepted_board_count": 5,
+      "abstained_board_count": 52,
+      "coverage": 0.087719,
+      "false_accepted_board_count": 0,
+      "false_accepted_board_rate": 0.0,
+      "ood_abstained_board_count": 25
+    }
+  },
+  "holdout": {
+    "sample_count": 1728,
+    "exact_square_count": 1700,
+    "square_accuracy": 0.983796,
+    "piece_accuracy": 0.955078,
+    "board_count": 27,
+    "exact_board_count": 19,
+    "exact_board_accuracy": 0.703704,
+    "exact_fen_placement_count": 19,
+    "exact_fen_placement_accuracy": 0.703704,
+    "confusion": {
+      "B": {
+        "B": 23,
+        "K": 1,
+        "R": 1
+      },
+      "K": {
+        "K": 25,
+        "R": 1,
+        "empty": 1
+      },
+      "N": {
+        "N": 19,
+        "empty": 1
+      },
+      "P": {
+        "B": 1,
+        "P": 119,
+        "empty": 2,
+        "r": 1
+      },
+      "Q": {
+        "Q": 20,
+        "R": 1,
+        "empty": 1
+      },
+      "R": {
+        "B": 1,
+        "R": 36,
+        "empty": 1
+      },
+      "b": {
+        "b": 24,
+        "empty": 1,
+        "p": 1
+      },
+      "empty": {
+        "K": 1,
+        "P": 2,
+        "R": 1,
+        "empty": 1211,
+        "k": 1
+      },
+      "k": {
+        "empty": 1,
+        "k": 26
+      },
+      "n": {
+        "empty": 1,
+        "n": 17,
+        "p": 1
+      },
+      "p": {
+        "empty": 2,
+        "p": 125
+      },
+      "q": {
+        "q": 20
+      },
+      "r": {
+        "b": 1,
+        "empty": 2,
+        "r": 35
+      }
+    },
+    "per_class_accuracy": {
+      "B": 0.92,
+      "K": 0.925926,
+      "N": 0.95,
+      "P": 0.96748,
+      "Q": 0.909091,
+      "R": 0.947368,
+      "b": 0.923077,
+      "empty": 0.995888,
+      "k": 0.962963,
+      "n": 0.894737,
+      "p": 0.984252,
+      "q": 1.0,
+      "r": 0.921053
+    },
+    "confidence": [
+      {
+        "lower": 0.0,
+        "upper": 0.1,
+        "count": 3,
+        "mean_confidence": 0.032013,
+        "accuracy": 0.666667
+      },
+      {
+        "lower": 0.4,
+        "upper": 0.5,
+        "count": 2,
+        "mean_confidence": 0.485033,
+        "accuracy": 0.5
+      },
+      {
+        "lower": 0.9,
+        "upper": 1.0,
+        "count": 1723,
+        "mean_confidence": 0.97046,
+        "accuracy": 0.98491
+      }
+    ],
+    "error_analysis": [
+      {
+        "diagram_id": "layout-chess-p021-d01",
+        "errors": [
+          {
+            "square": "b7",
+            "expected": "B",
+            "predicted": "R",
+            "confidence": 0.96467
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "B->R": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p047-d01",
+        "errors": [
+          {
+            "square": "g2",
+            "expected": "empty",
+            "predicted": "P",
+            "confidence": 0.962251
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "empty->P": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p068-d01",
+        "errors": [
+          {
+            "square": "a5",
+            "expected": "r",
+            "predicted": "b",
+            "confidence": 0.996248
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "r->b": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p117-d01",
+        "errors": [
+          {
+            "square": "h4",
+            "expected": "Q",
+            "predicted": "R",
+            "confidence": 0.493395
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "Q->R": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p117-d03",
+        "errors": [
+          {
+            "square": "g7",
+            "expected": "b",
+            "predicted": "p",
+            "confidence": 0.96162
+          }
+        ],
+        "error_count": 1,
+        "confusion_pairs": {
+          "b->p": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p131-d01",
+        "errors": [
+          {
+            "square": "e8",
+            "expected": "Q",
+            "predicted": "empty",
+            "confidence": 0.966063
+          },
+          {
+            "square": "c7",
+            "expected": "empty",
+            "predicted": "R",
+            "confidence": 0.966115
+          },
+          {
+            "square": "g7",
+            "expected": "empty",
+            "predicted": "k",
+            "confidence": 0.964364
+          },
+          {
+            "square": "h7",
+            "expected": "k",
+            "predicted": "empty",
+            "confidence": 0.966027
+          },
+          {
+            "square": "a6",
+            "expected": "p",
+            "predicted": "empty",
+            "confidence": 0.965541
+          },
+          {
+            "square": "d6",
+            "expected": "p",
+            "predicted": "empty",
+            "confidence": 0.997802
+          },
+          {
+            "square": "h6",
+            "expected": "b",
+            "predicted": "empty",
+            "confidence": 0.997815
+          },
+          {
+            "square": "f5",
+            "expected": "r",
+            "predicted": "empty",
+            "confidence": 0.96686
+          },
+          {
+            "square": "h5",
+            "expected": "N",
+            "predicted": "empty",
+            "confidence": 0.965865
+          },
+          {
+            "square": "c4",
+            "expected": "P",
+            "predicted": "B",
+            "confidence": 0.968288
+          },
+          {
+            "square": "e4",
+            "expected": "B",
+            "predicted": "K",
+            "confidence": 0.964154
+          },
+          {
+            "square": "g4",
+            "expected": "empty",
+            "predicted": "P",
+            "confidence": 0.964464
+          },
+          {
+            "square": "h3",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.965821
+          },
+          {
+            "square": "a2",
+            "expected": "P",
+            "predicted": "empty",
+            "confidence": 0.965754
+          },
+          {
+            "square": "e2",
+            "expected": "R",
+            "predicted": "empty",
+            "confidence": 0.965918
+          },
+          {
+            "square": "f2",
+            "expected": "P",
+            "predicted": "r",
+            "confidence": 0.966289
+          },
+          {
+            "square": "g2",
+            "expected": "K",
+            "predicted": "empty",
+            "confidence": 0.965138
+          },
+          {
+            "square": "b1",
+            "expected": "r",
+            "predicted": "empty",
+            "confidence": 0.96589
+          },
+          {
+            "square": "e1",
+            "expected": "n",
+            "predicted": "empty",
+            "confidence": 0.96689
+          }
+        ],
+        "error_count": 19,
+        "confusion_pairs": {
+          "B->K": 1,
+          "K->empty": 1,
+          "N->empty": 1,
+          "P->B": 1,
+          "P->empty": 2,
+          "P->r": 1,
+          "Q->empty": 1,
+          "R->empty": 1,
+          "b->empty": 1,
+          "empty->P": 1,
+          "empty->R": 1,
+          "empty->k": 1,
+          "k->empty": 1,
+          "n->empty": 1,
+          "p->empty": 2,
+          "r->empty": 2
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p135-d01",
+        "errors": [
+          {
+            "square": "c2",
+            "expected": "n",
+            "predicted": "p",
+            "confidence": 0.964672
+          },
+          {
+            "square": "c1",
+            "expected": "R",
+            "predicted": "B",
+            "confidence": 0.961746
+          }
+        ],
+        "error_count": 2,
+        "confusion_pairs": {
+          "R->B": 1,
+          "n->p": 1
+        }
+      },
+      {
+        "diagram_id": "layout-chess-p161-d03",
+        "errors": [
+          {
+            "square": "c8",
+            "expected": "empty",
+            "predicted": "K",
+            "confidence": 0.028563
+          },
+          {
+            "square": "g8",
+            "expected": "K",
+            "predicted": "R",
+            "confidence": 0.968015
+          }
+        ],
+        "error_count": 2,
+        "confusion_pairs": {
+          "K->R": 1,
+          "empty->K": 1
+        }
+      }
+    ],
+    "acceptance": {
+      "threshold": 0.963637,
+      "piece_confidence_threshold": 0.963604,
+      "king_confidence_threshold": 0.964115,
+      "accepted_board_count": 2,
+      "abstained_board_count": 25,
+      "coverage": 0.074074,
+      "false_accepted_board_count": 2,
+      "false_accepted_board_rate": 1.0,
+      "ood_abstained_board_count": 12
+    }
+  },
+  "promotion": {
+    "status": "blocked",
+    "passed": false,
+    "reasons": [
+      "false_accepted_holdout_boards"
+    ],
+    "policy": "Candidate may enter shadow runtime only after beating the baseline and accepting zero incorrect holdout boards."
+  },
+  "runtime": {
+    "dependency": "numpy",
+    "allow_pickle": false,
+    "default_mode": "shadow",
+    "rollback": "Set KINDLEMASTER_CHESS_FEN_MODEL_MODE=off."
+  }
+}

@@ -84,25 +84,41 @@ def export_portable_fen_square_model(
     classifier = bundle["classifier"]
     scaler = bundle["scaler"]
     target.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        target,
-        classes=np.asarray([str(value) for value in classifier.classes_]),
-        scaler_mean=np.asarray(scaler.mean_, dtype=np.float64),
-        scaler_scale=np.asarray(scaler.scale_, dtype=np.float64),
-        support_vectors=np.asarray(classifier.support_vectors_, dtype=np.float64),
-        dual_coef=np.asarray(classifier.dual_coef_, dtype=np.float64),
-        intercept=np.asarray(classifier.intercept_, dtype=np.float64),
-        n_support=np.asarray(classifier.n_support_, dtype=np.int32),
-        gamma=np.asarray([classifier._gamma], dtype=np.float64),
-        temperature=np.asarray(
+    portable_arrays = {
+        "classes": np.asarray([str(value) for value in classifier.classes_]),
+        "scaler_mean": np.asarray(scaler.mean_, dtype=np.float64),
+        "scaler_scale": np.asarray(scaler.scale_, dtype=np.float64),
+        "support_vectors": np.asarray(classifier.support_vectors_, dtype=np.float64),
+        "dual_coef": np.asarray(classifier.dual_coef_, dtype=np.float64),
+        "intercept": np.asarray(classifier.intercept_, dtype=np.float64),
+        "n_support": np.asarray(classifier.n_support_, dtype=np.int32),
+        "gamma": np.asarray([classifier._gamma], dtype=np.float64),
+        "temperature": np.asarray(
             [float((bundle.get("calibration") or {}).get("temperature") or 1.0)],
             dtype=np.float64,
         ),
-        acceptance_threshold=np.asarray(
-            [float((bundle.get("acceptance") or {}).get("threshold") or 1.0)],
+        "acceptance_threshold": np.asarray(
+            [float((bundle.get("acceptance") or {}).get("threshold", 1.0))],
             dtype=np.float64,
         ),
-    )
+        "piece_confidence_threshold": np.asarray(
+            [float((bundle.get("acceptance") or {}).get("piece_confidence_threshold", 1.0))],
+            dtype=np.float64,
+        ),
+        "king_confidence_threshold": np.asarray(
+            [float((bundle.get("acceptance") or {}).get("king_confidence_threshold", 1.0))],
+            dtype=np.float64,
+        ),
+    }
+    ood_detection = dict(bundle.get("ood_detection") or {})
+    class_centroids = ood_detection.get("class_centroids")
+    if class_centroids is not None:
+        portable_arrays["class_centroids"] = np.asarray(class_centroids, dtype=np.float64)
+        portable_arrays["ood_distance_threshold"] = np.asarray(
+            [float(ood_detection.get("distance_threshold") or 0.0)],
+            dtype=np.float64,
+        )
+    np.savez_compressed(target, **portable_arrays)
 
     source_manifest: dict[str, Any] = {}
     if source_manifest_path.is_file():
@@ -189,6 +205,11 @@ def export_portable_fen_square_model(
         },
         "calibration": dict(bundle.get("calibration") or {}),
         "acceptance": dict(bundle.get("acceptance") or {}),
+        "ood_detection": {
+            key: value
+            for key, value in dict(bundle.get("ood_detection") or {}).items()
+            if key != "class_centroids"
+        },
         "decoding": dict(bundle.get("decoding") or source_manifest.get("decoding") or {}),
         "orientation": {
             "value": "white_bottom",
@@ -282,10 +303,31 @@ def predict_portable_fen_board(
     minimum_runner_up_margin = (
         float(runner_up_margins.min()) if len(runner_up_margins) else 0.0
     )
+    occupied_mask = predicted != "empty"
+    king_mask = np.isin(predicted, ["K", "k"])
+    confidence_p05 = float(np.quantile(confidences, 0.05)) if len(confidences) else 0.0
+    mean_confidence = float(confidences.mean()) if len(confidences) else 0.0
+    minimum_piece_confidence = float(confidences[occupied_mask].min()) if occupied_mask.any() else 0.0
+    minimum_king_confidence = float(confidences[king_mask].min()) if king_mask.any() else 0.0
+    board_confidence_score = min(
+        confidence_p05,
+        minimum_piece_confidence,
+        minimum_king_confidence,
+    )
+    piece_threshold = float(model.get("piece_confidence_threshold", threshold))
+    king_threshold = float(model.get("king_confidence_threshold", threshold))
+    entropy = -np.sum(probabilities * np.log(np.clip(probabilities, 1e-12, 1.0)), axis=1)
+    ood = _runtime_ood_evidence(model, scaled, predicted)
     blockers = [str(warning) for warning in validation_warnings]
-    if minimum_confidence < threshold:
+    if board_confidence_score < threshold:
         blockers.insert(0, "board_confidence_below_calibrated_threshold")
-    candidate_accepted = bool(valid and minimum_confidence >= threshold)
+    if minimum_piece_confidence < piece_threshold:
+        blockers.append("piece_confidence_below_calibrated_threshold")
+    if minimum_king_confidence < king_threshold:
+        blockers.append("king_confidence_below_calibrated_threshold")
+    if ood.get("detected") is True:
+        blockers.append("board_out_of_distribution")
+    candidate_accepted = bool(valid and not blockers)
     publish_blockers = list(blockers)
     if normalized_mode == "shadow":
         publish_blockers.append("shadow_mode_not_publishable")
@@ -299,6 +341,12 @@ def predict_portable_fen_board(
                 "class": str(label),
                 "confidence": round(float(confidence), 6),
                 "runner_up_margin": round(float(runner_up_margins[index]), 6),
+                "entropy": round(float(entropy[index]), 6),
+                "ood_distance": (
+                    round(float(ood["square_distances"][index]), 6)
+                    if ood.get("available")
+                    else None
+                ),
                 "alternatives": [
                     {
                         "class": str(classes[candidate]),
@@ -314,9 +362,22 @@ def predict_portable_fen_board(
         "mode": normalized_mode,
         "placement": placement,
         "validation_fen": validation_fen,
-        "confidence": round(minimum_confidence, 6),
-        "confidence_policy": "minimum_square_confidence",
+        "confidence": round(board_confidence_score, 6),
+        "minimum_square_confidence": round(minimum_confidence, 6),
+        "confidence_policy": "board_evidence_v2",
         "acceptance_threshold": round(threshold, 6),
+        "piece_confidence_threshold": round(piece_threshold, 6),
+        "king_confidence_threshold": round(king_threshold, 6),
+        "board_evidence": {
+            "score": round(board_confidence_score, 6),
+            "square_confidence_p05": round(confidence_p05, 6),
+            "mean_square_confidence": round(mean_confidence, 6),
+            "minimum_piece_confidence": round(minimum_piece_confidence, 6),
+            "minimum_king_confidence": round(minimum_king_confidence, 6),
+            "minimum_runner_up_margin": round(minimum_runner_up_margin, 6),
+            "maximum_entropy": round(float(entropy.max()), 6) if len(entropy) else 0.0,
+            "ood": {key: value for key, value in ood.items() if key != "square_distances"},
+        },
         "minimum_runner_up_margin": round(minimum_runner_up_margin, 6),
         "decoding": decoding,
         "candidate_accepted": candidate_accepted,
@@ -440,6 +501,14 @@ def _load_portable_fen_square_model_cached(
         if missing:
             raise ValueError(f"model_contract_missing:{','.join(missing)}")
         model = {key: np.array(payload[key], copy=True) for key in required}
+        for optional in (
+            "piece_confidence_threshold",
+            "king_confidence_threshold",
+            "class_centroids",
+            "ood_distance_threshold",
+        ):
+            if optional in payload.files:
+                model[optional] = np.array(payload[optional], copy=True)
     model["classes"] = np.asarray([str(value) for value in model["classes"]])
     feature_count = int(model["support_vectors"].shape[1])
     if feature_count != 512:
@@ -469,17 +538,38 @@ def _load_portable_fen_square_model_cached(
         model["temperature"],
         model["acceptance_threshold"],
     ]
+    for optional in (
+        "piece_confidence_threshold",
+        "king_confidence_threshold",
+        "class_centroids",
+        "ood_distance_threshold",
+    ):
+        if optional in model:
+            numeric_arrays.append(model[optional])
     if any(not np.all(np.isfinite(values)) for values in numeric_arrays):
         raise ValueError("model_numeric_contract_invalid")
     model["gamma"] = float(model["gamma"][0])
     model["temperature"] = float(model["temperature"][0])
     model["acceptance_threshold"] = float(model["acceptance_threshold"][0])
+    model["piece_confidence_threshold"] = float(
+        model.get("piece_confidence_threshold", np.asarray([model["acceptance_threshold"]]))[0]
+    )
+    model["king_confidence_threshold"] = float(
+        model.get("king_confidence_threshold", np.asarray([model["acceptance_threshold"]]))[0]
+    )
+    if "ood_distance_threshold" in model:
+        model["ood_distance_threshold"] = float(model["ood_distance_threshold"][0])
     if (
         model["gamma"] <= 0.0
         or model["temperature"] <= 0.0
         or not 0.0 <= model["acceptance_threshold"] <= 1.0
     ):
         raise ValueError("model_calibration_contract_invalid")
+    if "class_centroids" in model:
+        if model["class_centroids"].shape != (class_count, feature_count):
+            raise ValueError("model_ood_centroid_shape_invalid")
+        if model.get("ood_distance_threshold", 0.0) <= 0.0:
+            raise ValueError("model_ood_threshold_invalid")
     return model
 
 
@@ -575,6 +665,42 @@ def _runtime_placement(labels: Sequence[str]) -> str:
     return "/".join(ranks)
 
 
+def _runtime_ood_evidence(
+    model: Mapping[str, Any],
+    scaled_features: np.ndarray,
+    predicted: np.ndarray,
+) -> dict[str, Any]:
+    centroids = model.get("class_centroids")
+    threshold = model.get("ood_distance_threshold")
+    if centroids is None or threshold is None:
+        return {
+            "available": False,
+            "detected": None,
+            "method": "scaled_class_centroid_l2",
+            "reason": "ood_profile_not_available_in_model",
+            "square_distances": [],
+        }
+    classes = np.asarray(model["classes"])
+    class_indexes = {str(label): index for index, label in enumerate(classes.tolist())}
+    selected = np.stack(
+        [np.asarray(centroids[class_indexes[str(label)]], dtype=np.float64) for label in predicted]
+    )
+    distances = np.linalg.norm(scaled_features - selected, axis=1) / np.sqrt(
+        scaled_features.shape[1]
+    )
+    limit = float(threshold)
+    return {
+        "available": True,
+        "detected": bool(float(distances.max()) > limit),
+        "method": "scaled_class_centroid_l2",
+        "threshold": round(limit, 6),
+        "maximum_distance": round(float(distances.max()), 6),
+        "p95_distance": round(float(np.quantile(distances, 0.95)), 6),
+        "mean_distance": round(float(distances.mean()), 6),
+        "square_distances": distances.tolist(),
+    }
+
+
 def _runtime_failure(
     *,
     mode: str,
@@ -661,6 +787,19 @@ def train_fen_square_candidate(
     x_train = scaler.fit_transform(features[split_masks["train"]])
     classifier = dependencies["SVC"](**MODEL_CONFIG)
     classifier.fit(x_train, labels[split_masks["train"]])
+    classifier_classes = [str(value) for value in classifier.classes_]
+    train_labels = labels[split_masks["train"]]
+    class_centroids = np.stack(
+        [x_train[train_labels == label].mean(axis=0) for label in classifier_classes]
+    )
+    class_indexes = {label: index for index, label in enumerate(classifier_classes)}
+    own_centroids = np.stack(
+        [class_centroids[class_indexes[str(label)]] for label in train_labels]
+    )
+    train_ood_distances = np.linalg.norm(x_train - own_centroids, axis=1) / np.sqrt(
+        x_train.shape[1]
+    )
+    ood_distance_threshold = float(np.quantile(train_ood_distances, 0.99))
 
     x_val = scaler.transform(features[split_masks["val"]])
     val_scores = _decision_scores(classifier, x_val)
@@ -681,8 +820,31 @@ def train_fen_square_candidate(
         val_confidences,
         diagram_ids[split_masks["val"]],
     )
-    acceptance_threshold = _zero_false_board_threshold(validation["boards"])
-    validation["acceptance"] = _acceptance_metrics(validation["boards"], acceptance_threshold)
+    _annotate_board_ood(
+        validation["boards"],
+        scaled_features=x_val,
+        predicted=val_predictions,
+        diagram_ids=diagram_ids[split_masks["val"]],
+        classes=classifier_classes,
+        class_centroids=class_centroids,
+        threshold=ood_distance_threshold,
+    )
+    validation["error_analysis"] = _board_error_analysis(
+        labels[split_masks["val"]],
+        val_predictions,
+        val_confidences,
+        diagram_ids[split_masks["val"]],
+    )
+    acceptance = {
+        "threshold": _zero_false_metric_threshold(validation["boards"], "board_confidence_score", "correct"),
+        "piece_confidence_threshold": _zero_false_metric_threshold(
+            validation["boards"], "minimum_piece_confidence", "pieces_correct"
+        ),
+        "king_confidence_threshold": _zero_false_metric_threshold(
+            validation["boards"], "minimum_king_confidence", "kings_correct"
+        ),
+    }
+    validation["acceptance"] = _acceptance_metrics(validation["boards"], acceptance)
 
     x_holdout = scaler.transform(features[split_masks["holdout"]])
     holdout_scores = _decision_scores(classifier, x_holdout)
@@ -698,7 +860,22 @@ def train_fen_square_candidate(
         holdout_confidences,
         diagram_ids[split_masks["holdout"]],
     )
-    holdout["acceptance"] = _acceptance_metrics(holdout["boards"], acceptance_threshold)
+    _annotate_board_ood(
+        holdout["boards"],
+        scaled_features=x_holdout,
+        predicted=holdout_predictions,
+        diagram_ids=diagram_ids[split_masks["holdout"]],
+        classes=classifier_classes,
+        class_centroids=class_centroids,
+        threshold=ood_distance_threshold,
+    )
+    holdout["error_analysis"] = _board_error_analysis(
+        labels[split_masks["holdout"]],
+        holdout_predictions,
+        holdout_confidences,
+        diagram_ids[split_masks["holdout"]],
+    )
+    holdout["acceptance"] = _acceptance_metrics(holdout["boards"], acceptance)
 
     models_path = Path(models_dir)
     reports_path = Path(reports_dir)
@@ -723,9 +900,17 @@ def train_fen_square_candidate(
         },
         "acceptance": {
             "source_split": "val",
-            "board_confidence": "minimum_square_confidence",
-            "threshold": acceptance_threshold,
-            "policy": "Abstain unless every square clears the validation-calibrated zero-false-board threshold.",
+            "board_confidence": "board_evidence_v2",
+            **acceptance,
+            "policy": "Abstain unless board, occupied-piece and king evidence clear validation-calibrated zero-false thresholds.",
+        },
+        "ood_detection": {
+            "method": "scaled_class_centroid_l2",
+            "source_split": "train",
+            "quantile": 0.99,
+            "distance_threshold": ood_distance_threshold,
+            "holdout_used_for_tuning": False,
+            "class_centroids": class_centroids,
         },
         "decoding": {
             "policy": "exactly_one_king_per_color",
@@ -757,6 +942,11 @@ def train_fen_square_candidate(
         "split_integrity": integrity,
         "calibration": bundle["calibration"],
         "acceptance": bundle["acceptance"],
+        "ood_detection": {
+            key: value
+            for key, value in bundle["ood_detection"].items()
+            if key != "class_centroids"
+        },
         "decoding": bundle["decoding"],
         "baseline": baseline,
         "validation": _without_boards(validation),
@@ -790,6 +980,11 @@ def train_fen_square_candidate(
         "split_integrity": integrity,
         "calibration": bundle["calibration"],
         "acceptance": bundle["acceptance"],
+        "ood_detection": {
+            key: value
+            for key, value in bundle["ood_detection"].items()
+            if key != "class_centroids"
+        },
         "decoding": bundle["decoding"],
         "baseline": baseline,
         "validation": _without_boards(validation),
@@ -854,9 +1049,24 @@ def evaluate_fen_square_candidate(
         diagram_ids=diagram_ids[mask],
     )
     metrics = _classification_metrics(labels[mask], predictions, confidences, diagram_ids[mask])
-    stored_threshold = (bundle.get("acceptance") or {}).get("threshold")
-    threshold = float(stored_threshold) if stored_threshold is not None else 1.0
-    metrics["acceptance"] = _acceptance_metrics(metrics["boards"], threshold)
+    ood_detection = dict(bundle.get("ood_detection") or {})
+    if ood_detection.get("class_centroids") is not None:
+        _annotate_board_ood(
+            metrics["boards"],
+            scaled_features=scaled,
+            predicted=predictions,
+            diagram_ids=diagram_ids[mask],
+            classes=[str(value) for value in bundle["classifier"].classes_],
+            class_centroids=np.asarray(ood_detection["class_centroids"]),
+            threshold=float(ood_detection.get("distance_threshold") or 0.0),
+        )
+    metrics["error_analysis"] = _board_error_analysis(
+        labels[mask], predictions, confidences, diagram_ids[mask]
+    )
+    metrics["acceptance"] = _acceptance_metrics(
+        metrics["boards"],
+        dict(bundle.get("acceptance") or {}),
+    )
     return {
         "schema": MODEL_EVAL_SCHEMA,
         "status": "evaluated",
@@ -1108,12 +1318,41 @@ def _classification_metrics(
     for diagram_id, truth, candidate, confidence in zip(diagram_ids, expected, predicted, confidences):
         board = board_rows.setdefault(
             str(diagram_id),
-            {"diagram_id": str(diagram_id), "correct": True, "minimum_square_confidence": 1.0},
+            {
+                "diagram_id": str(diagram_id),
+                "correct": True,
+                "pieces_correct": True,
+                "kings_correct": True,
+                "confidences": [],
+                "piece_confidences": [],
+                "king_confidences": [],
+            },
         )
         board["correct"] = bool(board["correct"] and truth == candidate)
-        board["minimum_square_confidence"] = min(
-            float(board["minimum_square_confidence"]),
-            float(confidence),
+        board["confidences"].append(float(confidence))
+        if truth != "empty":
+            board["pieces_correct"] = bool(board["pieces_correct"] and truth == candidate)
+            board["piece_confidences"].append(float(confidence))
+        if truth in {"K", "k"}:
+            board["kings_correct"] = bool(board["kings_correct"] and truth == candidate)
+            board["king_confidences"].append(float(confidence))
+    for board in board_rows.values():
+        all_confidences = np.asarray(board.pop("confidences"), dtype=np.float64)
+        piece_confidences = np.asarray(board.pop("piece_confidences"), dtype=np.float64)
+        king_confidences = np.asarray(board.pop("king_confidences"), dtype=np.float64)
+        board["minimum_square_confidence"] = float(all_confidences.min())
+        board["square_confidence_p05"] = float(np.quantile(all_confidences, 0.05))
+        board["mean_square_confidence"] = float(all_confidences.mean())
+        board["minimum_piece_confidence"] = (
+            float(piece_confidences.min()) if len(piece_confidences) else 0.0
+        )
+        board["minimum_king_confidence"] = (
+            float(king_confidences.min()) if len(king_confidences) else 0.0
+        )
+        board["board_confidence_score"] = min(
+            board["square_confidence_p05"],
+            board["minimum_piece_confidence"],
+            board["minimum_king_confidence"],
         )
     boards = sorted(board_rows.values(), key=lambda row: row["diagram_id"])
     occupied = expected != "empty"
@@ -1163,31 +1402,135 @@ def _confidence_bins(correct: np.ndarray, confidences: np.ndarray) -> list[dict[
     return bins
 
 
+def _board_error_analysis(
+    expected: np.ndarray,
+    predicted: np.ndarray,
+    confidences: np.ndarray,
+    diagram_ids: np.ndarray,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    board_offsets: Counter[str] = Counter()
+    for truth, candidate, confidence, raw_diagram_id in zip(
+        expected, predicted, confidences, diagram_ids
+    ):
+        diagram_id = str(raw_diagram_id)
+        square_index = board_offsets[diagram_id]
+        board_offsets[diagram_id] += 1
+        if truth == candidate:
+            continue
+        row = grouped.setdefault(
+            diagram_id,
+            {"diagram_id": diagram_id, "errors": []},
+        )
+        row["errors"].append(
+            {
+                "square": f"{chr(ord('a') + square_index % 8)}{8 - square_index // 8}",
+                "expected": str(truth),
+                "predicted": str(candidate),
+                "confidence": round(float(confidence), 6),
+            }
+        )
+    rows = []
+    for diagram_id in sorted(grouped):
+        row = grouped[diagram_id]
+        row["error_count"] = len(row["errors"])
+        row["confusion_pairs"] = dict(
+            sorted(
+                Counter(
+                    f"{error['expected']}->{error['predicted']}"
+                    for error in row["errors"]
+                ).items()
+            )
+        )
+        rows.append(row)
+    return rows
+
+
+def _annotate_board_ood(
+    boards: Sequence[dict[str, Any]],
+    *,
+    scaled_features: np.ndarray,
+    predicted: np.ndarray,
+    diagram_ids: np.ndarray,
+    classes: Sequence[str],
+    class_centroids: np.ndarray,
+    threshold: float,
+) -> None:
+    class_indexes = {str(label): index for index, label in enumerate(classes)}
+    distances_by_board: dict[str, list[float]] = defaultdict(list)
+    for feature, label, diagram_id in zip(scaled_features, predicted, diagram_ids):
+        centroid = class_centroids[class_indexes[str(label)]]
+        distance = float(np.linalg.norm(feature - centroid) / np.sqrt(len(feature)))
+        distances_by_board[str(diagram_id)].append(distance)
+    for board in boards:
+        distances = np.asarray(
+            distances_by_board.get(str(board.get("diagram_id") or ""), []),
+            dtype=np.float64,
+        )
+        board["ood"] = {
+            "available": bool(len(distances)),
+            "detected": bool(len(distances) and float(distances.max()) > threshold),
+            "threshold": round(float(threshold), 6),
+            "maximum_distance": round(float(distances.max()), 6) if len(distances) else 0.0,
+            "p95_distance": round(float(np.quantile(distances, 0.95)), 6) if len(distances) else 0.0,
+            "mean_distance": round(float(distances.mean()), 6) if len(distances) else 0.0,
+        }
+
+
 def _zero_false_board_threshold(boards: Sequence[Mapping[str, Any]]) -> float:
+    return _zero_false_metric_threshold(
+        boards,
+        "minimum_square_confidence",
+        "correct",
+    )
+
+
+def _zero_false_metric_threshold(
+    boards: Sequence[Mapping[str, Any]],
+    metric: str,
+    correctness: str,
+) -> float:
     incorrect_confidences = [
-        float(row.get("minimum_square_confidence") or 0.0)
+        float(row.get(metric) or 0.0)
         for row in boards
-        if not row.get("correct")
+        if not row.get(correctness)
     ]
     if not incorrect_confidences:
         return 0.0
     return round(min(1.0, max(incorrect_confidences) + 1e-6), 6)
 
 
-def _acceptance_metrics(boards: Sequence[Mapping[str, Any]], threshold: float) -> dict[str, Any]:
+def _acceptance_metrics(
+    boards: Sequence[Mapping[str, Any]],
+    threshold: float | Mapping[str, Any],
+) -> dict[str, Any]:
+    if isinstance(threshold, Mapping):
+        board_threshold = float(threshold.get("threshold", 1.0))
+        piece_threshold = float(threshold.get("piece_confidence_threshold", 1.0))
+        king_threshold = float(threshold.get("king_confidence_threshold", 1.0))
+    else:
+        board_threshold = piece_threshold = king_threshold = float(threshold)
     accepted = [
         row
         for row in boards
-        if float(row.get("minimum_square_confidence") or 0.0) >= float(threshold)
+        if float(row.get("board_confidence_score", row.get("minimum_square_confidence") or 0.0)) >= board_threshold
+        and float(row.get("minimum_piece_confidence", row.get("minimum_square_confidence") or 0.0)) >= piece_threshold
+        and float(row.get("minimum_king_confidence", row.get("minimum_square_confidence") or 0.0)) >= king_threshold
+        and not bool((row.get("ood") or {}).get("detected"))
     ]
     false_accepted = [row for row in accepted if not row.get("correct")]
     return {
-        "threshold": round(float(threshold), 6),
+        "threshold": round(board_threshold, 6),
+        "piece_confidence_threshold": round(piece_threshold, 6),
+        "king_confidence_threshold": round(king_threshold, 6),
         "accepted_board_count": len(accepted),
         "abstained_board_count": len(boards) - len(accepted),
         "coverage": round(len(accepted) / max(1, len(boards)), 6),
         "false_accepted_board_count": len(false_accepted),
         "false_accepted_board_rate": round(len(false_accepted) / max(1, len(accepted)), 6),
+        "ood_abstained_board_count": len(
+            [row for row in boards if bool((row.get("ood") or {}).get("detected"))]
+        ),
     }
 
 

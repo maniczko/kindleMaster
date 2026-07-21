@@ -76,7 +76,14 @@ class ChessFenMlAcceptanceTests(unittest.TestCase):
                 }
             ],
             model_predictions={"p001_d001": prediction},
-            template_candidates={},
+            template_candidates={
+                "p001_d001": {
+                    "diagram_id": "p001_d001",
+                    "fen": VALID_KINGS_FEN,
+                    "confidence": 0.99,
+                    "source_crop_hash": "sha256:crop",
+                }
+            },
             min_confidence=0.90,
             min_score_margin=0.05,
         )
@@ -87,6 +94,7 @@ class ChessFenMlAcceptanceTests(unittest.TestCase):
         self.assertEqual(row["fen"], VALID_KINGS_FEN)
         self.assertTrue(row["evidence"]["square_alternatives_checked"])
         self.assertTrue(row["evidence"]["local_model_candidate"])
+        self.assertTrue(row["evidence"]["model_template_agreement"])
         self.assertEqual(row["machine_acceptance"]["runtime_status"], "FEN_MACHINE_ACCEPTED")
 
     def test_build_deterministic_ensemble_blocks_missing_alternatives_and_crop_hash(self) -> None:

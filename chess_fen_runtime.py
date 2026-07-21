@@ -20,7 +20,7 @@ DEFAULT_FEN_MODEL_PATH = (
     Path(__file__).resolve().parent
     / "models"
     / "chess"
-    / "chess_fen_square_rbf_svm_v2.npz"
+    / "chess_fen_square_yusupov_v2.npz"
 )
 DEFAULT_MARKER_CALIBRATION_PATH = (
     Path(__file__).resolve().parent
@@ -212,9 +212,14 @@ def apply_fen_square_runtime(
     }
 
     publish_blockers = list(runtime.get("publish_blockers") or [])
-    if comparison == "conflict":
+    if comparison != "exact":
         runtime["publishable"] = False
-        publish_blockers.insert(0, "model_template_conflict")
+        publish_blockers.insert(
+            0,
+            "model_template_conflict"
+            if comparison == "conflict"
+            else "model_template_consensus_missing",
+        )
     runtime["publish_blockers"] = list(dict.fromkeys(publish_blockers))
     runtime["owning_blocker"] = (
         runtime["publish_blockers"][0]
@@ -223,7 +228,7 @@ def apply_fen_square_runtime(
     )
     blockers = list(dict.fromkeys([*recognition.recognition_blockers, *runtime["publish_blockers"]]))
 
-    if not runtime.get("publishable") or comparison == "conflict":
+    if not runtime.get("publishable") or comparison != "exact":
         return replace(
             recognition,
             model_runtime=runtime,

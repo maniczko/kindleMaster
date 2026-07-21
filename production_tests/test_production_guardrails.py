@@ -3,27 +3,93 @@ from __future__ import annotations
 import io
 import tempfile
 import time
+import types
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
+
+from flask import Flask, jsonify
 
 from durable_job_queue import DurableJobDatabase
 from production_guardrails import (
     InputPolicyError,
     ProductionGuardrailPolicy,
     SQLiteFixedWindowRateLimiter,
+    install_production_guardrails,
     pseudonymous_owner_key,
     validate_upload_bytes,
 )
+
+
+class FakeQueue:
+    def __init__(self, *, global_active: int = 0, owner_active: int = 0) -> None:
+        self.global_active = global_active
+        self.owner_active = owner_active
+
+    def active_count(self, *, owner_key: str | None = None) -> int:
+        return self.owner_active if owner_key is not None else self.global_active
 
 
 class ProductionGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = DurableJobDatabase(Path(self.temp_dir.name) / "runtime.sqlite3")
+        self.route_calls = 0
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    @staticmethod
+    def _minimal_docx() -> bytes:
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", "<Types />")
+            archive.writestr("word/document.xml", "<w:document />")
+        return payload.getvalue()
+
+    def _guarded_app(
+        self,
+        *,
+        policy: ProductionGuardrailPolicy,
+        queue: FakeQueue | None = None,
+    ) -> Flask:
+        app = Flask(f"guardrail-test-{id(self)}-{time.time_ns()}")
+
+        def json_error(message: str, **kwargs):
+            payload = {
+                "error": message,
+                "error_code": kwargs["error_code"],
+                "phase": kwargs["phase"],
+                "retryable": kwargs["retryable"],
+                **dict(kwargs.get("extra") or {}),
+            }
+            response = jsonify(payload)
+            response.status_code = kwargs["status_code"]
+            return response
+
+        module = types.SimpleNamespace(
+            app=app,
+            UPLOAD_DIR=self.temp_dir.name,
+            _resolve_request_auth_context=lambda: types.SimpleNamespace(
+                authenticated=False,
+                user_id="",
+            ),
+            _json_error=json_error,
+        )
+        install_production_guardrails(
+            module,
+            database=self.database,
+            queue=queue or FakeQueue(),
+            policy=policy,
+        )
+
+        @app.post("/convert/start")
+        def convert_start():
+            self.route_calls += 1
+            return jsonify({"success": True}), 202
+
+        return app
 
     def test_rate_limit_is_shared_in_sqlite(self) -> None:
         first = SQLiteFixedWindowRateLimiter(self.database)
@@ -80,14 +146,10 @@ class ProductionGuardrailTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "upload_magic_mismatch")
 
     def test_valid_minimal_docx_structure_passes(self) -> None:
-        payload = io.BytesIO()
-        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("[Content_Types].xml", "<Types />")
-            archive.writestr("word/document.xml", "<w:document />")
         source_type = validate_upload_bytes(
             "book.docx",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            payload.getvalue(),
+            self._minimal_docx(),
             ProductionGuardrailPolicy(min_disk_free_bytes=1, min_disk_free_ratio=0),
         )
         self.assertEqual(source_type, "docx")
@@ -124,6 +186,104 @@ class ProductionGuardrailTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(context.exception.code, "archive_expansion_limit")
+
+    def test_flask_limit_blocks_invalid_token_rotation(self) -> None:
+        app = self._guarded_app(
+            policy=ProductionGuardrailPolicy(
+                guest_start_per_minute=1,
+                global_active_jobs=10,
+                guest_active_jobs=10,
+                min_disk_free_bytes=1,
+                min_disk_free_ratio=0,
+            )
+        )
+        client = app.test_client()
+        first = client.post(
+            "/convert/start",
+            data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
+            headers={"Authorization": "Bearer invalid-a"},
+            content_type="multipart/form-data",
+        )
+        second = client.post(
+            "/convert/start",
+            data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
+            headers={"Authorization": "Bearer invalid-b"},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(second.get_json()["error_code"], "rate_limit_exceeded")
+        self.assertIn("Retry-After", second.headers)
+        self.assertEqual(second.headers["X-RateLimit-Remaining"], "0")
+        self.assertEqual(self.route_calls, 1)
+
+    def test_flask_rejects_magic_mismatch_before_endpoint(self) -> None:
+        app = self._guarded_app(
+            policy=ProductionGuardrailPolicy(
+                guest_start_per_minute=10,
+                global_active_jobs=10,
+                guest_active_jobs=10,
+                min_disk_free_bytes=1,
+                min_disk_free_ratio=0,
+            )
+        )
+        response = app.test_client().post(
+            "/convert/start",
+            data={"file": (io.BytesIO(b"not a pdf"), "book.pdf")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.get_json()["error_code"], "upload_magic_mismatch")
+        self.assertEqual(self.route_calls, 0)
+
+    def test_flask_global_capacity_returns_retryable_503(self) -> None:
+        app = self._guarded_app(
+            policy=ProductionGuardrailPolicy(
+                guest_start_per_minute=10,
+                global_active_jobs=2,
+                guest_active_jobs=10,
+                min_disk_free_bytes=1,
+                min_disk_free_ratio=0,
+            ),
+            queue=FakeQueue(global_active=2),
+        )
+        response = app.test_client().post(
+            "/convert/start",
+            data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error_code"], "global_capacity_exceeded")
+        self.assertEqual(response.headers["Retry-After"], "30")
+        self.assertEqual(self.route_calls, 0)
+
+    def test_flask_low_disk_rejects_before_endpoint(self) -> None:
+        app = self._guarded_app(
+            policy=ProductionGuardrailPolicy(
+                guest_start_per_minute=10,
+                global_active_jobs=10,
+                guest_active_jobs=10,
+                min_disk_free_bytes=1,
+                min_disk_free_ratio=0,
+            )
+        )
+        with patch(
+            "production_guardrails.disk_headroom",
+            return_value={"allowed": False, "free_bytes": 0, "total_bytes": 1, "free_ratio": 0.0},
+        ):
+            response = app.test_client().post(
+                "/convert/start",
+                data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error_code"], "storage_capacity_exceeded")
+        self.assertEqual(response.headers["Retry-After"], "60")
+        self.assertEqual(self.route_calls, 0)
 
 
 if __name__ == "__main__":

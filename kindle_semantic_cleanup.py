@@ -78,6 +78,7 @@ SEMANTIC_TIMING_STAGES = (
     "pack_epub",
     "total",
 )
+TEXT_NORMALIZATION_CACHE_SIZE = 1024
 
 PAGE_TITLE_RE = re.compile(r"^Strona \d+$", re.IGNORECASE)
 PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
@@ -11479,6 +11480,7 @@ def _should_join_split_word(left: str, right: str) -> bool:
     return False
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _repair_pdf_split_words(text: str) -> str:
     if not text or " " not in text:
         return text
@@ -11503,6 +11505,7 @@ def _repair_pdf_split_words(text: str) -> str:
     return repaired
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _repair_text_node(node_text: str) -> str:
     repaired = node_text or ""
     if not repaired:
@@ -11517,6 +11520,7 @@ def _repair_text_node(node_text: str) -> str:
     return _repair_pdf_split_words(repaired)
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _should_apply_chess_normalization(text: str) -> bool:
     sample = _normalize_text_light(text)
     if not sample:
@@ -11531,6 +11535,7 @@ def _should_apply_chess_normalization(text: str) -> bool:
     return False
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _normalize_text_light(text: str) -> str:
     normalized = html.unescape(text or "")
     normalized = normalized.replace("\u00ad", "")
@@ -11542,6 +11547,7 @@ def _normalize_text_light(text: str) -> str:
     return NORMALIZE_WHITESPACE_RE.sub(" ", normalized).strip()
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _normalize_chess_notation_text(text: str) -> str:
     normalized = text or ""
     normalized = normalized.replace("â€ ", "\u2020").replace("â€ˇ", "\u2021").replace("âś“", "\u2713")
@@ -11567,6 +11573,7 @@ def _normalize_chess_notation_text(text: str) -> str:
     return normalized
 
 
+@lru_cache(maxsize=TEXT_NORMALIZATION_CACHE_SIZE)
 def _normalize_text(text: str) -> str:
     normalized = html.unescape(text or "")
     normalized = _repair_text_node(normalized)

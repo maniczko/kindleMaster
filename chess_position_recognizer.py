@@ -674,7 +674,11 @@ def review_chess_fen_candidate(
 
 def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     total = len(records)
-    with_fen = [item for item in records if str(item.get("fen") or "").strip()]
+    with_fen = [
+        item
+        for item in records
+        if str(item.get("fen") or "").strip() and not bool(item.get("requires_review"))
+    ]
     review = [item for item in records if item.get("requires_review")]
     with_board_crop = [item for item in records if str(item.get("board_crop_path") or "").strip()]
     with_side_marker_crop = [item for item in records if str(item.get("side_marker_crop_path") or "").strip()]

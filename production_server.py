@@ -112,19 +112,29 @@ class ProcessSupervisor:
         self.stop_event.set()
         active = [managed.process for managed in self.children.values() if managed.process.poll() is None]
         for process in active:
-            process.terminate()
+            try:
+                process.terminate()
+            except OSError:
+                pass
         deadline = time.monotonic() + self.shutdown_seconds
         for process in active:
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 process.wait(timeout=remaining)
+                continue
             except subprocess.TimeoutExpired:
+                pass
+            except OSError:
+                continue
+            try:
                 process.kill()
                 process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
     def run_forever(self) -> None:
-        self.start()
         try:
+            self.start()
             while not self.stop_event.wait(self.monitor_seconds):
                 self.check_children()
         finally:

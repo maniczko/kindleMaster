@@ -45,6 +45,7 @@ class ProductionGuardrailPolicy:
     max_image_pixels: int = 100_000_000
     min_disk_free_bytes: int = 2 * 1024 * 1024 * 1024
     min_disk_free_ratio: float = 0.10
+    trust_guest_capability: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProductionGuardrailPolicy":
@@ -55,6 +56,10 @@ class ProductionGuardrailPolicy:
 
         def decimal(name: str, default: float, minimum: float = 0.0) -> float:
             return max(minimum, float(source.get(name, str(default)) or default))
+
+        def boolean(name: str, default: bool = False) -> bool:
+            raw = str(source.get(name, "1" if default else "0") or "").strip().lower()
+            return raw in {"1", "true", "yes", "on"}
 
         return cls(
             authenticated_start_per_minute=integer("KINDLEMASTER_AUTH_STARTS_PER_MINUTE", 12),
@@ -78,6 +83,7 @@ class ProductionGuardrailPolicy:
             max_image_pixels=integer("KINDLEMASTER_MAX_IMAGE_PIXELS", 100_000_000),
             min_disk_free_bytes=integer("KINDLEMASTER_MIN_DISK_FREE_BYTES", 2 * 1024 * 1024 * 1024),
             min_disk_free_ratio=decimal("KINDLEMASTER_MIN_DISK_FREE_RATIO", 0.10, 0.0),
+            trust_guest_capability=boolean("KINDLEMASTER_TRUST_GUEST_CAPABILITY", False),
         )
 
 
@@ -177,15 +183,16 @@ def pseudonymous_owner_key(
     remote_address: str = "",
     user_agent: str = "",
 ) -> tuple[str, bool]:
+    del user_agent
     authorization = str(authorization or "").strip()
     guest_capability = str(guest_capability or "").strip()
     if authorization:
-        raw = f"auth\0{authorization}".encode("utf-8")
-        return f"auth-token:{hmac.new(secret, raw, hashlib.sha256).hexdigest()}", True
+        raw = f"unverified-auth\0{authorization}".encode("utf-8")
+        return f"guest-auth:{hmac.new(secret, raw, hashlib.sha256).hexdigest()}", False
     if guest_capability:
         raw = f"guest\0{guest_capability}".encode("utf-8")
         return f"guest:{hmac.new(secret, raw, hashlib.sha256).hexdigest()}", False
-    raw = f"rate-only\0{remote_address}\0{user_agent[:200]}".encode("utf-8")
+    raw = f"rate-only\0{remote_address}".encode("utf-8")
     return f"rate-fallback:{hmac.new(secret, raw, hashlib.sha256).hexdigest()}", False
 
 
@@ -325,6 +332,7 @@ def install_production_guardrails(
     policy = policy or ProductionGuardrailPolicy.from_env()
     limiter = SQLiteFixedWindowRateLimiter(database)
     secret = load_or_create_rate_secret(database)
+    last_cleanup_at = 0.0
 
     def current_owner() -> tuple[str, bool]:
         try:
@@ -333,21 +341,31 @@ def install_production_guardrails(
             auth_context = None
         if auth_context is not None and getattr(auth_context, "authenticated", False):
             return f"user:{auth_context.user_id}", True
-        capability = str(
-            request.headers.get("X-KindleMaster-Guest-Capability")
-            or request.cookies.get("kindlemaster_guest")
-            or ""
-        ).strip()
+        capability = ""
+        if policy.trust_guest_capability:
+            capability = str(
+                request.headers.get("X-KindleMaster-Guest-Capability")
+                or request.cookies.get("kindlemaster_guest")
+                or ""
+            ).strip()
         return pseudonymous_owner_key(
             secret=secret,
-            authorization=str(request.headers.get("Authorization") or ""),
+            authorization="",
             guest_capability=capability,
             remote_address=str(request.remote_addr or ""),
-            user_agent=str(request.headers.get("User-Agent") or ""),
+            user_agent="",
         )
 
     @app_module.app.before_request
     def enforce_production_guardrails():
+        nonlocal last_cleanup_at
+        now_monotonic = time.monotonic()
+        if now_monotonic - last_cleanup_at >= 600:
+            try:
+                limiter.cleanup()
+            finally:
+                last_cleanup_at = now_monotonic
+
         owner_key, authenticated = current_owner()
         g.kindlemaster_rate_owner_key = owner_key
         g.kindlemaster_rate_authenticated = authenticated

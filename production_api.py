@@ -8,6 +8,7 @@ from production_attempt_api import install_attempt_history_api
 from production_attempt_audit import install_durable_attempt_audit
 from production_queue_projection import install_queue_state_projection
 from production_runtime import durable_runtime_enabled
+from production_sqlite_connections import install_closing_sqlite_connections
 
 
 def configure_production_api() -> None:
@@ -16,6 +17,7 @@ def configure_production_api() -> None:
             "production_api.py requires KINDLEMASTER_DURABLE_RUNTIME=1; "
             "use `python kindlemaster.py serve` for local thread mode."
         )
+    install_closing_sqlite_connections()
     queue, migration = install_migrated_production_runtime(app_module)
     install_durable_attempt_audit(queue.database)
     install_queue_state_projection(queue.database)

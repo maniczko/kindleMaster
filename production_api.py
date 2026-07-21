@@ -4,6 +4,8 @@ import os
 
 import app as app_module
 from production_api_policy import install_migrated_production_runtime
+from production_attempt_api import install_attempt_history_api
+from production_attempt_audit import install_durable_attempt_audit
 from production_runtime import durable_runtime_enabled
 
 
@@ -13,7 +15,9 @@ def configure_production_api() -> None:
             "production_api.py requires KINDLEMASTER_DURABLE_RUNTIME=1; "
             "use `python kindlemaster.py serve` for local thread mode."
         )
-    _queue, migration = install_migrated_production_runtime(app_module)
+    queue, migration = install_migrated_production_runtime(app_module)
+    install_durable_attempt_audit(queue.database)
+    install_attempt_history_api(app_module, queue)
     app_module.app.logger.info(
         "Durable API initialized: migrated=%s preserved=%s failed=%s",
         migration["migrated"],

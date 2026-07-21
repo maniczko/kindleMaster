@@ -83,6 +83,7 @@ from conversion_library import (
 )
 from flask import Flask, request, jsonify, render_template, redirect, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.utils import secure_filename
 from converter import convert_document_to_epub_with_report, detect_pdf_type
 from docx_conversion import analyze_docx
 from epub_heading_repair import repair_epub_headings_and_toc
@@ -712,7 +713,10 @@ def _artifact_job_root_for_id(job_id: object) -> Path | None:
 
 def _canonical_artifact_route_id(value: object) -> str | None:
     candidate = str(value or "").strip()
-    return candidate if re.fullmatch(r"[A-Za-z0-9_.-]+", candidate) else None
+    sanitized = secure_filename(candidate)
+    if sanitized != candidate or not re.fullmatch(r"[A-Za-z0-9_.-]+", sanitized):
+        return None
+    return sanitized
 
 
 def _semantic_reader_asset_route_path(value: object, semantic_index: Path | None = None) -> str:

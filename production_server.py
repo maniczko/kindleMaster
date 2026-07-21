@@ -9,8 +9,9 @@ import time
 from pathlib import Path
 
 import app as app_module
+from production_api_policy import install_migrated_production_runtime
 from production_guardrails import install_production_guardrails
-from production_runtime import durable_runtime_enabled, install_production_runtime
+from production_runtime import durable_runtime_enabled
 
 
 def _worker_count() -> int:
@@ -68,11 +69,17 @@ class WorkerSupervisor:
 def main() -> int:
     supervisor: WorkerSupervisor | None = None
     if durable_runtime_enabled():
-        queue = install_production_runtime(app_module)
+        queue, migration = install_migrated_production_runtime(app_module)
         install_production_guardrails(
             app_module,
             database=app_module._DURABLE_JOB_DATABASE,
             queue=queue,
+        )
+        app_module.app.logger.info(
+            "Durable runtime initialized: migrated=%s preserved=%s failed=%s",
+            migration["migrated"],
+            migration["preserved"],
+            migration["failed"],
         )
         supervisor = WorkerSupervisor(_worker_count())
         supervisor.start()

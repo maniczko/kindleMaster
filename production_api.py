@@ -6,6 +6,7 @@ import app as app_module
 from production_api_policy import install_migrated_production_runtime
 from production_attempt_api import install_attempt_history_api
 from production_attempt_audit import install_durable_attempt_audit
+from production_queue_projection import install_queue_state_projection
 from production_runtime import durable_runtime_enabled
 
 
@@ -17,6 +18,7 @@ def configure_production_api() -> None:
         )
     queue, migration = install_migrated_production_runtime(app_module)
     install_durable_attempt_audit(queue.database)
+    install_queue_state_projection(queue.database)
     install_attempt_history_api(app_module, queue)
     app_module.app.logger.info(
         "Durable API initialized: migrated=%s preserved=%s failed=%s",

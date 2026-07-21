@@ -118,6 +118,7 @@ python kindlemaster.py validate path\to\file.epub
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --mode auto --resume
 python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --debug-artifacts blockers
+python kindlemaster.py process path\to\chess.pdf --out output\chess_auto --fen-labels path\to\verified_fen_labels.jsonl --fen-model-path path\to\chess_fen_square_v2.json
 python kindlemaster.py validate output\chess_auto --strict
 python kindlemaster.py report output\chess_auto
 python kindlemaster.py review output\chess_auto
@@ -141,6 +142,7 @@ Chess-study FEN quality loop commands are also available under the same entrypoi
 python kindlemaster.py chess-study quality-baseline --out output\yusupov_study
 python kindlemaster.py chess-study two-crop-performance --job-output output\chess_auto --report-dir reports\performance\chess_two_crop
 python kindlemaster.py chess-study preprocess-boards --out output\yusupov_study
+python kindlemaster.py chess-study recover-fen-label-crops --out output\yusupov_study --labels path\to\verified_fen_labels.jsonl --board-manifest output\yusupov_study\report\chess_diagrams.json --model-path path\to\chess_fen_square_v2.json
 python kindlemaster.py chess-study build-square-dataset --out output\yusupov_study --labels output\yusupov_study\review\fen_verified_labels.jsonl
 python kindlemaster.py chess-study train-fen-classifier --out output\yusupov_study
 python kindlemaster.py chess-study recognize-fen-local --out output\yusupov_study
@@ -155,6 +157,11 @@ missing real-corpus output and does not package source PDFs or crop bytes in the
 
 `process --resume` reuses only compatible, atomically checkpointed two-crop pages. Omitting
 the flag always starts a cold two-crop run and ignores existing checkpoints.
+
+`recover-fen-label-crops` only binds an existing human-verified FEN to a current board crop.
+It accepts file-backed crops and conversion manifests with embedded `image_data_uri` images,
+writes source/hash-bound evidence, and never changes an accepted FEN by itself. In `process`,
+`--fen-labels` and `--fen-model-path` must be supplied together.
 
 `process --debug-artifacts all|blockers|none` controls only optional two-crop context and
 overlay PNGs. The default is `all`; board, detected-marker, and marker-search review crops

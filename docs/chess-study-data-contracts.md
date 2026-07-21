@@ -32,6 +32,24 @@ Rows with `draft`, `rejected`, `false_positive`, or invalid FEN are ignored.
 AI-only values such as `ai_suggested_fen`, `ai_approved`, `arbiter_approved`,
 or high confidence are never verification proof.
 
+## FEN Crop Recovery Contract
+
+`recover-fen-label-crops` maps existing human FEN labels to crops from a current
+conversion manifest. The manifest may use file-backed images or `records[]` with
+an embedded `image_data_uri`.
+
+An accepted mapping requires:
+
+- a valid, human-verified source FEN with non-ambiguous provenance;
+- page-local one-to-one assignment;
+- square and occupied-square agreement above the configured thresholds;
+- sufficient margin over the second candidate;
+- no overlap with the model training FEN or normalized board hash;
+- a SHA-256 bound source crop and source document identity.
+
+Recovery writes `review/fen_recovered_labels.jsonl` and decision evidence. It
+never invents a FEN and never changes final export acceptance directly.
+
 ## FEN Profile/Corpus Gate Contract
 
 Profile readiness is a separate gate after label validation. A manifest-ready
@@ -110,7 +128,8 @@ Key fields:
 - `diagram_id`, `square`, `square_index`.
 - `class`: `empty,K,Q,R,B,N,P,k,q,r,b,n,p`.
 - `split`: `train`, `val`, or `holdout`.
-- `image_path`, `source_crop`, `fen`, `board_sha256`.
+- `source_crop`, `fen`, `board_sha256`; `image_path` is optional unless square
+  image materialization was explicitly requested.
 
 Holdout rows must not be used for training.
 
@@ -138,5 +157,11 @@ Accepted candidates require:
 - confidence above threshold;
 - no verified-label disagreement;
 - no critical warnings.
+
+A source-bound verified full FEN may replace missing graphical side-marker
+evidence only when the deterministic candidate exactly equals that verified
+six-field FEN and `source_crop_hash` exactly equals the verified label crop SHA.
+The verified evidence source and provenance must be present. A FEN mismatch,
+missing hash, or hash mismatch keeps the candidate in review.
 
 The ensemble report does not directly rewrite strict exports.

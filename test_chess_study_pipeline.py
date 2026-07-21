@@ -5,6 +5,7 @@ import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -471,6 +472,285 @@ class ChessStudyPipelineTests(unittest.TestCase):
             self.assertEqual(payload["diagram_count"], 2)
             self.assertEqual(payload["sampled_pages"], [10, 20])
             self.assertEqual(payload["auto_extended_pages"], [20])
+
+    def test_fen_manual_review_builds_source_bound_pack_from_conversion_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "artifact-job"
+            report_dir = out / "report"
+            review_dir = out / "review"
+            report_dir.mkdir(parents=True)
+            review_dir.mkdir(parents=True)
+            buffer = io.BytesIO()
+            Image.new("RGB", (96, 112), "white").save(buffer, format="PNG")
+            data_uri = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            report_path = report_dir / "chess_diagrams.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "id": "diagram-review",
+                                "page_number": 14,
+                                "source_order": 2,
+                                "caption": "Diagram 1-7",
+                                "bbox": [10, 20, 90, 110],
+                                "image_data_uri": data_uri,
+                                "status": "needs_review",
+                                "full_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                                "fen_confidence": 0.81,
+                            },
+                            {
+                                "id": "diagram-accepted",
+                                "page_number": 15,
+                                "image_data_uri": data_uri,
+                                "status": "accepted",
+                                "validation_status": "accepted",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            source_sha = "a" * 64
+            (review_dir / "fen_recovered_labels.jsonl").write_text(
+                json.dumps(
+                    {
+                        "diagram_id": "diagram-review",
+                        "source_document_sha256": source_sha,
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (review_dir / "fen_beam_verified_conflicts.jsonl").write_text(
+                json.dumps(
+                    {
+                        "diagram_id": "diagram-review",
+                        "reason": "verified_label_disagrees",
+                        "verified_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            mismatched_pdf = Path(temp_dir) / "wrong-default.pdf"
+            mismatched_pdf.write_bytes(b"%PDF-1.4\nwrong-source")
+
+            payload = build_chess_fen_manual_review(out, pdf_path=mismatched_pdf)
+
+            rows = [
+                json.loads(line)
+                for line in (review_dir / "fen_manual_draft.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(payload["source_kind"], "conversion_artifact")
+            self.assertEqual(payload["diagram_count"], 1)
+            self.assertEqual(payload["accepted_diagram_count_excluded"], 1)
+            self.assertEqual(payload["materialized_crop_count"], 1)
+            self.assertEqual(payload["source_document_sha256"], source_sha)
+            self.assertEqual(payload["source_binding"], "preserved_source_sha256_pdf_mismatch")
+            self.assertEqual(payload["source_identity_warning"], "source_pdf_candidate_sha256_mismatch")
+            self.assertEqual(rows[0]["diagram_id"], "diagram-review")
+            self.assertEqual(rows[0]["review_priority"], 0)
+            self.assertEqual(len(rows[0]["crop_sha256"]), 64)
+            self.assertEqual(len(rows[0]["diagram_fingerprint"]), 64)
+            self.assertTrue(Path(rows[0]["crop_path"]).is_file())
+            html_text = (review_dir / "fen_manual_review.html").read_text(encoding="utf-8")
+            self.assertIn("Oznacz figury, nie zapis FEN", html_text)
+            self.assertIn('name="manual_visible_marker"', html_text)
+            self.assertIn('name="piece_labels_verified"', html_text)
+            self.assertIn('name="manual_fen" class="fen-output" readonly', html_text)
+            self.assertEqual(html_text.count('data-square-index="'), 64)
+            self.assertNotIn('placeholder="8/8/8/8', html_text)
+            self.assertTrue((review_dir / "fen_manual_review_package.zip").is_file())
+
+    def test_fen_manual_review_separates_board_marker_and_context_crops(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            out = root / "artifact-job"
+            report_dir = out / "report"
+            report_dir.mkdir(parents=True)
+            source_pdf = root / "source.pdf"
+            document = fitz.open()
+            document.new_page(width=200, height=300)
+            document.save(source_pdf)
+            document.close()
+
+            buffer = io.BytesIO()
+            Image.new("RGB", (140, 170), "white").save(buffer, format="PNG")
+            data_uri = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+            (report_dir / "chess_diagrams.json").write_text(
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "id": "diagram-two-crop",
+                                "page_number": 1,
+                                "caption": "Diagram testowy",
+                                "bbox": [20, 30, 120, 150],
+                                "board_bbox": [20, 30, 120, 150],
+                                "board_crop_path": "images/original-context.png",
+                                "image_data_uri": data_uri,
+                                "status": "needs_review",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_two_crop(_pdf, diagrams, out_dir, **kwargs):
+                self.assertEqual(kwargs["dpi"], 144)
+                self.assertTrue(kwargs["resume"])
+                self.assertEqual(len(diagrams), 1)
+                self.assertEqual(diagrams[0]["page"], 1)
+                self.assertEqual(len(diagrams[0]["normalized_bbox_xyxy"]), 4)
+                crop_root = Path(out_dir) / "review" / "chess_fen" / "two_crop"
+                crop_root.mkdir(parents=True)
+                assets = {
+                    "board_crop_path": ("diagram_board.png", "black"),
+                    "side_marker_crop_path": ("diagram_marker.png", "red"),
+                    "side_marker_search_crop_path": ("diagram_marker_search.png", "blue"),
+                }
+                for field_name, (filename, color) in assets.items():
+                    Image.new("RGB", (90, 90), color).save(crop_root / filename)
+                    diagrams[0][field_name] = f"review/chess_fen/two_crop/{filename}"
+                diagrams[0].update(
+                    {
+                        "side_marker_review_crop_path": diagrams[0]["side_marker_crop_path"],
+                        "side_marker_review_crop_kind": "detected_marker_bbox",
+                        "side_marker_symbol": "▼",
+                        "side_marker_status": "trusted_marker",
+                        "board_crop_quality": "pass",
+                        "marker_crop_quality": "pass",
+                        "marker_crop_fail_reason": [],
+                    }
+                )
+                return {
+                    "diagram_count": 1,
+                    "board_crop_count": 1,
+                    "side_marker_crop_count": 1,
+                    "side_marker_search_crop_count": 1,
+                }
+
+            with patch(
+                "chess_study_export._attach_pdf_side_marker_evidence_to_study_diagrams",
+                side_effect=fake_two_crop,
+            ):
+                payload = build_chess_fen_manual_review(
+                    out,
+                    pdf_path=source_pdf,
+                    diagram_dpi=144,
+                    resume_two_crop=True,
+                )
+
+            row = json.loads(
+                (out / "review" / "fen_manual_draft.jsonl").read_text(encoding="utf-8").splitlines()[0]
+            )
+            self.assertEqual(payload["schema"], "kindlemaster.fen_manual_review.v4")
+            self.assertEqual(payload["two_crop_status"], "ok")
+            self.assertEqual(row["review_contract"], "source_bound_piece_grid_v2")
+            self.assertEqual(row["schema"], "kindlemaster.fen_manual_review.row.v4")
+            self.assertEqual(row["square_labels"], [])
+            self.assertFalse(row["piece_labels_verified"])
+            asset_fields = (
+                "board_crop_rel_path",
+                "context_crop_rel_path",
+                "marker_crop_rel_path",
+                "marker_search_crop_rel_path",
+            )
+            self.assertTrue(all(row[field_name] for field_name in asset_fields))
+            self.assertEqual(
+                len(
+                    {
+                        row["board_crop_sha256"],
+                        row["context_crop_sha256"],
+                        row["marker_crop_sha256"],
+                        row["marker_search_crop_sha256"],
+                    }
+                ),
+                4,
+            )
+            html_text = (out / "review" / "fen_manual_review.html").read_text(encoding="utf-8")
+            self.assertIn("1. Plansza 8×8", html_text)
+            self.assertIn("2B. Marker", html_text)
+            self.assertIn("▼ pełny trójkąt", html_text)
+            self.assertNotIn("▲ pełny trójkąt", html_text)
+            with zipfile.ZipFile(out / "review" / "fen_manual_review_package.zip") as archive:
+                asset_names = [
+                    name for name in archive.namelist() if name.startswith("fen_manual_assets/")
+                ]
+            self.assertEqual(len(asset_names), 4)
+
+    def test_piece_grid_contract_rejects_candidate_only_review_and_promotes_verified_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crop = root / "board.png"
+            Image.new("RGB", (128, 128), "white").save(crop)
+            fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+            cells = chess_study_export._fen_placement_to_cells(fen.split()[0])
+            labels = root / "labels.jsonl"
+            rows = [
+                {
+                    "schema": "kindlemaster.fen_manual_review.row.v3",
+                    "review_contract": "source_bound_two_crop_v1",
+                    "diagram_id": "candidate-only",
+                    "crop_path": str(crop),
+                    "manual_fen": fen,
+                    "manual_label": "correct_diagram",
+                    "label_status": "verified",
+                    "verified_by": "reviewer",
+                    "verified_at": "2026-07-15T10:00:00Z",
+                },
+                {
+                    "schema": "kindlemaster.fen_manual_review.row.v4",
+                    "review_contract": "source_bound_piece_grid_v2",
+                    "diagram_id": "verified-grid",
+                    "crop_path": str(crop),
+                    "manual_fen": fen,
+                    "square_labels": cells,
+                    "piece_labels_verified": True,
+                    "fen_human_verified": True,
+                    "manual_label": "correct_diagram",
+                    "label_status": "verified",
+                    "verified_by": "reviewer",
+                    "verified_at": "2026-07-15T10:00:00Z",
+                },
+            ]
+            labels.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            rejected: list[dict[str, str]] = []
+
+            promoted = chess_study_export._promote_verified_fen_labels(labels, root, rejected=rejected)
+
+            self.assertEqual([row["diagram_id"] for row in promoted], ["verified-grid"])
+            self.assertEqual(rejected, [{"diagram_id": "candidate-only", "reason": "piece_grid_not_verified"}])
+
+    def test_verified_crop_can_be_recovered_by_sha256_from_corpus_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            labels_dir = root / "reference_inputs" / "chess_fen" / "labels"
+            crop_dir = root / "reference_inputs" / "chess_fen" / "crops" / "nested"
+            labels_dir.mkdir(parents=True)
+            crop_dir.mkdir(parents=True)
+            labels_path = labels_dir / "verified.jsonl"
+            crop = crop_dir / "recovered.png"
+            Image.new("RGB", (64, 64), "white").save(crop)
+            digest = chess_study_export._file_sha256(crop)
+
+            resolved = chess_study_export._resolve_review_crop_path(
+                {"source_crop_path": "missing/recovered.png", "sha256": digest},
+                root / "out",
+                labels_path=labels_path,
+            )
+            missing = chess_study_export._resolve_review_crop_path(
+                {"source_crop_path": "missing/recovered.png", "sha256": "0" * 64},
+                root / "out",
+                labels_path=labels_path,
+            )
+
+            self.assertEqual(resolved, crop.resolve())
+            self.assertFalse(missing.is_file())
 
     def test_verified_fen_labels_build_templates_and_holdout_without_drafts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

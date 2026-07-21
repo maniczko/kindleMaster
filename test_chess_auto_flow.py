@@ -10,10 +10,12 @@ from unittest.mock import patch
 
 import kindlemaster
 from chess_auto_flow import (
+    _canonical_fen,
     _side_marker_assignment_report,
     apply_runtime_accepted_fen,
     apply_runtime_accepted_pgn,
     build_auto_chess_flow_artifacts,
+    is_auto_chess_output,
     run_auto_chess_process,
     validate_auto_chess_output,
 )
@@ -63,6 +65,75 @@ def _squares_from_fen(fen: str, *, confidence: float = 0.99) -> list[dict]:
 
 
 class AutoChessFlowTests(unittest.TestCase):
+    def test_canonical_fen_preserves_source_bound_verified_evidence(self) -> None:
+        crop_hash = "a" * 64
+        diagram = {
+            "diagram_id": "p001_d001",
+            "page": 1,
+            "side_to_move": "w",
+            "side_to_move_status": "inferred",
+            "side_to_move_evidence": "inferred",
+            "side_marker_status": "inferred_only",
+        }
+        model_row = {
+            "diagram_id": "p001_d001",
+            "source_crop_hash": crop_hash,
+            "squares": _squares_from_fen(VALID_KINGS_FEN),
+        }
+        beam_row = {
+            "diagram_id": "p001_d001",
+            "source": "deterministic_ensemble",
+            "fen": VALID_KINGS_FEN,
+            "confidence": 0.99,
+            "source_crop_hash": crop_hash,
+            "score_margin_to_second_candidate": 0.5,
+            "evidence": {
+                "python_chess_valid": True,
+                "validate_fen_detailed_passed": True,
+                "local_model_candidate": True,
+                "template_candidate": False,
+                "square_alternatives_checked": True,
+                "source_crop_hash": crop_hash,
+                "score_margin_to_second_candidate": 0.5,
+            },
+            "verified_fen": VALID_KINGS_FEN,
+            "verified_fen_evidence_trusted": True,
+            "verified_fen_evidence_source": "source_bound_human_fen",
+            "verified_label_crop_sha256": crop_hash,
+            "verified_label_provenance": "human_fen_machine_crop_mapping",
+        }
+
+        fen_payload, _, _ = _canonical_fen([diagram], [], [model_row], [beam_row])
+
+        self.assertEqual(fen_payload["items"][0]["runtime_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertEqual(fen_payload["items"][0]["selected_value"], VALID_KINGS_FEN)
+
+    def test_build_artifacts_reads_library_report_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            _write_json(
+                out / "report" / "chess_diagrams.json",
+                {
+                    "diagram_count": 1,
+                    "records": [
+                        {
+                            "id": "layout-chess-p010-d01",
+                            "page_index": 9,
+                            "page_number": 10,
+                            "status": "needs_review",
+                            "full_fen_status": "FEN_REVIEW_REQUIRED",
+                        }
+                    ],
+                },
+            )
+
+            build_auto_chess_flow_artifacts(out)
+
+            diagrams = json.loads((out / "diagrams" / "diagrams.json").read_text(encoding="utf-8"))
+            self.assertEqual(diagrams["diagrams"][0]["diagram_id"], "layout-chess-p010-d01")
+            self.assertEqual(diagrams["diagrams"][0]["page"], 10)
+            self.assertTrue(is_auto_chess_output(out))
+
     def test_side_marker_report_preserves_explicit_zero_assignment_scores(self) -> None:
         report = _side_marker_assignment_report(
             [
@@ -680,6 +751,14 @@ class AutoChessFlowTests(unittest.TestCase):
 
             patches = [
                 patch("chess_study_export.run_chess_study_export", side_effect=fake_export),
+                patch(
+                    "chess_study_export.recover_fen_label_crops",
+                    return_value={
+                        "status": "ok",
+                        "accepted_mapping_count": 1,
+                        "recovered_labels_path": str(out / "review" / "fen_recovered_labels.jsonl"),
+                    },
+                ),
                 patch("chess_study_export.preprocess_chess_board_crops", return_value={"status": "ok", "normalized_count": 0}),
                 patch("chess_study_export.recognize_fen_local", return_value={"status": "ok", "prediction_count": 0}),
                 patch("chess_study_export.evaluate_fen_ensemble", return_value={"status": "needs_review", "accepted_candidate_count": 0}),
@@ -696,9 +775,16 @@ class AutoChessFlowTests(unittest.TestCase):
             with stack:
                 for item in patches:
                     stack.enter_context(item)
-                payload = run_auto_chess_process("study.pdf", out_dir=out, mode="auto")
+                payload = run_auto_chess_process(
+                    "study.pdf",
+                    out_dir=out,
+                    mode="auto",
+                    fen_labels_path="labels.jsonl",
+                    fen_model_path="model.json",
+                )
 
             stage_names = [stage["name"] for stage in payload["stage_results"]]
+            self.assertIn("recover_fen_label_crops", stage_names)
             self.assertIn("preprocess_chess_board_crops", stage_names)
             self.assertIn("generate_fen_template_candidates", stage_names)
             self.assertIn("generate_fen_beam_candidates", stage_names)

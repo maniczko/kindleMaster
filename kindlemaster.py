@@ -320,6 +320,8 @@ def main() -> int:
     )
     process_parser.add_argument("--diagram-page-ranges", default="")
     process_parser.add_argument("--glyph-mapping-file", default="")
+    process_parser.add_argument("--fen-labels", default="", help="Verified FEN labels used for source-bound crop recovery.")
+    process_parser.add_argument("--fen-model-path", default="", help="Trained local FEN model used with --fen-labels.")
     process_parser.add_argument("--with-ai", action="store_true", help="Run optional AI candidate passes; AI remains review-only.")
     process_parser.add_argument("--dry-run-ai", action="store_true", help="Write AI request manifests without live API calls.")
     process_parser.add_argument("--ai-limit", type=int, default=0)
@@ -608,6 +610,7 @@ def main() -> int:
         "build-square-dataset",
         "train-fen-classifier",
         "evaluate-fen-classifier",
+        "recover-fen-label-crops",
         "recognize-fen-local",
         "evaluate-fen-ensemble",
         "calibrate-fen-confidence",
@@ -642,6 +645,11 @@ def main() -> int:
         stage_parser.add_argument("--template-output-dir", default="", help="Optional output directory for generated FEN templates.")
         stage_parser.add_argument("--fold-count", type=int, default=5)
         stage_parser.add_argument("--holdout-fold", type=int, default=0)
+        stage_parser.add_argument(
+            "--materialize-square-images",
+            action="store_true",
+            help="Write one PNG per square for visual debugging; disabled by default for faster dataset builds.",
+        )
         stage_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
         stage_parser.add_argument(
             "--render-pages",
@@ -658,6 +666,16 @@ def main() -> int:
         stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
         stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
         stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
+        stage_parser.add_argument("--board-manifest", default="", help="Current chess diagram manifest used to recover source-bound FEN crop mappings.")
+        stage_parser.add_argument("--min-square-match", type=float, default=0.95)
+        stage_parser.add_argument("--min-occupied-match", type=float, default=0.80)
+        stage_parser.add_argument("--min-match-margin", type=float, default=0.05)
+        if command_name == "fen-review":
+            stage_parser.add_argument(
+                "--resume",
+                action="store_true",
+                help="Resume compatible completed two-crop pages for the FEN review pack.",
+            )
 
     two_crop_performance_parser = chess_study_subparsers.add_parser(
         "two-crop-performance",
@@ -792,6 +810,15 @@ def main() -> int:
                 }
                 _print_json(payload)
                 return 0
+        if bool(str(args.fen_labels or "").strip()) != bool(str(args.fen_model_path or "").strip()):
+            _print_json(
+                {
+                    "status": "failed",
+                    "error_code": "fen_recovery_configuration_incomplete",
+                    "message": "process requires --fen-labels and --fen-model-path together.",
+                }
+            )
+            return 1
         if not args.input_path or not args.out:
             _print_json(
                 {
@@ -817,6 +844,8 @@ def main() -> int:
             chess_fen_recognition_max_diagrams=args.chess_fen_recognition_max_diagrams,
             diagram_page_ranges=args.diagram_page_ranges,
             glyph_mapping_file=args.glyph_mapping_file or None,
+            fen_labels_path=args.fen_labels or None,
+            fen_model_path=args.fen_model_path or None,
             resume=args.resume,
         )
         _print_json(payload)
@@ -1092,8 +1121,9 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         extract_study_structure,
         extract_study_notation_fragments,
         ingest_study_pdf,
-        preprocess_chess_board_crops,
-        recognize_fen_local,
+          preprocess_chess_board_crops,
+          recover_fen_label_crops,
+          recognize_fen_local,
         render_qa_html,
         render_semantic_source_reader,
         render_study_html,
@@ -1182,6 +1212,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             if str(args.expected_diagram_manifest or "").strip()
             else None
         ),
+        resume=bool(getattr(args, "resume", False)),
     )
     if args.chess_study_command == "fen-review":
         payload = build_chess_fen_manual_review(
@@ -1191,6 +1222,8 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             review_sample_limit=config.review_sample_limit,
             page_ranges=config.diagram_page_ranges,
             min_count=args.fen_review_min_count,
+            diagram_dpi=config.diagram_dpi,
+            resume_two_crop=config.resume,
         )
     elif args.chess_study_command == "build-fen-templates":
         if not str(args.labels or "").strip():
@@ -1252,6 +1285,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             out_dir=config.out,
             fold_count=args.fold_count,
             holdout_fold=args.holdout_fold,
+            materialize_square_images=args.materialize_square_images,
         )
     elif args.chess_study_command in {"train-fen-classifier", "evaluate-fen-classifier"}:
         payload = train_fen_square_classifier(
@@ -1259,14 +1293,41 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             dataset_path=args.labels or None,
             model_name=Path(args.model_path).stem if str(args.model_path or "").strip() else "chess_fen_square_v1",
         )
+    elif args.chess_study_command == "recover-fen-label-crops":
+        missing = [
+            flag
+            for flag, value in (
+                ("--labels", args.labels),
+                ("--board-manifest", args.board_manifest),
+                ("--model-path", args.model_path),
+            )
+            if not str(value or "").strip()
+        ]
+        if missing:
+            _print_json({"status": "failed", "error": "Provide " + ", ".join(missing) + "."})
+            return 1
+        payload = recover_fen_label_crops(
+            args.labels,
+            board_manifest_path=args.board_manifest,
+            model_path=args.model_path,
+            out_dir=config.out,
+            min_square_match=args.min_square_match,
+            min_occupied_match=args.min_occupied_match,
+            min_match_margin=args.min_match_margin,
+        )
     elif args.chess_study_command == "recognize-fen-local":
         payload = recognize_fen_local(
             config.out,
             model_path=args.model_path or None,
             limit=args.review_sample_limit,
+            labels_path=args.labels or None,
         )
     elif args.chess_study_command == "evaluate-fen-ensemble":
-        payload = evaluate_fen_ensemble(config.out, min_confidence=args.min_confidence)
+        payload = evaluate_fen_ensemble(
+            config.out,
+            min_confidence=args.min_confidence,
+            labels_path=args.labels or None,
+        )
     elif args.chess_study_command == "calibrate-fen-confidence":
         payload = calibrate_fen_confidence(config.out)
     elif args.chess_study_command == "export-fen-corpus-manifest":

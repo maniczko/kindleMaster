@@ -275,6 +275,7 @@ def build_deterministic_ensemble_fen(
         "evidence": evidence,
         "deterministic_validation": _deterministic_validation(fen),
         **_side_marker_fields(diagram),
+        **_verified_fen_evidence_fields(model_prediction or {}),
     }
     row["machine_acceptance"] = validate_ensemble_candidate(
         row,
@@ -308,6 +309,20 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "marker_bbox",
         "marker_crop_bbox",
         "selected_marker_zone",
+    )
+    return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
+
+
+def _verified_fen_evidence_fields(source: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "verified_fen",
+        "verified_fen_evidence_trusted",
+        "verified_fen_evidence_source",
+        "verified_label_crop_sha256",
+        "verified_label_provenance",
+        "mapping_square_match",
+        "mapping_occupied_match",
+        "mapping_margin",
     )
     return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
 
@@ -355,20 +370,46 @@ def generate_fen_candidates_from_square_alternatives(
     return _dedupe_fen_candidates(sorted(candidates, key=_fast_fen_candidate_score, reverse=True))[:beam_width]
 
 
-def build_fen_beam_candidates(out_dir: str | Path, *, beam_width: int = 256, max_uncertain_squares: int = 12) -> dict[str, Any]:
+def build_fen_beam_candidates(
+    out_dir: str | Path,
+    *,
+    beam_width: int = 256,
+    max_uncertain_squares: int = 12,
+    verified_labels_path: str | Path | None = None,
+) -> dict[str, Any]:
     out = Path(out_dir)
     review = out / "review"
     reports = out / "reports"
     review.mkdir(parents=True, exist_ok=True)
     reports.mkdir(parents=True, exist_ok=True)
-    rows = build_deterministic_ensemble_candidates(
+    candidate_rows = build_deterministic_ensemble_candidates(
         diagrams=_load_diagrams(out),
         model_predictions=load_model_predictions(out),
         template_candidates=load_template_candidates(out),
         beam_width=beam_width,
         max_uncertain_squares=max_uncertain_squares,
     )
+    verified_fen = _verified_fen_by_diagram(Path(verified_labels_path)) if verified_labels_path else {}
+    rows: list[dict[str, Any]] = []
+    verified_conflicts: list[dict[str, Any]] = []
+    for row in candidate_rows:
+        diagram_id = str(row.get("diagram_id") or row.get("id") or "")
+        expected = str(verified_fen.get(diagram_id) or "")
+        actual = str(row.get("fen") or "")
+        if expected and _normalized_fen_value(actual) != _normalized_fen_value(expected):
+            verified_conflicts.append(
+                {
+                    "diagram_id": diagram_id,
+                    "status": "needs_review",
+                    "reason": "verified_label_disagrees",
+                    "fen_candidate": actual,
+                    "verified_fen": expected,
+                }
+            )
+            continue
+        rows.append(row)
     _write_jsonl(review / "fen_beam_candidates.jsonl", rows)
+    _write_jsonl(review / "fen_beam_verified_conflicts.jsonl", verified_conflicts)
     accepted = [row for row in rows if row.get("machine_acceptance", {}).get("runtime_status") == "FEN_MACHINE_ACCEPTED"]
     top_blockers = _top_blockers(rows)
     payload = {
@@ -376,12 +417,14 @@ def build_fen_beam_candidates(out_dir: str | Path, *, beam_width: int = 256, max
         "status": "ok" if rows else "needs_review",
         "candidate_count": len(rows),
         "machine_accepted_candidate_count": len(accepted),
+        "verified_label_count": len(verified_fen),
+        "verified_conflict_count": len(verified_conflicts),
         "beam_width": beam_width,
         "max_uncertain_squares": max_uncertain_squares,
         "top_blockers": top_blockers,
         "next_actions": _top_next_actions(rows),
         "next_action": _next_action_for_blocker_keys([row.get("key") for row in top_blockers]),
-        "policy": "Beam candidates are deterministic ensemble evidence; machine_accept_fen remains the acceptance gate.",
+        "policy": "Beam candidates are deterministic ensemble evidence; machine_accept_fen remains the acceptance gate, and any available verified FEN disagreement is excluded before canonical export.",
     }
     _write_json(reports / "fen_beam_eval.json", payload)
     return payload
@@ -397,8 +440,12 @@ def apply_runtime_accepted_fen(out_dir: str | Path) -> dict[str, Any]:
     }
     book_path = out / "data" / "book.json"
     diagrams_path = out / "data" / "diagrams.json"
+    export_manifest_path = out / "chess_diagrams.json"
+    report_manifest_path = out / "report" / "chess_diagrams.json"
     book = _read_optional_json(book_path)
     diagrams_payload = _read_optional_json(diagrams_path)
+    export_manifest = _read_optional_json(export_manifest_path)
+    report_manifest = _read_optional_json(report_manifest_path)
     applied_ids: set[str] = set()
 
     for page in book.get("pages") or []:
@@ -409,26 +456,61 @@ def apply_runtime_accepted_fen(out_dir: str | Path) -> dict[str, Any]:
         for diagram in diagrams_payload.get("diagrams") or []:
             if _apply_fen_to_diagram(diagram, accepted):
                 applied_ids.add(str(diagram.get("diagram_id") or diagram.get("id") or ""))
+    for manifest in (export_manifest, report_manifest):
+        for diagram in _manifest_diagram_records(manifest):
+            if _apply_fen_to_diagram(diagram, accepted):
+                applied_ids.add(str(diagram.get("diagram_id") or diagram.get("id") or ""))
 
     if book:
         _write_json(book_path, book)
     if diagrams_payload:
         _write_json(diagrams_path, diagrams_payload)
+    for manifest_path, manifest in (
+        (export_manifest_path, export_manifest),
+        (report_manifest_path, report_manifest),
+    ):
+        if not manifest:
+            continue
+        manifest_diagrams = _manifest_diagram_records(manifest)
+        accepted_count = sum(
+            _diagram_has_accepted_fen(diagram)
+            for diagram in manifest_diagrams
+        )
+        manifest["accepted_fen_count"] = accepted_count
+        manifest["review_count"] = max(0, len(manifest_diagrams) - accepted_count)
+        _write_json(manifest_path, manifest)
 
+    reader_refresh: dict[str, Any]
     try:
-        from chess_study_export import build_chess_quality_dashboard, render_semantic_source_reader
+        from chess_study_export import build_chess_quality_dashboard, render_conversion_chess_reader
 
-        render_semantic_source_reader(out)
-        build_chess_quality_dashboard(out)
-    except Exception:
-        pass
+        reader_refresh = render_conversion_chess_reader(out)
+        if (out / "data" / "book.json").is_file():
+            build_chess_quality_dashboard(out)
+    except Exception as exc:
+        reader_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
+    updated_artifacts = [
+        str(path)
+        for path, artifact_payload in (
+            (book_path, book),
+            (diagrams_path, diagrams_payload),
+            (export_manifest_path, export_manifest),
+            (report_manifest_path, report_manifest),
+        )
+        if artifact_payload
+    ]
+    reader_path = Path(str(reader_refresh.get("reader_path") or ""))
+    if reader_refresh.get("status") == "ok" and reader_path.is_file():
+        updated_artifacts.append(str(reader_path))
     payload = {
         "schema": "kindlemaster.fen_apply_runtime_acceptance.v1",
         "status": "ok",
         "accepted_input_count": len(accepted),
         "applied_count": len(applied_ids),
         "applied_ids": sorted(applied_ids),
+        "reader_refresh": reader_refresh,
+        "updated_artifacts": updated_artifacts,
     }
     _write_json(out / "reports" / "fen_apply_runtime_acceptance.json", payload)
     return payload
@@ -690,10 +772,46 @@ def _load_diagrams(out: Path) -> list[dict[str, Any]]:
         payload = json.loads(diagrams_path.read_text(encoding="utf-8"))
         return list(payload.get("diagrams") or [])
     book_path = out / "data" / "book.json"
-    if not book_path.is_file():
-        return []
-    book = json.loads(book_path.read_text(encoding="utf-8"))
-    return [diagram for page in book.get("pages") or [] for diagram in page.get("diagrams") or []]
+    if book_path.is_file():
+        book = json.loads(book_path.read_text(encoding="utf-8"))
+        return [diagram for page in book.get("pages") or [] for diagram in page.get("diagrams") or []]
+    export_manifest_path = out / "chess_diagrams.json"
+    if export_manifest_path.is_file():
+        payload = json.loads(export_manifest_path.read_text(encoding="utf-8"))
+        return _manifest_diagram_records(payload)
+    report_manifest_path = out / "report" / "chess_diagrams.json"
+    if report_manifest_path.is_file():
+        payload = json.loads(report_manifest_path.read_text(encoding="utf-8"))
+        return _manifest_diagram_records(payload)
+    return []
+
+
+def _manifest_diagram_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("diagrams", "records"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+    return []
+
+
+def _diagram_has_accepted_fen(diagram: dict[str, Any]) -> bool:
+    fen = str(diagram.get("full_fen") or diagram.get("fen") or "").strip()
+    record_status = str(diagram.get("validation_status") or diagram.get("status") or "").strip().lower()
+    status = str(
+        diagram.get("full_fen_status")
+        or diagram.get("runtime_status")
+        or record_status
+        or ""
+    ).strip().lower()
+    return (
+        bool(fen)
+        and not bool(diagram.get("requires_review") or diagram.get("manual_review_required"))
+        and (
+            diagram.get("full_fen_allowed") is True
+            or status in {"accepted", "fen_machine_accepted", "fen_corpus_verified"}
+        )
+        and record_status not in {"review", "needs_review", "requires_review"}
+    )
 
 
 def _template_candidate_for_diagram(
@@ -826,13 +944,32 @@ def _apply_fen_to_diagram(diagram: dict[str, Any], accepted: dict[str, dict[str,
     selected = str(item.get("selected_value") or "").strip()
     if not selected:
         return False
+    placement = selected.split()[0]
+    runtime_status = item.get("runtime_status") or "FEN_MACHINE_ACCEPTED"
     diagram["fen"] = selected
     diagram["fen_candidate"] = selected
+    diagram["placement"] = placement
+    diagram["placement_fen"] = placement
+    diagram["full_fen"] = selected
+    diagram["full_fen_status"] = runtime_status
+    diagram["full_fen_runtime_status"] = runtime_status
+    diagram["full_fen_allowed"] = True
+    diagram["full_fen_blockers"] = []
+    diagram["full_fen_blocker"] = ""
     diagram["validation_status"] = "accepted"
     diagram["status"] = "accepted"
-    diagram["runtime_status"] = item.get("runtime_status") or "FEN_MACHINE_ACCEPTED"
+    diagram["runtime_status"] = runtime_status
     diagram["acceptance_policy"] = item.get("acceptance_policy") or "runtime_machine_acceptance_v1"
+    diagram["manual_review_required"] = False
+    diagram["requires_review"] = False
+    diagram["reason"] = ""
     diagram["review_reason"] = ""
+    diagram["fen_suppressed_reason"] = ""
+    if len(selected.split()) > 1:
+        diagram["side_to_move"] = selected.split()[1]
+        diagram["side_to_move_status"] = "verified_runtime_fen"
+        diagram["side_to_move_evidence"] = "verified_runtime_fen"
+        diagram["strict_fen_side_evidence_trusted"] = True
     diagram["acceptance_trace"] = item.get("acceptance_trace") or {}
     return True
 
@@ -900,6 +1037,21 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
+
+
+def _verified_fen_by_diagram(path: Path) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for row in _read_jsonl(path):
+        diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+        fen = str(row.get("fen") or row.get("manual_fen") or "").strip()
+        if diagram_id and fen:
+            labels[diagram_id] = fen
+    return labels
+
+
+def _normalized_fen_value(value: str) -> str:
+    validation = validate_fen_detailed(str(value or ""))
+    return str(validation.normalized_fen or value or "").strip()
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

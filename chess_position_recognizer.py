@@ -1748,6 +1748,11 @@ def _normalize_piece_cell(image: Image.Image) -> np.ndarray:
     return foreground / max_value
 
 
+def normalize_piece_cell_for_classifier(image: Image.Image) -> np.ndarray:
+    """Expose the production cell normalization used by template recognition."""
+    return _normalize_piece_cell(image).copy()
+
+
 def _coerce_template_image(source: Any) -> Image.Image | None:
     if isinstance(source, Image.Image):
         return source.convert("L")

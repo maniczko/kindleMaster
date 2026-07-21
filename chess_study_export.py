@@ -15,16 +15,18 @@ import zipfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 import fitz
+import numpy as np
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
-from chess_position_recognizer import validate_fen
+from chess_position_recognizer import normalize_board_crop_for_templates, normalize_piece_cell_for_classifier, validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
 from chess_two_crop_checkpoint import (
@@ -61,6 +63,17 @@ STUDY_STATUSES = {
 }
 
 QUALITY_PROFILES = {"smoke", "default", "masterkindle"}
+FEN_LEGACY_LABEL_BLOCKING_NOTES = (
+    "review-only draft",
+    "re-verify",
+    "check the crop",
+    "current crop hash changed",
+    "near_exact",
+    "caption_key_exact=false",
+)
+FEN_LEGACY_NON_MANUAL_VERIFIERS = {"codex-priority-review-import"}
+FEN_SQUARE_SVC_C = 1.0
+FEN_SQUARE_SVC_CLASS_WEIGHT = "balanced"
 FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
 SOURCE_HTML_EVIDENCE_ARTIFACT_TYPE = "source_html_evidence_only"
 SEMANTIC_BOOK_SCHEMA = "kindlemaster.chess_reader.semantic_book.v1"
@@ -1973,6 +1986,8 @@ def build_chess_fen_manual_review(
     review_sample_limit: int = 0,
     page_ranges: str = "",
     min_count: int = 0,
+    diagram_dpi: int = 216,
+    resume_two_crop: bool = False,
 ) -> dict[str, Any]:
     """Create a manual FEN labeling queue from the semantic source HTML export.
 
@@ -1980,16 +1995,34 @@ def build_chess_fen_manual_review(
     `build_chess_fen_templates`, not by this review page.
     """
     out = Path(out_dir)
-    if not (out / "data" / "book.json").is_file():
+    artifact_report_path, artifact_payload = _fen_review_artifact_report(out)
+    source_kind = "semantic_book"
+    accepted_excluded = 0
+    if (out / "data" / "book.json").is_file():
+        book = _load_source_book(out)
+        diagrams = _source_book_diagrams(book)
+    elif artifact_report_path is not None:
+        source_kind = "conversion_artifact"
+        artifact_records = [
+            dict(record)
+            for record in artifact_payload.get("records", [])
+            if isinstance(record, Mapping)
+        ]
+        diagrams = [record for record in artifact_records if not _fen_review_record_is_accepted(record)]
+        accepted_excluded = len(artifact_records) - len(diagrams)
+    else:
         if not html_path:
             return {
                 "status": "failed",
-                "error": "data/book.json missing; provide --html to rebuild the semantic source export first.",
+                "error": (
+                    "No semantic data/book.json or conversion report/chess_diagrams.json found; "
+                    "provide --html to rebuild the semantic source export first."
+                ),
                 "out_dir": str(out),
             }
         rebuild_chess_source_html_export(html_path, out, pdf_path=pdf_path)
-    book = _load_source_book(out)
-    diagrams = _source_book_diagrams(book)
+        book = _load_source_book(out)
+        diagrams = _source_book_diagrams(book)
     all_diagrams = list(diagrams)
     page_filter = _parse_page_filter(page_ranges)
     auto_extended_pages: list[int] = []
@@ -2002,33 +2035,403 @@ def build_chess_fen_manual_review(
                 page_filter=page_filter,
                 min_count=int(min_count or 0),
             )
-    if review_sample_limit and review_sample_limit > 0:
-        diagrams = diagrams[: int(review_sample_limit)]
-    rows = [_fen_manual_review_row(diagram, out) for diagram in diagrams]
-
     review_dir = out / "review"
     reports_dir = out / "reports"
     review_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
+    if review_sample_limit and review_sample_limit > 0:
+        diagrams = diagrams[: int(review_sample_limit)]
+    source_identity = _fen_review_source_identity(
+        out,
+        artifact_report_path=artifact_report_path,
+        explicit_pdf_path=Path(pdf_path) if pdf_path else None,
+    )
+    two_crop_summary = (
+        _attach_fen_review_two_crop_evidence(
+            out,
+            diagrams,
+            source_identity=source_identity,
+            dpi=diagram_dpi,
+            resume=resume_two_crop,
+        )
+        if source_kind == "conversion_artifact"
+        else {"status": "not_required", "diagram_count": len(diagrams)}
+    )
+    two_crop_required = (
+        source_kind == "conversion_artifact"
+        and str(source_identity.get("source_binding") or "") == "source_pdf_sha256"
+    )
+    if two_crop_required and str(two_crop_summary.get("status") or "") != "ok":
+        failure = {
+            "status": "failed",
+            "schema": "kindlemaster.fen_manual_review.v4",
+            "review_contract": "source_bound_piece_grid_v2",
+            "error": "Nie utworzono kompletnego pakietu plansza + marker; wznow generowanie z --resume.",
+            "diagram_count": len(diagrams),
+            "source_kind": source_kind,
+            "two_crop_status": str(two_crop_summary.get("status") or "unknown"),
+            "two_crop": two_crop_summary,
+            **source_identity,
+        }
+        _write_json(reports_dir / "fen_review_queue.json", failure)
+        return failure
+    model_evidence = _fen_review_model_evidence(out)
+    rows = [
+        _fen_manual_review_row(
+            diagram,
+            out,
+            review_dir=review_dir,
+            source_identity=source_identity,
+            model_evidence=model_evidence.get(str(diagram.get("id") or diagram.get("diagram_id") or ""), {}),
+        )
+        for diagram in diagrams
+    ]
+    rows.sort(key=_fen_manual_review_sort_key)
+    for index, row in enumerate(rows, start=1):
+        row["review_index"] = index
+
     _write_jsonl(review_dir / "fen_manual_draft.jsonl", rows)
     _write_csv(review_dir / "fen_manual_draft.csv", rows)
-    (review_dir / "fen_manual_review.html").write_text(_fen_manual_review_html(rows), encoding="utf-8")
+    review_html_path = review_dir / "fen_manual_review.html"
+    review_html_path.write_text(
+        _fen_manual_review_html(rows, source_identity=source_identity, artifact_id=out.name),
+        encoding="utf-8",
+    )
+    package_path = _write_fen_manual_review_package(review_dir, rows=rows)
     summary = {
         "status": "ok",
-        "schema": "kindlemaster.fen_manual_review.v1",
+        "schema": "kindlemaster.fen_manual_review.v4",
+        "review_contract": "source_bound_piece_grid_v2",
         "diagram_count": len(rows),
+        "accepted_diagram_count_excluded": accepted_excluded,
+        "materialized_crop_count": sum(1 for row in rows if Path(str(row.get("crop_path") or "")).is_file()),
         "page_ranges": str(page_ranges or ""),
         "min_count": int(min_count or 0),
         "auto_extended_pages": auto_extended_pages,
         "sampled_pages": sorted({int(row.get("page") or 0) for row in rows if int(row.get("page") or 0)}),
-        "source_book": str(out / "data" / "book.json"),
-        "review_html": str(review_dir / "fen_manual_review.html"),
+        "source_kind": source_kind,
+        "source_book": str(out / "data" / "book.json") if source_kind == "semantic_book" else "",
+        "source_report": str(artifact_report_path or ""),
+        "two_crop_status": str(two_crop_summary.get("status") or "unknown"),
+        "two_crop": two_crop_summary,
+        **source_identity,
+        "review_html": str(review_html_path),
         "draft_jsonl": str(review_dir / "fen_manual_draft.jsonl"),
-        "policy": "manual_fen labels are evidence until promoted and evaluated; accepted FEN still requires deterministic validation.",
+        "review_package": str(package_path),
+        "policy": (
+            "Manual FEN and marker labels are training/evaluation evidence until promoted and evaluated; "
+            "accepted FEN still requires deterministic validation."
+        ),
     }
     _write_json(reports_dir / "fen_review_queue.json", summary)
-    build_chess_quality_dashboard(out)
+    if source_kind == "semantic_book":
+        build_chess_quality_dashboard(out)
     return summary
+
+
+def _fen_review_artifact_report(out_dir: Path) -> tuple[Path | None, dict[str, Any]]:
+    candidates = (
+        out_dir / "report" / "chess_diagrams.json",
+        out_dir / "chess_diagrams.json",
+        out_dir / "diagrams" / "diagrams.json",
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, list):
+            payload = {"records": payload}
+        if isinstance(payload, dict) and isinstance(payload.get("records"), list):
+            return path.resolve(), payload
+    return None, {}
+
+
+def _fen_review_record_is_accepted(record: Mapping[str, Any]) -> bool:
+    statuses = {
+        str(record.get(key) or "").strip().lower()
+        for key in ("status", "validation_status", "full_fen_status")
+    }
+    if "accepted" in statuses or "fen_machine_accepted" in statuses:
+        return True
+    return bool(record.get("full_fen_allowed")) and not bool(record.get("manual_review_required", False))
+
+
+def _fen_review_source_identity(
+    out_dir: Path,
+    *,
+    artifact_report_path: Path | None,
+    explicit_pdf_path: Path | None,
+) -> dict[str, Any]:
+    source_paths: list[str] = []
+    source_hashes: set[str] = set()
+
+    manifest_path = out_dir / "semantic_chess_html" / "data" / "artifact_manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        source_paths.append(str(manifest.get("source_pdf") or ""))
+        digest = str(manifest.get("source_document_sha256") or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest):
+            source_hashes.add(digest)
+
+    evidence_paths = (
+        out_dir / "review" / "fen_recovered_labels.jsonl",
+        out_dir / "review" / "fen_model_predictions.jsonl",
+    )
+    for evidence_path in evidence_paths:
+        for row in _read_jsonl_rows(evidence_path):
+            source_paths.append(str(row.get("source_pdf") or ""))
+            digest = str(row.get("source_document_sha256") or "").strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                source_hashes.add(digest)
+
+    if explicit_pdf_path is not None:
+        source_paths.append(str(explicit_pdf_path))
+
+    resolved_pdf = Path("")
+    mismatched_pdf = Path("")
+    mismatched_pdf_sha256 = ""
+    for value in source_paths:
+        if not value:
+            continue
+        candidate = Path(value)
+        candidates = [candidate] if candidate.is_absolute() else [out_dir / candidate, candidate]
+        for path in candidates:
+            if path.is_file() and path.suffix.lower() == ".pdf":
+                candidate = path.resolve()
+                candidate_sha256 = source_document_sha256(candidate)
+                if source_hashes and candidate_sha256 not in source_hashes:
+                    mismatched_pdf = candidate
+                    mismatched_pdf_sha256 = candidate_sha256
+                    continue
+                resolved_pdf = candidate
+                source_hashes = {candidate_sha256}
+                break
+        if resolved_pdf.is_file():
+            break
+
+    source_digest = next(iter(source_hashes)) if len(source_hashes) == 1 else ""
+    report_digest = _file_sha256(artifact_report_path) if artifact_report_path and artifact_report_path.is_file() else ""
+    return {
+        "source_pdf": str(resolved_pdf) if resolved_pdf.is_file() else next((value for value in source_paths if value), ""),
+        "source_document_sha256": source_digest,
+        "source_artifact_sha256": report_digest,
+        "source_binding": (
+            "source_pdf_sha256"
+            if resolved_pdf.is_file()
+            else "preserved_source_sha256_pdf_mismatch"
+            if source_digest and mismatched_pdf.is_file()
+            else "preserved_source_sha256"
+            if source_digest
+            else "artifact_report_sha256"
+        ),
+        "source_identity_warning": "source_pdf_candidate_sha256_mismatch" if mismatched_pdf.is_file() else "",
+        "mismatched_source_pdf": str(mismatched_pdf) if mismatched_pdf.is_file() else "",
+        "mismatched_source_pdf_sha256": mismatched_pdf_sha256,
+    }
+
+
+def _attach_fen_review_two_crop_evidence(
+    out_dir: Path,
+    diagrams: list[dict[str, Any]],
+    *,
+    source_identity: Mapping[str, Any],
+    dpi: int,
+    resume: bool = False,
+) -> dict[str, Any]:
+    source_pdf = Path(str(source_identity.get("source_pdf") or ""))
+    source_digest = str(source_identity.get("source_document_sha256") or "").strip().lower()
+    if (
+        str(source_identity.get("source_binding") or "") != "source_pdf_sha256"
+        or not source_pdf.is_file()
+        or not re.fullmatch(r"[0-9a-f]{64}", source_digest)
+    ):
+        return {
+            "status": "source_pdf_unavailable",
+            "diagram_count": len(diagrams),
+            "board_crop_count": 0,
+            "side_marker_crop_count": 0,
+            "side_marker_search_crop_count": 0,
+        }
+
+    normalized_count = 0
+    try:
+        with fitz.open(source_pdf) as document:
+            for diagram in diagrams:
+                page_number = int(diagram.get("page") or diagram.get("page_number") or 0)
+                diagram_id = str(diagram.get("diagram_id") or diagram.get("id") or "").strip()
+                diagram["page"] = page_number
+                diagram["diagram_id"] = diagram_id
+                diagram["source_document_sha256"] = source_digest
+                diagram.setdefault(
+                    "fen_review_context_source_path",
+                    str(diagram.get("board_crop_path") or diagram.get("image_path") or ""),
+                )
+                if not diagram.get("diagram_fingerprint"):
+                    fingerprint_payload = {
+                        "schema": "kindlemaster.fen_manual_review.two_crop.v1",
+                        "source_document_sha256": source_digest,
+                        "diagram_id": diagram_id,
+                        "page": page_number,
+                        "bbox": diagram.get("bbox") or diagram.get("board_bbox") or [],
+                    }
+                    diagram["diagram_fingerprint"] = hashlib.sha256(
+                        json.dumps(
+                            fingerprint_payload,
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                if page_number <= 0 or page_number > len(document):
+                    continue
+                raw_bbox = diagram.get("board_bbox") or diagram.get("bbox")
+                if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+                    continue
+                try:
+                    x0, y0, x1, y1 = [float(value) for value in raw_bbox]
+                except (TypeError, ValueError):
+                    continue
+                page_rect = document[page_number - 1].rect
+                if (
+                    x1 <= x0
+                    or y1 <= y0
+                    or page_rect.width <= 0
+                    or page_rect.height <= 0
+                ):
+                    continue
+                diagram["normalized_bbox_xyxy"] = [
+                    max(0.0, min(1.0, x0 / page_rect.width)),
+                    max(0.0, min(1.0, y0 / page_rect.height)),
+                    max(0.0, min(1.0, x1 / page_rect.width)),
+                    max(0.0, min(1.0, y1 / page_rect.height)),
+                ]
+                normalized_count += 1
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {
+            "status": "source_pdf_open_failed",
+            "error": str(exc),
+            "diagram_count": len(diagrams),
+            "normalized_bbox_count": normalized_count,
+        }
+
+    if normalized_count != len(diagrams):
+        return {
+            "status": "diagram_bbox_incomplete",
+            "diagram_count": len(diagrams),
+            "normalized_bbox_count": normalized_count,
+        }
+
+    try:
+        summary = _attach_pdf_side_marker_evidence_to_study_diagrams(
+            source_pdf,
+            diagrams,
+            out_dir,
+            dpi=max(72, int(dpi or 216)),
+            min_confidence=0.55,
+            quality_profile="default",
+            debug_artifact_policy="all",
+            resume=resume,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {
+            "status": "two_crop_generation_failed",
+            "error": str(exc),
+            "diagram_count": len(diagrams),
+            "normalized_bbox_count": normalized_count,
+        }
+    return {
+        **summary,
+        "status": "ok",
+        "source_pdf": str(source_pdf.resolve()),
+        "source_document_sha256": source_digest,
+        "dpi": max(72, int(dpi or 216)),
+        "normalized_bbox_count": normalized_count,
+    }
+
+
+def _fen_review_model_evidence(out_dir: Path) -> dict[str, dict[str, Any]]:
+    evidence: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl_rows(out_dir / "review" / "fen_model_predictions.jsonl"):
+        diagram_id = str(row.get("diagram_id") or "").strip()
+        if diagram_id:
+            evidence.setdefault(diagram_id, {})["model_prediction"] = row
+    for row in _read_jsonl_rows(out_dir / "review" / "fen_recovered_labels.jsonl"):
+        diagram_id = str(row.get("diagram_id") or "").strip()
+        if diagram_id:
+            evidence.setdefault(diagram_id, {})["recovered_label"] = row
+    for row in _read_jsonl_rows(out_dir / "review" / "fen_beam_verified_conflicts.jsonl"):
+        diagram_id = str(row.get("diagram_id") or "").strip()
+        if diagram_id:
+            evidence.setdefault(diagram_id, {})["conflict"] = row
+    return evidence
+
+
+def _fen_manual_review_sort_key(row: Mapping[str, Any]) -> tuple[int, int, int, str]:
+    priority = row.get("review_priority")
+    return (
+        int(priority) if priority is not None else 50,
+        int(row.get("page") or 0),
+        int(row.get("reading_order") or 0),
+        str(row.get("diagram_id") or ""),
+    )
+
+
+def _write_fen_manual_review_package(
+    review_dir: Path,
+    *,
+    rows: Iterable[Mapping[str, Any]],
+) -> Path:
+    readme_path = review_dir / "fen_manual_review_README.txt"
+    readme_path.write_text(
+        "KindleMaster - oznaczanie figur i markerow\n\n"
+        "1. Otworz fen_manual_review.html.\n"
+        "2. Oznacz figury tylko z cropa planszy.\n"
+        "3. Oznacz marker tylko z cropa markera i jego kontekstu.\n"
+        "   Pusty trojkat oznacza biale; pelny trojkat skierowany w dol oznacza czarne.\n"
+        "4. Popraw figury na siatce 8x8 i potwierdz, ze sprawdzono wszystkie 64 pola.\n"
+        "   FEN jest generowany automatycznie; nie trzeba go wpisywac recznie.\n"
+        "5. Uzyj Eksportuj JSONL; nie zmieniaj pol SHA ani diagram_fingerprint.\n"
+        "6. Etykiety trafiaja do treningu i oceny, ale nie omijaja walidacji runtime.\n",
+        encoding="utf-8",
+    )
+    package_path = review_dir / "fen_manual_review_package.zip"
+    members = [
+        review_dir / "fen_manual_review.html",
+        review_dir / "fen_manual_draft.jsonl",
+        review_dir / "fen_manual_draft.csv",
+        readme_path,
+    ]
+    asset_fields = (
+        "board_crop_rel_path",
+        "context_crop_rel_path",
+        "marker_crop_rel_path",
+        "marker_search_crop_rel_path",
+    )
+    for row in rows:
+        for field_name in asset_fields:
+            relative = str(row.get(field_name) or "").strip()
+            if not relative:
+                continue
+            candidate = (review_dir / relative).resolve()
+            try:
+                candidate.relative_to(review_dir.resolve())
+            except ValueError:
+                continue
+            if candidate.is_file():
+                members.append(candidate)
+    members = list(dict.fromkeys(members))
+    resolved_review_dir = review_dir.resolve()
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in members:
+            if path.is_file():
+                archive.write(path, path.resolve().relative_to(resolved_review_dir).as_posix())
+    return package_path
 
 
 def _extend_fen_review_batch(
@@ -2256,6 +2659,7 @@ def build_fen_square_dataset(
     out_dir: str | Path,
     fold_count: int = 5,
     holdout_fold: int = 0,
+    materialize_square_images: bool = False,
 ) -> dict[str, Any]:
     """Build a 64-square supervised dataset from verified FEN labels."""
     out = Path(out_dir)
@@ -2266,8 +2670,10 @@ def build_fen_square_dataset(
     data_dir.mkdir(parents=True, exist_ok=True)
     squares_root.mkdir(parents=True, exist_ok=True)
 
-    labels = _promote_verified_fen_labels(Path(labels_path), out)
+    rejected_labels: list[dict[str, Any]] = []
+    labels = _promote_verified_fen_labels(Path(labels_path), out, rejected=rejected_labels)
     rows: list[dict[str, Any]] = []
+    prepared_boards: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for label in labels:
         crop_path = Path(str(label.get("crop_path") or ""))
@@ -2278,15 +2684,38 @@ def build_fen_square_dataset(
         except Exception as exc:
             skipped.append({"diagram_id": diagram_id, "crop_path": str(crop_path), "reason": str(exc)})
             continue
-        split = _dataset_split(diagram_id, fold_count=fold_count, holdout_fold=holdout_fold)
+        board_sha256 = _image_sha256(board)
+        prepared_boards.append(
+            {
+                "label": label,
+                "diagram_id": diagram_id,
+                "crop_path": crop_path,
+                "board": board,
+                "cells": cells,
+                "board_sha256": board_sha256,
+            }
+        )
+
+    split_groups_by_index = _fen_dataset_component_groups(prepared_boards)
+    for board_index, prepared in enumerate(prepared_boards):
+        label = prepared["label"]
+        diagram_id = str(prepared["diagram_id"])
+        crop_path = Path(prepared["crop_path"])
+        board = prepared["board"]
+        cells = prepared["cells"]
+        board_sha256 = str(prepared["board_sha256"])
+        split_group = split_groups_by_index[board_index]
+        split = _dataset_split(split_group, fold_count=fold_count, holdout_fold=holdout_fold)
         for index, cell in enumerate(_split_board_into_squares(board)):
             square_name = _square_name(index)
             class_name = cells[index] or "empty"
-            target_dir = squares_root / split / class_name
-            target_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{_safe_filename(diagram_id)}_{square_name}.png"
-            target_path = target_dir / filename
-            cell.save(target_path, format="PNG")
+            target_path = Path("")
+            if materialize_square_images:
+                target_dir = squares_root / split / class_name
+                target_dir.mkdir(parents=True, exist_ok=True)
+                filename = f"{_safe_filename(diagram_id)}_{square_name}.png"
+                target_path = target_dir / filename
+                cell.save(target_path, format="PNG", compress_level=1)
             rows.append(
                 {
                     "schema": "kindlemaster.fen_square_sample.v1",
@@ -2295,12 +2724,16 @@ def build_fen_square_dataset(
                     "square_index": index,
                     "class": class_name,
                     "split": split,
-                    "image_path": str(target_path),
+                    "image_path": str(target_path) if materialize_square_images else "",
                     "source_crop": str(crop_path),
                     "fen": label.get("fen"),
                     "page": int(label.get("page") or 0),
                     "label_source": label.get("source") or str(labels_path),
-                    "board_sha256": _image_sha256(board),
+                    "label_provenance": label.get("label_provenance") or "",
+                    "source_document_sha256": label.get("source_document_sha256") or "",
+                    "source_pdf": label.get("source_pdf") or "",
+                    "board_sha256": board_sha256,
+                    "split_group": split_group,
                 }
             )
 
@@ -2308,21 +2741,54 @@ def build_fen_square_dataset(
     _write_jsonl(dataset_path, rows)
     class_counts = _count_by(rows, "class")
     split_counts = _count_by(rows, "split")
+    split_board_counts = {
+        split: len({row["diagram_id"] for row in rows if row.get("split") == split})
+        for split in ("train", "val", "holdout")
+    }
+    split_groups = {
+        split: {str(row.get("split_group") or "") for row in rows if row.get("split") == split}
+        for split in ("train", "val", "holdout")
+    }
+    split_group_overlap = sorted(
+        (split_groups["train"] & split_groups["val"])
+        | (split_groups["train"] & split_groups["holdout"])
+        | (split_groups["val"] & split_groups["holdout"])
+    )
+    page_split_overlap = _fen_dataset_evidence_overlap(rows, evidence="page")
+    board_sha256_overlap = _fen_dataset_evidence_overlap(rows, evidence="board_sha256")
+    leakage_evidence = [
+        *[f"split_group:{value}" for value in split_group_overlap],
+        *[f"page:{value}" for value in page_split_overlap],
+        *[f"board_sha256:{value}" for value in board_sha256_overlap],
+    ]
     payload = {
         "schema": "kindlemaster.fen_square_dataset.v1",
-        "status": "ok" if rows else "failed",
+        "status": "ok" if rows and not leakage_evidence else "failed",
         "labels_path": str(labels_path),
+        "source_label_count": len(labels) + len(rejected_labels),
         "verified_label_count": len(labels),
+        "rejected_label_count": len(rejected_labels),
+        "rejection_counts": _top_counts(row.get("reason") for row in rejected_labels),
         "board_count": len({row["diagram_id"] for row in rows}),
         "sample_count": len(rows),
+        "materialized_square_count": len(rows) if materialize_square_images else 0,
+        "materialize_square_images": bool(materialize_square_images),
         "class_counts": class_counts,
         "split_counts": split_counts,
-        "fold_count": max(2, int(fold_count or 5)),
+        "split_board_counts": split_board_counts,
+        "split_group_count": len({row.get("split_group") for row in rows}),
+        "split_group_overlap": split_group_overlap,
+        "page_split_overlap": page_split_overlap,
+        "board_sha256_overlap": board_sha256_overlap,
+        "leakage_evidence": leakage_evidence,
+        "leakage_detected": bool(leakage_evidence),
+        "fold_count": max(3, int(fold_count or 5)),
         "holdout_fold": int(holdout_fold or 0),
         "dataset_path": str(dataset_path),
         "squares_root": str(squares_root),
         "skipped": skipped,
-        "policy": "Holdout split is assigned by diagram id and must not be used for training.",
+        "rejected_labels": rejected_labels,
+        "policy": "Connected source-page and normalized-board-hash groups stay in one split; holdout and validation are never used for training. Square PNG materialization is opt-in.",
     }
     _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
     build_chess_quality_dashboard(out)
@@ -2335,12 +2801,7 @@ def train_fen_square_classifier(
     dataset_path: str | Path | None = None,
     model_name: str = "chess_fen_square_v1",
 ) -> dict[str, Any]:
-    """Train a lightweight local square classifier profile from dataset samples.
-
-    This v1 uses deterministic feature centroids so it has no heavyweight runtime
-    dependency. A later optional trainer can replace the JSON profile with ONNX
-    while keeping the same report/model-card contract.
-    """
+    """Train a two-stage image classifier and export pure NumPy JSON inference."""
     out = Path(out_dir)
     reports_dir = out / "reports"
     models_dir = out / "models"
@@ -2348,27 +2809,106 @@ def train_fen_square_classifier(
     models_dir.mkdir(parents=True, exist_ok=True)
     source = Path(dataset_path) if dataset_path else out / "data" / "fen_square_dataset.jsonl"
     rows = _read_jsonl_rows(source)
-    train_rows = [row for row in rows if row.get("split") == "train"]
-    centroids = _train_centroid_classifier(train_rows)
     model_path = models_dir / f"{_safe_filename(model_name)}.json"
+    feature_rows, features, labels, feature_failures = _fen_square_feature_matrix(rows)
+
+    def fail(reason: str, **details: Any) -> dict[str, Any]:
+        payload = {
+            "schema": "kindlemaster.fen_square_model_eval.v1",
+            "status": "failed",
+            "reason": reason,
+            "model_path": str(model_path),
+            "model_type": "rbf_svc_hog_two_stage",
+            "dataset_path": str(source),
+            "source_row_count": len(rows),
+            "usable_sample_count": len(feature_rows),
+            "feature_failure_count": len(feature_failures),
+            "feature_failures": feature_failures[:100],
+            "onnx_path": "",
+            "onnx_available": False,
+            **details,
+        }
+        _write_json(reports_dir / "fen_square_model_eval.json", payload)
+        return payload
+
+    if not feature_rows:
+        return fail("dataset_samples_missing")
+    train_indexes = [index for index, row in enumerate(feature_rows) if row.get("split") == "train"]
+    if not train_indexes:
+        return fail("training_split_empty")
+    train_features = features[train_indexes]
+    train_labels = labels[train_indexes]
+    occupied_mask = train_labels != "empty"
+    binary_labels = np.where(occupied_mask, "occupied", "empty")
+    if len(set(binary_labels.tolist())) < 2 or len(set(train_labels[occupied_mask].tolist())) < 2:
+        return fail(
+            "training_class_diversity_insufficient",
+            train_class_counts=_count_values(train_labels.tolist()),
+        )
+    try:
+        from sklearn.svm import SVC
+    except ImportError as exc:
+        return fail("scikit_learn_missing", error=str(exc))
+
+    started = time.perf_counter()
+    binary_classifier = SVC(
+        C=FEN_SQUARE_SVC_C,
+        gamma="scale",
+        class_weight=FEN_SQUARE_SVC_CLASS_WEIGHT,
+        decision_function_shape="ovo",
+    )
+    piece_classifier = SVC(
+        C=FEN_SQUARE_SVC_C,
+        gamma="scale",
+        class_weight=FEN_SQUARE_SVC_CLASS_WEIGHT,
+        decision_function_shape="ovo",
+    )
+    binary_classifier.fit(train_features, binary_labels)
+    piece_classifier.fit(train_features[occupied_mask], train_labels[occupied_mask])
     model = {
-        "schema": "kindlemaster.fen_square_classifier.v1",
-        "model_type": "feature_centroid",
+        "schema": "kindlemaster.fen_square_classifier.v2",
+        "model_type": "rbf_svc_hog_two_stage",
         "model_name": model_name,
         "dataset_path": str(source),
-        "class_centroids": centroids,
-        "feature_names": ["mean", "stddev", "dark_ratio", "edge_density"],
+        "dataset_sha256": _file_sha256(source) if source.is_file() else "",
+        "feature_schema": "kindlemaster.fen_square_hog.v1",
+        "feature_count": int(features.shape[1]),
+        "binary_classifier": _export_rbf_svc_classifier(binary_classifier),
+        "piece_classifier": _export_rbf_svc_classifier(piece_classifier),
+        "training_diagram_ids": sorted(
+            {str(feature_rows[index].get("diagram_id") or "") for index in train_indexes}
+        ),
+        "training_board_sha256": sorted(
+            {str(feature_rows[index].get("board_sha256") or "") for index in train_indexes}
+        ),
+        "training_fens": sorted(
+            {str(feature_rows[index].get("fen") or "") for index in train_indexes if feature_rows[index].get("fen")}
+        ),
+        "training_sample_count": len(train_indexes),
+        "training_seconds": round(time.perf_counter() - started, 4),
+        "training_hyperparameters": {
+            "binary_svc_c": FEN_SQUARE_SVC_C,
+            "piece_svc_c": FEN_SQUARE_SVC_C,
+            "gamma": "scale",
+            "class_weight": FEN_SQUARE_SVC_CLASS_WEIGHT,
+        },
+        "runtime_dependencies": ["numpy", "Pillow"],
         "onnx_available": False,
-        "policy": "This model produces candidates only; ensemble validation controls accepted FEN.",
+        "policy": "The model produces candidates only; holdout evidence and ensemble validation control accepted FEN.",
     }
     _write_json(model_path, model)
-    eval_payload = _evaluate_square_classifier(rows, model)
+    eval_payload = _evaluate_square_classifier(feature_rows, model, feature_matrix=features)
     eval_payload.update(
         {
             "schema": "kindlemaster.fen_square_model_eval.v1",
-            "status": "ok" if centroids else "failed",
+            "status": "ok",
             "model_path": str(model_path),
-            "model_type": "feature_centroid",
+            "model_type": "rbf_svc_hog_two_stage",
+            "training_sample_count": len(train_indexes),
+            "training_seconds": model["training_seconds"],
+            "training_hyperparameters": model["training_hyperparameters"],
+            "feature_failure_count": len(feature_failures),
+            "feature_failures": feature_failures[:100],
             "onnx_path": "",
             "onnx_available": False,
         }
@@ -2383,11 +2923,282 @@ def train_fen_square_classifier(
     return eval_payload
 
 
+def recover_fen_label_crops(
+    labels_path: str | Path,
+    *,
+    board_manifest_path: str | Path,
+    model_path: str | Path,
+    out_dir: str | Path,
+    min_square_match: float = 0.95,
+    min_occupied_match: float = 0.80,
+    min_match_margin: float = 0.05,
+) -> dict[str, Any]:
+    """Bind human-verified FEN labels to current crops using conservative page-local matching."""
+    started = time.perf_counter()
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    review_dir = out / "review"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / "fen_crop_recovery.json"
+    recovered_path = review_dir / "fen_recovered_labels.jsonl"
+    decisions_path = review_dir / "fen_crop_recovery_decisions.jsonl"
+    recovered_crops_dir = review_dir / "fen_recovered_crops"
+    source_labels = Path(labels_path)
+    manifest_path = Path(board_manifest_path)
+    resolved_model_path = Path(model_path)
+
+    def fail(reason: str, **details: Any) -> dict[str, Any]:
+        payload = {
+            "schema": "kindlemaster.fen_crop_recovery.v1",
+            "status": "failed",
+            "reason": reason,
+            "labels_path": str(source_labels),
+            "board_manifest_path": str(manifest_path),
+            "model_path": str(resolved_model_path),
+            "accepted_mapping_count": 0,
+            "accepted_fen_changed": 0,
+            **details,
+        }
+        _write_json(report_path, payload)
+        _write_jsonl(recovered_path, [])
+        _write_jsonl(decisions_path, [])
+        return payload
+
+    missing = [str(path) for path in (source_labels, manifest_path, resolved_model_path) if not path.is_file()]
+    if missing:
+        return fail("required_artifact_missing", missing=missing)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        model = json.loads(resolved_model_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return fail("artifact_read_failed", error=f"{type(exc).__name__}: {exc}")
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError as exc:
+        return fail("scipy_missing", error=str(exc))
+
+    rejected_labels: list[dict[str, Any]] = []
+    labels = _promote_verified_fen_labels(
+        source_labels,
+        manifest_path.parent,
+        rejected=rejected_labels,
+        require_crop=False,
+    )
+    if not labels:
+        return fail(
+            "verified_labels_missing",
+            source_label_count=len(_read_jsonl_rows(source_labels)),
+            rejected_label_count=len(rejected_labels),
+            rejection_counts=_top_counts(row.get("reason") for row in rejected_labels),
+        )
+
+    manifest_rows = (
+        (manifest.get("diagrams") or manifest.get("records") or []) if isinstance(manifest, dict) else []
+    )
+    if not isinstance(manifest_rows, list):
+        return fail("board_manifest_diagrams_missing")
+    manifest_source_pdf, manifest_source_sha256 = _manifest_source_identity(manifest_path, manifest)
+    needed_pages = {int(label.get("page") or 0) for label in labels}
+    candidates_by_page: dict[int, list[dict[str, Any]]] = {}
+    seen_sources: set[str] = set()
+    prediction_failures: list[dict[str, Any]] = []
+    for row in manifest_rows:
+        if not isinstance(row, dict):
+            continue
+        page = int(row.get("page") or row.get("page_number") or 0)
+        if page not in needed_pages:
+            continue
+        candidate_source = _manifest_candidate_image(manifest_path.parent, row)
+        if candidate_source is None or candidate_source[3] in seen_sources:
+            continue
+        image, crop_bytes, crop_path, source_key = candidate_source
+        seen_sources.add(source_key)
+        try:
+            board = _normalize_board_pil_image(image)
+            square_results = _predict_square_classes(_split_board_into_squares(board), model)
+        except Exception as exc:
+            prediction_failures.append(
+                {
+                    "diagram_id": str(row.get("diagram_id") or row.get("id") or ""),
+                    "crop_path": str(crop_path or source_key),
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+        candidates_by_page.setdefault(page, []).append(
+            {
+                "manifest_row": row,
+                "crop_path": crop_path,
+                "crop_bytes": crop_bytes,
+                "source_key": source_key,
+                "crop_sha256": hashlib.sha256(crop_bytes).hexdigest(),
+                "board_sha256": _image_sha256(board),
+                "predicted_cells": [str(result.get("class") or "") for result in square_results],
+            }
+        )
+
+    training_fens = {str(value) for value in model.get("training_fens") or [] if str(value)}
+    training_board_sha256 = {str(value) for value in model.get("training_board_sha256") or [] if str(value)}
+    accepted: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
+    for page in sorted(needed_pages):
+        page_labels = [label for label in labels if int(label.get("page") or 0) == page]
+        page_candidates = candidates_by_page.get(page) or []
+        if not page_candidates:
+            decisions.extend(
+                _fen_crop_recovery_missing_decision(label, reason="page_candidates_missing") for label in page_labels
+            )
+            continue
+        score_matrix = np.zeros((len(page_labels), len(page_candidates)), dtype=np.float32)
+        occupied_matrix = np.zeros_like(score_matrix)
+        for label_index, label in enumerate(page_labels):
+            expected = _fen_placement_to_cells(str(label.get("fen") or "").split()[0])
+            occupied_indexes = [index for index, piece in enumerate(expected) if piece]
+            for candidate_index, candidate in enumerate(page_candidates):
+                predicted = candidate["predicted_cells"]
+                score_matrix[label_index, candidate_index] = sum(
+                    expected[index] == predicted[index] for index in range(64)
+                ) / 64.0
+                occupied_matrix[label_index, candidate_index] = sum(
+                    expected[index] == predicted[index] for index in occupied_indexes
+                ) / max(1, len(occupied_indexes))
+        assigned_rows, assigned_columns = linear_sum_assignment(-score_matrix)
+        assignment = {int(row): int(column) for row, column in zip(assigned_rows, assigned_columns)}
+        for label_index, label in enumerate(page_labels):
+            candidate_index = assignment.get(label_index)
+            if candidate_index is None:
+                decisions.append(_fen_crop_recovery_missing_decision(label, reason="one_to_one_assignment_missing"))
+                continue
+            candidate = page_candidates[candidate_index]
+            scores = sorted((float(value) for value in score_matrix[label_index]), reverse=True)
+            best_score = scores[0]
+            second_score = scores[1] if len(scores) > 1 else 0.0
+            assigned_score = float(score_matrix[label_index, candidate_index])
+            occupied_score = float(occupied_matrix[label_index, candidate_index])
+            margin = best_score - second_score if len(scores) > 1 else 1.0
+            fen = str(label.get("fen") or "")
+            reasons: list[str] = []
+            if assigned_score + 1e-7 < best_score:
+                reasons.append("assignment_not_label_best")
+            if assigned_score < float(min_square_match):
+                reasons.append("square_match_below_threshold")
+            if occupied_score < float(min_occupied_match):
+                reasons.append("occupied_match_below_threshold")
+            if margin < float(min_match_margin):
+                reasons.append("match_margin_below_threshold")
+            if fen in training_fens:
+                reasons.append("training_fen_overlap")
+            if str(candidate.get("board_sha256") or "") in training_board_sha256:
+                reasons.append("training_board_overlap")
+            manifest_row = candidate["manifest_row"]
+            current_diagram_id = str(manifest_row.get("diagram_id") or manifest_row.get("id") or "")
+            status = "accepted_mapping" if not reasons else "needs_review"
+            decision = {
+                "schema": "kindlemaster.fen_crop_recovery_decision.v1",
+                "legacy_label_id": str(label.get("diagram_id") or ""),
+                "diagram_id": current_diagram_id,
+                "diagram_fingerprint": str(manifest_row.get("diagram_fingerprint") or ""),
+                "page": page,
+                "fen": fen,
+                "crop_path": str(candidate.get("crop_path") or candidate.get("source_key") or ""),
+                "status": status,
+                "reasons": reasons,
+                "square_match": round(assigned_score, 4),
+                "occupied_match": round(occupied_score, 4),
+                "match_margin": round(margin, 4),
+                "candidate_count": len(page_candidates),
+                "assignment_is_label_best": assigned_score + 1e-7 >= best_score,
+                "training_fen_overlap": fen in training_fens,
+                "training_board_overlap": str(candidate.get("board_sha256") or "") in training_board_sha256,
+            }
+            decisions.append(decision)
+            if reasons:
+                continue
+            accepted_crop_path = _materialize_manifest_candidate_crop(
+                candidate,
+                recovered_crops_dir,
+                diagram_id=current_diagram_id,
+            )
+            fen_parts = fen.split()
+            accepted.append(
+                {
+                    "schema": "kindlemaster.fen_recovered_label.v1",
+                    "diagram_id": current_diagram_id,
+                    "legacy_label_id": str(label.get("diagram_id") or ""),
+                    "diagram_fingerprint": str(manifest_row.get("diagram_fingerprint") or ""),
+                    "source_document_sha256": str(
+                        manifest_row.get("source_document_sha256")
+                        or manifest.get("source_document_sha256")
+                        or manifest_source_sha256
+                        or label.get("source_document_sha256")
+                    ),
+                    "source_pdf": str(manifest.get("source_pdf") or manifest_source_pdf or label.get("source_pdf") or ""),
+                    "page": page,
+                    "fen": fen,
+                    "manual_fen": fen,
+                    "manual_side_to_move": fen_parts[1] if len(fen_parts) > 1 else "",
+                    "manual_label": "correct_diagram",
+                    "label_status": "verified",
+                    "crop_path": str(accepted_crop_path.resolve()),
+                    "source_crop_path": str(accepted_crop_path.resolve()),
+                    "crop_sha256": str(candidate.get("crop_sha256") or ""),
+                    "normalized_board_sha256": str(candidate.get("board_sha256") or ""),
+                    "verified_by": str(label.get("verified_by") or "human_verified_fen_source"),
+                    "verified_at": str(label.get("verified_at") or date.today().isoformat()),
+                    "recovered_at": datetime.now(timezone.utc).isoformat(),
+                    "label_provenance": "human_fen_machine_crop_mapping",
+                    "mapping_model_path": str(resolved_model_path),
+                    "mapping_model_sha256": _file_sha256(resolved_model_path),
+                    "mapping_dataset_sha256": str(model.get("dataset_sha256") or ""),
+                    "mapping_square_match": round(assigned_score, 4),
+                    "mapping_occupied_match": round(occupied_score, 4),
+                    "mapping_margin": round(margin, 4),
+                    "notes": str(label.get("notes") or ""),
+                }
+            )
+
+    _write_jsonl(recovered_path, accepted)
+    _write_jsonl(decisions_path, decisions)
+    payload = {
+        "schema": "kindlemaster.fen_crop_recovery.v1",
+        "status": "ok" if accepted else "needs_review",
+        "labels_path": str(source_labels),
+        "board_manifest_path": str(manifest_path),
+        "model_path": str(resolved_model_path),
+        "source_label_count": len(_read_jsonl_rows(source_labels)),
+        "eligible_label_count": len(labels),
+        "rejected_label_count": len(rejected_labels),
+        "rejection_counts": _top_counts(row.get("reason") for row in rejected_labels),
+        "candidate_page_count": len(candidates_by_page),
+        "candidate_board_count": sum(len(rows) for rows in candidates_by_page.values()),
+        "prediction_failure_count": len(prediction_failures),
+        "prediction_failures": prediction_failures[:100],
+        "decision_count": len(decisions),
+        "accepted_mapping_count": len(accepted),
+        "needs_review_count": len(decisions) - len(accepted),
+        "decision_reason_counts": _top_counts(reason for row in decisions for reason in row.get("reasons") or []),
+        "thresholds": {
+            "min_square_match": float(min_square_match),
+            "min_occupied_match": float(min_occupied_match),
+            "min_match_margin": float(min_match_margin),
+        },
+        "elapsed_seconds": round(time.perf_counter() - started, 4),
+        "recovered_labels_path": str(recovered_path),
+        "decisions_path": str(decisions_path),
+        "accepted_fen_changed": 0,
+        "policy": "This stage rebinds existing human FEN labels to current crops. It never creates a new FEN or changes final export acceptance directly.",
+    }
+    _write_json(report_path, payload)
+    return payload
+
+
 def recognize_fen_local(
     out_dir: str | Path,
     *,
     model_path: str | Path | None = None,
     limit: int = 0,
+    labels_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run local square-classifier inference and write review-only FEN predictions."""
     out = Path(out_dir)
@@ -2411,7 +3222,7 @@ def recognize_fen_local(
         return payload
 
     model = json.loads(resolved_model.read_text(encoding="utf-8"))
-    sources = _board_preprocess_sources(out, labels_path=None)
+    sources = _board_preprocess_sources(out, labels_path=labels_path)
     if limit and limit > 0:
         sources = sources[: int(limit)]
     rows: list[dict[str, Any]] = []
@@ -2439,6 +3250,7 @@ def evaluate_fen_ensemble(
     out_dir: str | Path,
     *,
     min_confidence: float = 0.92,
+    labels_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate deterministic FEN acceptance candidates from local/model/template evidence."""
     out = Path(out_dir)
@@ -2447,7 +3259,7 @@ def evaluate_fen_ensemble(
     reports_dir.mkdir(parents=True, exist_ok=True)
     review_dir.mkdir(parents=True, exist_ok=True)
     predictions = _read_jsonl_rows(review_dir / "fen_model_predictions.jsonl")
-    labels = _read_jsonl_rows(review_dir / "fen_verified_labels.jsonl")
+    labels = _read_jsonl_rows(Path(labels_path) if labels_path else review_dir / "fen_verified_labels.jsonl")
     verified_labels = _verified_label_indexes(labels)
     accepted: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
@@ -2811,6 +3623,157 @@ def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
     }
 
 
+def render_conversion_chess_reader(out_dir: str | Path) -> dict[str, Any]:
+    """Refresh the final reader from conversion records after strict FEN acceptance changes."""
+    out = Path(out_dir)
+    manifest_path = out / "report" / "chess_diagrams.json"
+    if not manifest_path.is_file():
+        manifest_path = out / "chess_diagrams.json"
+    manifest = _read_optional_json(manifest_path)
+    records = manifest.get("records") or manifest.get("diagrams") or []
+    if not isinstance(records, list) or not records:
+        return {
+            "status": "failed",
+            "error": "chess diagram conversion records missing",
+            "manifest_path": str(manifest_path),
+        }
+    positions = [
+        _conversion_chess_record_to_position(record, index)
+        for index, record in enumerate(records, start=1)
+        if isinstance(record, Mapping)
+    ]
+    accepted_count = sum(item.get("status") == "accepted" and bool(item.get("fen")) for item in positions)
+    review_count = len(positions) - accepted_count
+    side_unknown_count = sum(str(item.get("side_to_move") or "unknown") not in {"w", "b"} for item in positions)
+    page_count = max([int(item.get("diagram_page") or 0) for item in positions] or [0])
+    status = "PASS" if not review_count else "PASS_WITH_REVIEW_ITEMS"
+    summary = {
+        "pages": page_count,
+        "diagrams_total": len(positions),
+        "fen_accepted": accepted_count,
+        "fens_accepted": accepted_count,
+        "fens_needs_review": review_count,
+        "fen_needs_review": review_count,
+        "needs_review_count": review_count,
+        "side_unknown_count": side_unknown_count,
+        "trusted_marker_count": sum(
+            str(item.get("side_marker_status") or "").lower() == "trusted_marker" for item in positions
+        ),
+        "side_marker_crop_count": sum(bool(str(item.get("side_marker_crop_path") or "")) for item in positions),
+        "board_crop_count": sum(bool(str(item.get("board_crop_path") or item.get("source_crop") or "")) for item in positions),
+        "empty_img_src_count": 0,
+        "accepted_pgn": 0,
+        "pgn_accepted": 0,
+        "validation_status": status,
+    }
+    qa_report = {
+        "status": status,
+        "summary": summary,
+        "problems": [],
+        "status_policy": "accepted_requires_deterministic_validation",
+    }
+    source_gate = {
+        "decision": "use_conversion_records_as_final_reader",
+        "source_html_evidence_only": False,
+        "used_as_final_reader": True,
+        "reasons": [],
+    }
+    source_pdf, _ = _manifest_source_identity(manifest_path, manifest)
+    source_html = out / "report" / "chess_games.html"
+    reader_path = render_study_html(
+        out / "semantic_chess_html",
+        structure={
+            "pdf_page_count": page_count,
+            "chapters": [{"chapter_no": 1, "title": "Chess diagrams"}],
+        },
+        positions={"positions": positions},
+        qa_report=qa_report,
+        source_pdf=source_pdf or None,
+        source_html=source_html if source_html.is_file() else None,
+        source_gate=source_gate,
+    )
+    return {
+        "status": "ok",
+        "manifest_path": str(manifest_path),
+        "reader_path": str(reader_path),
+        "diagrams_total": len(positions),
+        "fen_accepted": accepted_count,
+        "needs_review_count": review_count,
+        "side_unknown_count": side_unknown_count,
+    }
+
+
+def _conversion_chess_record_to_position(record: Mapping[str, Any], index: int) -> dict[str, Any]:
+    full_fen = str(record.get("full_fen") or "").strip()
+    fallback_fen = str(record.get("fen") or record.get("fen_candidate") or "").strip()
+    fen = full_fen or fallback_fen
+    full_status = str(record.get("full_fen_status") or record.get("runtime_status") or "").strip().lower()
+    full_allowed = (
+        record.get("full_fen_allowed") is True
+        or full_status in {"accepted", "fen_machine_accepted", "fen_corpus_verified"}
+    )
+    requires_review = bool(record.get("requires_review") or record.get("manual_review_required"))
+    record_status = str(record.get("validation_status") or record.get("status") or "").strip().lower()
+    accepted = bool(
+        fen
+        and full_allowed
+        and not requires_review
+        and record_status not in {"review", "needs_review", "requires_review"}
+    )
+    side = "unknown"
+    fen_parts = fen.split()
+    if accepted and len(fen_parts) > 1 and fen_parts[1] in {"w", "b"}:
+        side = fen_parts[1]
+    else:
+        marker_status = str(record.get("side_marker_status") or "").strip().lower()
+        marker_side = str(record.get("side_to_move") or "").strip().lower()
+        if (marker_status == "trusted_marker" or marker_status.startswith("trusted_")) and marker_side in {
+            "w",
+            "b",
+            "white",
+            "black",
+        }:
+            side = {"white": "w", "black": "b"}.get(marker_side, marker_side)
+    image_data_uri = str(record.get("image_data_uri") or "").strip()
+    board_crop = image_data_uri if image_data_uri.startswith("data:image/") else str(
+        record.get("board_crop_path") or record.get("source_crop") or ""
+    ).strip()
+    diagram_id = str(record.get("diagram_id") or record.get("id") or f"diagram-{index}").strip()
+    warnings = list(record.get("warnings") or [])
+    blockers = list(record.get("full_fen_blockers") or record.get("blockers") or [])
+    raw_page = record.get("page") or record.get("page_number")
+    if not raw_page and record.get("page_index") is not None:
+        raw_page = int(record.get("page_index") or 0) + 1
+    return {
+        "id": diagram_id,
+        "status": "accepted" if accepted else "needs_review",
+        "label": str(record.get("diagram_number") or record.get("caption") or diagram_id),
+        "chapter_title": "Chess diagrams",
+        "diagram_page": int(raw_page or 0),
+        "solution_page": "",
+        "side_to_move": side,
+        "fen": fen if accepted else "",
+        "fen_candidate": "" if accepted else fen,
+        "source_crop": board_crop,
+        "board_crop_path": board_crop,
+        "side_marker_crop_path": str(record.get("side_marker_crop_path") or ""),
+        "debug_overlay_path": str(record.get("debug_overlay_path") or ""),
+        "side_marker_status": str(record.get("side_marker_status") or ""),
+        "side_marker_symbol": str(record.get("side_marker_symbol") or ""),
+        "side_marker_bbox": record.get("side_marker_bbox") or [],
+        "side_marker_assignment_trace": record.get("side_marker_assignment_trace") or {},
+        "marker_semantic_status": str(record.get("marker_semantic_status") or "review"),
+        "marker_semantic_side": str(record.get("marker_semantic_side") or "unknown"),
+        "marker_semantic_confidence": record.get("marker_semantic_confidence") or 0.0,
+        "marker_ownership_status": str(record.get("marker_ownership_status") or "unassigned"),
+        "board_placement_status": str(record.get("board_placement_status") or "review"),
+        "full_fen_allowed": accepted,
+        "full_fen_blockers": blockers,
+        "warnings": warnings,
+        "review_reason": str(record.get("review_reason") or record.get("fen_suppressed_reason") or ""),
+    }
+
+
 def build_chess_quality_dashboard(out_dir: str | Path) -> dict[str, Any]:
     out = Path(out_dir)
     reports_dir = out / "reports"
@@ -3116,124 +4079,300 @@ def _pgn_replay_failure_summary(pgn_text: str) -> str:
         return _bounded_text(type(exc).__name__ + ": " + str(exc), limit=160)
 
 
-def _fen_manual_review_row(diagram: dict[str, Any], out_dir: Path) -> dict[str, Any]:
-    image_rel = str(diagram.get("image_path") or "")
-    crop_path = (out_dir / image_rel).resolve() if image_rel else Path("")
-    fen = str(diagram.get("fen") or "").strip()
-    candidate = str(diagram.get("fen_candidate") or "").strip()
+def _materialize_fen_review_asset(
+    candidate: tuple[Image.Image, bytes, Path | None, str] | None,
+    *,
+    assets_dir: Path,
+    review_root: Path,
+    diagram_id: str,
+    role: str,
+) -> dict[str, str]:
+    empty = {
+        "path": "",
+        "rel_path": "",
+        "sha256": "",
+        "source_path": "",
+        "source": "",
+    }
+    if candidate is None:
+        return empty
+    _, crop_bytes, original_path, source = candidate
+    digest = hashlib.sha256(crop_bytes).hexdigest()
+    suffix = ".png" if crop_bytes.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    target = assets_dir / f"{_safe_filename(diagram_id)}_{role}_{digest[:12]}{suffix}"
+    if not target.is_file() or _file_sha256(target) != digest:
+        target.write_bytes(crop_bytes)
+    resolved = target.resolve()
     return {
-        "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
-        "page": int(diagram.get("page") or 0),
-        "reading_order": int(diagram.get("reading_order") or 0),
-        "bbox": diagram.get("bbox") or [0, 0, 0, 0],
-        "caption": str(diagram.get("caption") or ""),
-        "crop_path": str(crop_path) if image_rel else "",
-        "crop_rel_path": image_rel,
-        "current_fen": fen,
-        "fen_candidate": candidate,
-        "manual_fen": "",
-        "side_to_move": str(diagram.get("side_to_move") or "unknown"),
-        "manual_side_to_move": "",
-        "confidence": float(diagram.get("confidence") or 0.0),
-        "validation_status": str(diagram.get("validation_status") or "needs-human-review"),
-        "review_reason": str(diagram.get("review_reason") or "manual_fen_required"),
-        "manual_label": "needs_manual_fen",
-        "label_status": "draft",
-        "verified_by": "",
-        "verified_at": "",
-        "notes": "",
+        "path": str(resolved),
+        "rel_path": resolved.relative_to(review_root.resolve()).as_posix(),
+        "sha256": digest,
+        "source_path": str(original_path or ""),
+        "source": str(source or ""),
     }
 
 
-def _fen_manual_review_html(rows: list[dict[str, Any]]) -> str:
-    cards = "\n".join(_fen_manual_review_card(row) for row in rows) or "<p>No diagram crops found.</p>"
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FEN Manual Review</title>
-  <style>
-    :root {{ --ink:#21170f; --paper:#fff8ec; --line:#d8c4a8; --accent:#8a4516; }}
-    * {{ box-sizing:border-box; }}
-    body {{ margin:0; font-family:Georgia,'Times New Roman',serif; color:var(--ink); background:#f0e3cf; }}
-    header {{ position:sticky; top:0; z-index:2; padding:1rem 1.25rem; color:#fff8ec; background:#24170f; box-shadow:0 12px 30px rgba(0,0,0,.18); }}
-    main {{ max-width:1180px; margin:0 auto; padding:1rem; }}
-    .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:1rem; }}
-    article {{ background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:1rem; box-shadow:0 12px 32px rgba(64,39,12,.08); }}
-    img {{ width:100%; aspect-ratio:1; object-fit:contain; background:#fff; border:1px solid var(--line); border-radius:12px; }}
-    label {{ display:block; margin:.55rem 0 .2rem; font-weight:800; }}
-    input, select, textarea {{ width:100%; border:1px solid var(--line); border-radius:10px; padding:.45rem .55rem; font:inherit; background:#fffdf8; }}
-    code {{ overflow-wrap:anywhere; }}
-    .meta {{ color:#735f49; font-size:.9rem; }}
-    .actions {{ display:flex; flex-wrap:wrap; gap:.5rem; margin:.85rem 0; }}
-    button {{ border:0; border-radius:999px; padding:.55rem .8rem; background:var(--accent); color:#fff8ec; font-weight:900; cursor:pointer; }}
-    pre {{ white-space:pre-wrap; background:#fffdf8; border:1px solid var(--line); border-radius:12px; padding:.75rem; max-height:14rem; overflow:auto; }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>FEN Manual Review</h1>
-    <p>{len(rows)} diagram crop(s). Fill manual FEN only after human verification; export JSONL and use build-fen-templates.</p>
-    <div class="actions"><button type="button" id="export-jsonl">Export filled JSONL</button></div>
-  </header>
-  <main><section class="grid">{cards}</section><pre id="export-preview" aria-live="polite"></pre></main>
-  <script>
-  const cards = [...document.querySelectorAll('[data-row]')];
-  function rowFromCard(card) {{
-    const seed = JSON.parse(card.dataset.row);
-    seed.manual_fen = card.querySelector('[name="manual_fen"]').value.trim();
-    seed.manual_side_to_move = card.querySelector('[name="manual_side_to_move"]').value.trim();
-    seed.manual_label = card.querySelector('[name="manual_label"]').value;
-    seed.label_status = card.querySelector('[name="label_status"]').value;
-    seed.notes = card.querySelector('[name="notes"]').value.trim();
-    return seed;
-  }}
-  document.getElementById('export-jsonl').addEventListener('click', () => {{
-    const jsonl = cards.map(rowFromCard).map(row => JSON.stringify(row)).join('\\n') + '\\n';
-    document.getElementById('export-preview').textContent = jsonl;
-    const blob = new Blob([jsonl], {{type:'application/x-ndjson'}});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'fen_manual_draft.filled.jsonl'; a.click();
-    URL.revokeObjectURL(url);
-  }});
-  </script>
-</body>
-</html>"""
+def _fen_manual_review_row(
+    diagram: dict[str, Any],
+    out_dir: Path,
+    *,
+    review_dir: Path | None = None,
+    source_identity: Mapping[str, Any] | None = None,
+    model_evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    review_root = review_dir or out_dir / "review"
+    review_root.mkdir(parents=True, exist_ok=True)
+    assets_dir = review_root / "fen_manual_assets"
+    diagram_id = str(diagram.get("id") or diagram.get("diagram_id") or "diagram")
+    board_asset = _materialize_fen_review_asset(
+        _manifest_candidate_image(out_dir, diagram),
+        assets_dir=assets_dir,
+        review_root=review_root,
+        diagram_id=diagram_id,
+        role="board",
+    )
+    context_asset = _materialize_fen_review_asset(
+        _manifest_candidate_image(
+            out_dir,
+            {
+                "board_crop_path": str(diagram.get("fen_review_context_source_path") or ""),
+                "image_data_uri": str(diagram.get("image_data_uri") or ""),
+            },
+        ),
+        assets_dir=assets_dir,
+        review_root=review_root,
+        diagram_id=diagram_id,
+        role="context",
+    )
+    marker_asset = _materialize_fen_review_asset(
+        _manifest_candidate_image(
+            out_dir,
+            {"board_crop_path": str(diagram.get("side_marker_crop_path") or "")},
+        ),
+        assets_dir=assets_dir,
+        review_root=review_root,
+        diagram_id=diagram_id,
+        role="marker",
+    )
+    marker_search_asset = _materialize_fen_review_asset(
+        _manifest_candidate_image(
+            out_dir,
+            {
+                "board_crop_path": str(
+                    diagram.get("side_marker_search_crop_path")
+                    or diagram.get("side_marker_review_crop_path")
+                    or ""
+                )
+            },
+        ),
+        assets_dir=assets_dir,
+        review_root=review_root,
+        diagram_id=diagram_id,
+        role="marker-search",
+    )
+    crop_path = Path(board_asset["path"])
+    crop_rel_path = board_asset["rel_path"]
+    crop_sha256 = board_asset["sha256"]
+
+    evidence = dict(model_evidence or {})
+    model_prediction = evidence.get("model_prediction") if isinstance(evidence.get("model_prediction"), Mapping) else {}
+    recovered_label = evidence.get("recovered_label") if isinstance(evidence.get("recovered_label"), Mapping) else {}
+    conflict = evidence.get("conflict") if isinstance(evidence.get("conflict"), Mapping) else {}
+    fen = str(diagram.get("fen") or "").strip()
+    candidate = str(
+        model_prediction.get("fen_candidate")
+        or model_prediction.get("placement")
+        or diagram.get("full_fen")
+        or diagram.get("fen_candidate")
+        or ""
+    ).strip()
+    legacy_verified_fen = str(conflict.get("verified_fen") or recovered_label.get("fen") or "").strip()
+    identity = dict(source_identity or {})
+    page = int(diagram.get("page") or diagram.get("page_number") or 0)
+    bbox = diagram.get("bbox") or diagram.get("board_bbox") or [0, 0, 0, 0]
+    fingerprint = str(
+        diagram.get("diagram_fingerprint")
+        or model_prediction.get("diagram_fingerprint")
+        or recovered_label.get("diagram_fingerprint")
+        or ""
+    ).strip()
+    if not fingerprint:
+        fingerprint_payload = {
+            "source": identity.get("source_document_sha256") or identity.get("source_artifact_sha256") or out_dir.name,
+            "diagram_id": diagram_id,
+            "page": page,
+            "bbox": bbox,
+            "crop_sha256": crop_sha256,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    blockers = list(diagram.get("full_fen_blockers") or diagram.get("warnings") or [])
+    review_priority = 0 if conflict else 10 if model_prediction else 20
+    return {
+        "schema": "kindlemaster.fen_manual_review.row.v4",
+        "review_contract": "source_bound_piece_grid_v2",
+        "artifact_id": out_dir.name,
+        "diagram_id": diagram_id,
+        "diagram_fingerprint": fingerprint,
+        "source_document_sha256": str(identity.get("source_document_sha256") or ""),
+        "source_artifact_sha256": str(identity.get("source_artifact_sha256") or ""),
+        "source_binding": str(identity.get("source_binding") or ""),
+        "source_pdf": str(identity.get("source_pdf") or ""),
+        "page": page,
+        "reading_order": int(diagram.get("reading_order") or diagram.get("source_order") or 0),
+        "bbox": bbox,
+        "caption": str(diagram.get("caption") or diagram_id),
+        "crop_path": str(crop_path) if crop_path.is_file() else "",
+        "crop_rel_path": crop_rel_path,
+        "crop_sha256": crop_sha256,
+        "board_crop_path": crop_rel_path,
+        "board_crop_sha256": crop_sha256,
+        "source_crop_path": board_asset["source_path"],
+        "board_crop_rel_path": board_asset["rel_path"],
+        "context_crop_path": context_asset["path"],
+        "context_crop_rel_path": context_asset["rel_path"],
+        "context_crop_sha256": context_asset["sha256"],
+        "context_crop_source_path": context_asset["source_path"],
+        "marker_crop_path": marker_asset["path"],
+        "marker_crop_rel_path": marker_asset["rel_path"],
+        "marker_crop_sha256": marker_asset["sha256"],
+        "marker_crop_source_path": marker_asset["source_path"],
+        "marker_search_crop_path": marker_search_asset["path"],
+        "marker_search_crop_rel_path": marker_search_asset["rel_path"],
+        "marker_search_crop_sha256": marker_search_asset["sha256"],
+        "marker_search_crop_source_path": marker_search_asset["source_path"],
+        "marker_review_crop_kind": str(diagram.get("side_marker_review_crop_kind") or "missing"),
+        "detected_marker_symbol": str(diagram.get("side_marker_symbol") or ""),
+        "detected_marker_status": str(diagram.get("side_marker_status") or ""),
+        "board_crop_quality": str(diagram.get("board_crop_quality") or ""),
+        "marker_crop_quality": str(diagram.get("marker_crop_quality") or ""),
+        "marker_crop_fail_reason": [
+            str(value) for value in diagram.get("marker_crop_fail_reason") or [] if str(value)
+        ],
+        "current_fen": fen,
+        "fen_candidate": candidate,
+        "candidate_source": "local_model" if model_prediction else str(diagram.get("fen_method") or "conversion_report"),
+        "legacy_verified_fen": legacy_verified_fen,
+        "model_conflict": bool(conflict),
+        "review_priority": review_priority,
+        "manual_fen": "",
+        "square_labels": [],
+        "piece_labels_verified": False,
+        "fen_human_verified": False,
+        "piece_labels_source": "",
+        "side_to_move": str(diagram.get("side_to_move") or "unknown"),
+        "manual_side_to_move": "",
+        "manual_side_evidence": "",
+        "manual_visible_marker": "",
+        "board_crop_label": "",
+        "marker_crop_label": "",
+        "confidence": float(model_prediction.get("global_confidence") or diagram.get("fen_confidence") or diagram.get("confidence") or 0.0),
+        "validation_status": str(diagram.get("validation_status") or diagram.get("full_fen_status") or "needs-human-review"),
+        "review_reason": str(conflict.get("reason") or diagram.get("full_fen_blocker") or diagram.get("reason") or "manual_fen_required"),
+        "review_blockers": [str(value) for value in blockers if str(value)],
+        "nearby_text": _bounded_text(str(diagram.get("nearby_text") or ""), limit=900),
+        "manual_label": "needs_piece_labels",
+        "label_status": "needs_piece_labels",
+        "human_verified": False,
+        "verified_by": "",
+        "verified_at": "",
+        "verification_source": "",
+        "label_provenance": "",
+        "notes": "",
+        "policy": "human_labels_train_and_evaluate_only_no_direct_fen_publication",
+    }
+
+
+def _fen_manual_review_html(
+    rows: list[dict[str, Any]],
+    *,
+    source_identity: Mapping[str, Any] | None = None,
+    artifact_id: str = "",
+) -> str:
+    from chess_fen_review_ui import render_fen_manual_review_html
+
+    return render_fen_manual_review_html(
+        rows,
+        source_identity=source_identity,
+        artifact_id=artifact_id,
+    )
 
 
 def _fen_manual_review_card(row: dict[str, Any]) -> str:
-    data = html.escape(json.dumps(row, ensure_ascii=False), quote=True)
-    image = html.escape(str(row.get("crop_rel_path") or ""), quote=True)
-    return f"""<article data-row="{data}">
-  <h2>{html.escape(str(row.get('caption') or row.get('diagram_id') or 'Diagram'))}</h2>
-  <p class="meta">Page {int(row.get('page') or 0)} · confidence {float(row.get('confidence') or 0.0):.3f}</p>
-  <img src="../{image}" alt="{html.escape(str(row.get('caption') or row.get('diagram_id') or 'Diagram'), quote=True)}">
-  <p class="meta">Current candidate: <code>{html.escape(str(row.get('fen_candidate') or ''))}</code></p>
-  <label>Manual FEN</label><input name="manual_fen" placeholder="8/8/8/8/8/8/8/4K2k w - - 0 1">
-  <label>Side to move</label><select name="manual_side_to_move"><option value="">unknown</option><option value="w">white</option><option value="b">black</option></select>
-  <label>Label</label><select name="manual_label"><option>needs_manual_fen</option><option>correct_diagram</option><option>cropped_diagram</option><option>false_positive</option><option>uncertain</option></select>
-  <label>Status</label><select name="label_status"><option>draft</option><option>verified</option><option>rejected</option></select>
-  <label>Notes</label><textarea name="notes" rows="3"></textarea>
-</article>"""
+    from chess_fen_review_ui import render_fen_manual_review_card
+
+    return render_fen_manual_review_card(row)
 
 
-def _promote_verified_fen_labels(labels_path: Path, out_dir: Path) -> list[dict[str, Any]]:
+def _promote_verified_fen_labels(
+    labels_path: Path,
+    out_dir: Path,
+    *,
+    rejected: list[dict[str, Any]] | None = None,
+    require_crop: bool = True,
+) -> list[dict[str, Any]]:
     rows = _read_jsonl_rows(labels_path)
     promoted: list[dict[str, Any]] = []
     for row in rows:
+        diagram_id = str(row.get("diagram_id") or row.get("id") or "").strip()
+
+        def reject(reason: str) -> None:
+            if rejected is not None:
+                rejected.append({"diagram_id": diagram_id, "reason": reason})
+
         status = str(row.get("label_status") or row.get("status") or "").strip().lower()
         manual_label = str(row.get("manual_label") or row.get("label") or "").strip().lower()
-        if status not in {"verified", "accepted", "promoted"}:
+        verified_by = str(row.get("verified_by") or row.get("reviewer") or row.get("verification_source") or "").strip()
+        verified_at = str(row.get("verified_at") or row.get("reviewed_at") or "").strip()
+        legacy_verified = not status and bool(verified_by and verified_at)
+        if status not in {"verified", "accepted", "promoted"} and not legacy_verified:
+            reject("label_not_verified")
             continue
-        if manual_label not in {"correct_diagram", "cropped_diagram"}:
+        notes = str(row.get("notes") or row.get("reviewer_note") or "").strip()
+        if (
+            verified_by.lower() in FEN_LEGACY_NON_MANUAL_VERIFIERS
+            or any(token in notes.lower() for token in FEN_LEGACY_LABEL_BLOCKING_NOTES)
+        ):
+            reject("label_provenance_uncertain")
             continue
+        if manual_label and manual_label not in {"correct_diagram", "cropped_diagram"}:
+            reject("manual_label_not_accepted")
+            continue
+        if not manual_label:
+            manual_label = "correct_diagram"
         fen = str(row.get("manual_fen") or row.get("fen") or row.get("current_fen") or "").strip()
         if not fen:
+            reject("fen_missing")
             continue
+        review_schema = str(row.get("schema") or "").strip()
+        review_contract = str(row.get("review_contract") or "").strip()
+        requires_piece_grid = review_schema in {
+            "kindlemaster.fen_manual_review.row.v3",
+            "kindlemaster.fen_manual_review.row.v4",
+        } or review_contract in {
+            "source_bound_two_crop_v1",
+            "source_bound_piece_grid_v2",
+        }
+        if requires_piece_grid:
+            if row.get("piece_labels_verified") is not True or row.get("fen_human_verified") is not True:
+                reject("piece_grid_not_verified")
+                continue
+            square_labels = row.get("square_labels")
+            if not isinstance(square_labels, list) or len(square_labels) != 64:
+                reject("piece_grid_incomplete")
+                continue
+            cells = ["" if value in {None, "", "empty"} else str(value) for value in square_labels]
+            if any(value not in "KQRBNPkqrbnp" for value in cells if value):
+                reject("piece_grid_class_invalid")
+                continue
+            if _cells_to_placement(cells) != fen.split()[0]:
+                reject("piece_grid_fen_mismatch")
+                continue
         valid, warnings = validate_fen(fen)
         if not valid or warnings:
+            reject("fen_invalid")
             continue
         manual_side = str(row.get("manual_side_to_move") or row.get("side_to_move") or "").strip().lower()
         if manual_side in {"white", "w"}:
@@ -3244,43 +4383,205 @@ def _promote_verified_fen_labels(labels_path: Path, out_dir: Path) -> list[dict[
             manual_side = ""
         fen_side = fen.split()[1] if len(fen.split()) >= 2 else ""
         if manual_side and fen_side and manual_side != fen_side:
+            reject("side_to_move_conflict")
             continue
-        crop_path = _resolve_review_crop_path(row, out_dir)
+        crop_path = _resolve_review_crop_path(row, out_dir, labels_path=labels_path)
         if not crop_path.is_file():
+            if require_crop:
+                reject("source_crop_missing")
+                continue
+            crop_path = Path("")
+        expected_crop_sha256 = str(row.get("crop_sha256") or row.get("sha256") or "").strip().lower()
+        actual_crop_sha256 = _file_sha256(crop_path) if crop_path.is_file() else ""
+        if crop_path.is_file() and expected_crop_sha256 and actual_crop_sha256 != expected_crop_sha256:
+            reject("source_crop_sha256_mismatch")
             continue
         promoted.append(
             {
-                "diagram_id": row.get("diagram_id") or row.get("id") or crop_path.stem,
+                "diagram_id": diagram_id or crop_path.stem,
                 "diagram_fingerprint": str(row.get("diagram_fingerprint") or ""),
                 "source_document_sha256": str(row.get("source_document_sha256") or ""),
+                "source_pdf": str(row.get("source_pdf") or ""),
                 "fen": fen,
-                "crop_path": str(crop_path),
+                "crop_path": str(crop_path) if crop_path.is_file() else "",
+                "crop_sha256": actual_crop_sha256,
                 "page": _safe_int(row.get("page")),
                 "source": str(labels_path),
                 "label_status": "verified",
-                "manual_label": manual_label or "correct_diagram",
+                "manual_label": manual_label,
                 "manual_side_to_move": manual_side or fen_side,
-                "verified_by": str(
-                    row.get("verified_by")
-                    or row.get("reviewer")
-                    or row.get("verification_source")
-                    or "verified_label_import"
-                ),
-                "verified_at": str(row.get("verified_at") or row.get("reviewed_at") or date.today().isoformat()),
-                "notes": row.get("notes") or row.get("reviewer_note") or "",
+                "verified_by": verified_by or "verified_label_import",
+                "verified_at": verified_at or date.today().isoformat(),
+                "label_provenance": str(row.get("label_provenance") or "").strip()
+                or ("legacy_verified_metadata" if legacy_verified else "explicit_verified_status"),
+                "mapping_square_match": row.get("mapping_square_match"),
+                "mapping_occupied_match": row.get("mapping_occupied_match"),
+                "mapping_margin": row.get("mapping_margin"),
+                "notes": notes,
             }
         )
     return promoted
 
 
-def _resolve_review_crop_path(row: dict[str, Any], out_dir: Path) -> Path:
-    crop_value = str(row.get("crop_path") or "").strip()
-    if crop_value:
-        crop_path = Path(crop_value)
-        if crop_path.is_file():
-            return crop_path
-    rel_value = str(row.get("crop_rel_path") or row.get("image_path") or "").strip()
-    return (out_dir / rel_value) if rel_value else Path("")
+@lru_cache(maxsize=16)
+def _fen_crop_sha256_index(root_value: str) -> dict[str, tuple[str, ...]]:
+    root = Path(root_value)
+    if not root.is_dir():
+        return {}
+    matches: dict[str, list[str]] = {}
+    for candidate in sorted(root.rglob("*"), key=lambda path: path.as_posix().lower()):
+        if not candidate.is_file() or candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            continue
+        digest = _file_sha256(candidate)
+        if digest:
+            matches.setdefault(digest, []).append(str(candidate.resolve()))
+    return {digest: tuple(paths) for digest, paths in matches.items()}
+
+
+def _resolve_review_crop_path(row: dict[str, Any], out_dir: Path, *, labels_path: Path | None = None) -> Path:
+    values = [
+        str(row.get("crop_path") or "").strip(),
+        str(row.get("source_crop_path") or "").strip(),
+        str(row.get("crop_rel_path") or "").strip(),
+        str(row.get("image_path") or "").strip(),
+        str(row.get("filename") or "").strip(),
+    ]
+    roots = [out_dir, Path(__file__).resolve().parent]
+    if labels_path is not None:
+        roots.insert(0, labels_path.resolve().parent)
+    for value in values:
+        if not value:
+            continue
+        raw_path = Path(value)
+        candidates = [raw_path] if raw_path.is_absolute() else [raw_path, *(root / raw_path for root in roots)]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+    expected_sha256 = str(row.get("crop_sha256") or row.get("sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        return Path("")
+    search_roots: list[Path] = []
+    if labels_path is not None:
+        labels_root = labels_path.resolve().parent
+        search_roots.extend([labels_root.parent / "crops", labels_root / "crops"])
+    search_roots.append(Path(__file__).resolve().parent / "reference_inputs" / "chess_fen" / "crops")
+    for root in dict.fromkeys(path.resolve() for path in search_roots if path.is_dir()):
+        matches = _fen_crop_sha256_index(str(root)).get(expected_sha256) or ()
+        if matches:
+            return Path(matches[0])
+    return Path("")
+
+
+def _resolve_manifest_board_crop(manifest_root: Path, row: dict[str, Any]) -> Path:
+    value = str(row.get("board_crop_path") or row.get("image_path") or "").strip()
+    if not value:
+        return Path("")
+    path = Path(value)
+    return path if path.is_absolute() else manifest_root / path
+
+
+def _manifest_candidate_image(
+    manifest_root: Path,
+    row: dict[str, Any],
+) -> tuple[Image.Image, bytes, Path | None, str] | None:
+    value = str(row.get("board_crop_path") or row.get("image_path") or "").strip()
+    if value:
+        raw_path = Path(value)
+        candidates = [raw_path] if raw_path.is_absolute() else [manifest_root / raw_path, manifest_root.parent / raw_path]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                crop_bytes = candidate.read_bytes()
+                image = Image.open(io.BytesIO(crop_bytes)).convert("RGB")
+            except (OSError, TypeError, ValueError):
+                continue
+            resolved = candidate.resolve()
+            return image, crop_bytes, resolved, f"path:{resolved}"
+
+    data_uri = str(row.get("image_data_uri") or "").strip()
+    if not data_uri.startswith("data:image/") or "," not in data_uri:
+        return None
+    header, encoded = data_uri.split(",", 1)
+    if not header.lower().endswith(";base64"):
+        return None
+    try:
+        crop_bytes = base64.b64decode("".join(encoded.split()), validate=True)
+        image = Image.open(io.BytesIO(crop_bytes)).convert("RGB")
+    except (OSError, TypeError, ValueError):
+        return None
+    digest = hashlib.sha256(crop_bytes).hexdigest()
+    return image, crop_bytes, None, f"data-uri:{digest}"
+
+
+def _materialize_manifest_candidate_crop(
+    candidate: dict[str, Any],
+    target_dir: Path,
+    *,
+    diagram_id: str,
+) -> Path:
+    existing = candidate.get("crop_path")
+    if isinstance(existing, Path) and existing.is_file():
+        return existing.resolve()
+    crop_bytes = candidate.get("crop_bytes")
+    if not isinstance(crop_bytes, bytes) or not crop_bytes:
+        raise ValueError("Accepted crop mapping has no materializable image bytes")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(crop_bytes).hexdigest()
+    suffix = ".png" if crop_bytes.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg"
+    target = target_dir / f"{_safe_filename(diagram_id or 'diagram')}_{digest[:12]}{suffix}"
+    if not target.is_file() or _file_sha256(target) != digest:
+        target.write_bytes(crop_bytes)
+    return target.resolve()
+
+
+def _manifest_source_identity(manifest_path: Path, manifest: dict[str, Any]) -> tuple[str, str]:
+    source_value = str(manifest.get("source_pdf") or "").strip()
+    source_digest = str(manifest.get("source_document_sha256") or "").strip().lower()
+    candidates: list[Path] = []
+    if source_value:
+        source_path = Path(source_value)
+        candidates = (
+            [source_path]
+            if source_path.is_absolute()
+            else [
+                manifest_path.parent / source_path,
+                manifest_path.parent.parent / source_path,
+                manifest_path.parent.parent / "input" / source_path.name,
+            ]
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            resolved = candidate.resolve()
+            return str(resolved), source_document_sha256(resolved)
+
+    input_dir = manifest_path.parent.parent / "input"
+    pdf_candidates = sorted(input_dir.rglob("*.pdf")) if input_dir.is_dir() else []
+    if len(pdf_candidates) == 1:
+        resolved = pdf_candidates[0].resolve()
+        return str(resolved), source_document_sha256(resolved)
+    return source_value, source_digest
+
+
+def _fen_crop_recovery_missing_decision(label: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    return {
+        "schema": "kindlemaster.fen_crop_recovery_decision.v1",
+        "legacy_label_id": str(label.get("diagram_id") or ""),
+        "diagram_id": "",
+        "diagram_fingerprint": "",
+        "page": int(label.get("page") or 0),
+        "fen": str(label.get("fen") or ""),
+        "crop_path": "",
+        "status": "needs_review",
+        "reasons": [reason],
+        "square_match": 0.0,
+        "occupied_match": 0.0,
+        "match_margin": 0.0,
+        "candidate_count": 0,
+        "assignment_is_label_best": False,
+        "training_fen_overlap": False,
+        "training_board_overlap": False,
+    }
 
 
 def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
@@ -10844,10 +12145,49 @@ def _board_preprocess_sources(out_dir: Path, *, labels_path: str | Path | None) 
                 "crop_rel_path": _relative_to_out(out_dir, Path(str(row.get("crop_path") or ""))),
                 "caption": row.get("diagram_id") or "",
                 "fen": row.get("fen") or "",
+                "side_to_move": str(row.get("manual_side_to_move") or ""),
+                "verified_fen": row.get("fen") or "",
+                "verified_fen_evidence_trusted": bool(row.get("crop_sha256")),
+                "verified_fen_evidence_source": "source_bound_human_fen",
+                "verified_label_crop_sha256": str(row.get("crop_sha256") or ""),
+                "verified_label_provenance": str(row.get("label_provenance") or ""),
+                "mapping_square_match": row.get("mapping_square_match"),
+                "mapping_occupied_match": row.get("mapping_occupied_match"),
+                "mapping_margin": row.get("mapping_margin"),
                 "source": "verified_label",
             }
             for row in labels
         ]
+    conversion_report, _conversion_payload = _fen_review_artifact_report(out_dir)
+    review_draft_path = out_dir / "review" / "fen_manual_draft.jsonl"
+    if conversion_report is not None and review_draft_path.is_file():
+        review_rows = _read_jsonl_rows(review_draft_path)
+        review_sources: list[dict[str, Any]] = []
+        for row in review_rows:
+            crop_path = _resolve_review_crop_path(row, out_dir, labels_path=review_draft_path)
+            marker_status = str(row.get("detected_marker_status") or "").strip()
+            marker_quality = str(row.get("marker_crop_quality") or "").strip()
+            marker_symbol = str(row.get("detected_marker_symbol") or "").strip()
+            side_to_move = ""
+            if marker_status == "trusted_marker" and marker_quality == "pass":
+                side_to_move = {"△": "w", "▼": "b"}.get(marker_symbol, "")
+            review_sources.append(
+                {
+                    "diagram_id": str(row.get("diagram_id") or crop_path.stem),
+                    "diagram_fingerprint": str(row.get("diagram_fingerprint") or ""),
+                    "source_document_sha256": str(row.get("source_document_sha256") or ""),
+                    "page": int(row.get("page") or 0),
+                    "crop_path": str(crop_path) if crop_path.is_file() else "",
+                    "crop_rel_path": str(row.get("board_crop_rel_path") or row.get("crop_rel_path") or ""),
+                    "caption": str(row.get("caption") or row.get("diagram_id") or ""),
+                    "fen": "",
+                    "side_to_move": side_to_move,
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "source": "fen_manual_review_crop",
+                }
+            )
+        if review_sources:
+            return review_sources
     book = _load_source_book(out_dir)
     diagrams = _source_book_diagrams(book)
     if diagrams:
@@ -10897,6 +12237,7 @@ def _preprocess_board_record(record: dict[str, Any], out_dir: Path, normalized_d
         "page": int(record.get("page") or 0),
         "caption": str(record.get("caption") or ""),
         "source_crop": str(crop_path),
+        "source_crop_hash": _file_sha256(crop_path) if crop_path.is_file() else "",
         "source_crop_rel": str(record.get("crop_rel_path") or _relative_to_out(out_dir, crop_path)),
         "status": "failed",
         "confidence": 0.0,
@@ -10938,20 +12279,29 @@ def _board_normalization_variants(crop_path: Path) -> dict[str, Image.Image]:
     image = Image.open(crop_path).convert("RGB")
     square = _center_square(image)
     tight = ImageOps.autocontrast(square.convert("L")).convert("RGB")
-    inner = _inner_grid_crop(square)
-    normalized = ImageOps.autocontrast(inner.convert("L")).resize((256, 256), Image.Resampling.LANCZOS).convert("RGB")
+    board = normalize_board_crop_for_templates(image)
+    normalized = ImageOps.autocontrast(board.convert("L")).resize((256, 256), Image.Resampling.LANCZOS).convert("RGB")
     return {
         "original": image.copy(),
         "tight": tight.resize((256, 256), Image.Resampling.LANCZOS),
-        "inner-grid": inner.resize((256, 256), Image.Resampling.LANCZOS),
-        "remove-coordinates": inner.resize((256, 256), Image.Resampling.LANCZOS),
+        "inner-grid": normalized.copy(),
+        "remove-coordinates": normalized.copy(),
         "center-square": square.resize((256, 256), Image.Resampling.LANCZOS),
         "normalized_8x8": normalized,
     }
 
 
 def _normalize_board_image(crop_path: Path) -> Image.Image:
-    return _board_normalization_variants(crop_path)["normalized_8x8"]
+    with Image.open(crop_path) as image:
+        return _normalize_board_pil_image(image)
+
+
+def _normalize_board_pil_image(image: Image.Image) -> Image.Image:
+    board = normalize_board_crop_for_templates(image.convert("RGB"))
+    return ImageOps.autocontrast(board.convert("L")).resize(
+        (256, 256),
+        Image.Resampling.LANCZOS,
+    ).convert("RGB")
 
 
 def _center_square(image: Image.Image) -> Image.Image:
@@ -11044,14 +12394,267 @@ def _square_name(index: int) -> str:
     return f"{chr(ord('a') + file_index)}{8 - rank_index}"
 
 
-def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> str:
-    folds = max(2, int(fold_count or 5))
-    fold = int(hashlib.sha256(str(diagram_id).encode("utf-8")).hexdigest()[:8], 16) % folds
+def _fen_dataset_component_groups(boards: list[dict[str, Any]]) -> dict[int, str]:
+    """Join boards connected by source page or normalized image identity."""
+    parent = list(range(len(boards)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    evidence_owner: dict[str, int] = {}
+    evidence_by_index: dict[int, list[str]] = {}
+    for index, board in enumerate(boards):
+        label = board.get("label") if isinstance(board.get("label"), dict) else {}
+        source = str(label.get("source_document_sha256") or label.get("source_pdf") or "unknown-source").strip()
+        page = int(label.get("page") or 0)
+        evidence: list[str] = []
+        if page > 0:
+            evidence.append(f"page:{source}|{page}")
+        board_sha256 = str(board.get("board_sha256") or "").strip()
+        if board_sha256:
+            evidence.append(f"board-sha256:{board_sha256}")
+        fingerprint = str(label.get("diagram_fingerprint") or "").strip()
+        if fingerprint:
+            evidence.append(f"fingerprint:{source}|{fingerprint}")
+        if not evidence:
+            evidence.append(f"diagram:{board.get('diagram_id') or index}")
+        evidence_by_index[index] = evidence
+        for value in evidence:
+            owner = evidence_owner.setdefault(value, index)
+            union(index, owner)
+
+    component_evidence: dict[int, set[str]] = {}
+    for index, evidence in evidence_by_index.items():
+        component_evidence.setdefault(find(index), set()).update(evidence)
+    component_names = {
+        root: "component:" + hashlib.sha256("\n".join(sorted(evidence)).encode("utf-8")).hexdigest()[:20]
+        for root, evidence in component_evidence.items()
+    }
+    return {index: component_names[find(index)] for index in range(len(boards))}
+
+
+def _fen_dataset_evidence_overlap(rows: list[dict[str, Any]], *, evidence: str) -> list[str]:
+    splits_by_value: dict[str, set[str]] = {}
+    for row in rows:
+        if evidence == "page":
+            page = int(row.get("page") or 0)
+            if page <= 0:
+                continue
+            source = str(row.get("source_document_sha256") or row.get("source_pdf") or "unknown-source")
+            value = f"{source}|{page}"
+        else:
+            value = str(row.get(evidence) or "").strip()
+        if value:
+            splits_by_value.setdefault(value, set()).add(str(row.get("split") or ""))
+    return sorted(value for value, splits in splits_by_value.items() if len(splits) > 1)
+
+
+def _dataset_split(split_group: str, *, fold_count: int, holdout_fold: int) -> str:
+    folds = max(3, int(fold_count or 5))
+    fold = int(hashlib.sha256(str(split_group).encode("utf-8")).hexdigest()[:8], 16) % folds
     if fold == int(holdout_fold or 0) % folds:
         return "holdout"
     if fold == (int(holdout_fold or 0) + 1) % folds:
         return "val"
     return "train"
+
+
+def _square_classifier_features(image: Image.Image) -> np.ndarray:
+    normalized = normalize_piece_cell_for_classifier(image)
+    gradient_y, gradient_x = np.gradient(normalized)
+    magnitude = np.hypot(gradient_x, gradient_y)
+    angles = (np.arctan2(gradient_y, gradient_x) + np.pi) % np.pi
+    bins = 9
+    cells_per_axis = 4
+    cell_size = normalized.shape[0] // cells_per_axis
+    histograms: list[np.ndarray] = []
+    for cell_y in range(cells_per_axis):
+        for cell_x in range(cells_per_axis):
+            y0 = cell_y * cell_size
+            x0 = cell_x * cell_size
+            local_magnitude = magnitude[y0 : y0 + cell_size, x0 : x0 + cell_size].ravel()
+            local_angles = angles[y0 : y0 + cell_size, x0 : x0 + cell_size].ravel()
+            indexes = np.minimum(bins - 1, (local_angles / (np.pi / bins)).astype(int))
+            histogram = np.bincount(indexes, weights=local_magnitude, minlength=bins).astype(np.float32)
+            histogram /= np.linalg.norm(histogram) + 1e-6
+            histograms.append(histogram)
+    small = np.asarray(
+        Image.fromarray((normalized * 255).astype(np.uint8)).resize((16, 16), Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    ).ravel() / 255.0
+    statistics = np.asarray(
+        [normalized.mean(), normalized.std(), (normalized > 0.2).mean()],
+        dtype=np.float32,
+    )
+    return np.concatenate([small, *histograms, statistics]).astype(np.float32)
+
+
+def _dataset_square_image(row: dict[str, Any], board_cache: dict[str, list[Image.Image]]) -> Image.Image:
+    image_path = Path(str(row.get("image_path") or ""))
+    if image_path.is_file():
+        with Image.open(image_path) as image:
+            return image.convert("RGB").copy()
+    source_crop = Path(str(row.get("source_crop") or ""))
+    if not source_crop.is_file():
+        raise FileNotFoundError(f"square source crop missing: {source_crop}")
+    cache_key = str(source_crop.resolve())
+    if cache_key not in board_cache:
+        board_cache[cache_key] = _split_board_into_squares(_normalize_board_image(source_crop))
+    square_index = int(row.get("square_index") or 0)
+    if not 0 <= square_index < 64:
+        raise ValueError(f"square index out of range: {square_index}")
+    return board_cache[cache_key][square_index]
+
+
+def _fen_square_feature_matrix(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    board_cache: dict[str, list[Image.Image]] = {}
+    usable_rows: list[dict[str, Any]] = []
+    features: list[np.ndarray] = []
+    labels: list[str] = []
+    failures: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            image = _dataset_square_image(row, board_cache)
+            features.append(_square_classifier_features(image))
+        except Exception as exc:
+            failures.append(
+                {
+                    "diagram_id": str(row.get("diagram_id") or ""),
+                    "square": str(row.get("square") or ""),
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+        usable_rows.append(row)
+        labels.append(str(row.get("class") or "empty"))
+    matrix = np.asarray(features, dtype=np.float32) if features else np.empty((0, 0), dtype=np.float32)
+    return usable_rows, matrix, np.asarray(labels, dtype=str), failures
+
+
+def _export_rbf_svc_classifier(classifier: Any) -> dict[str, Any]:
+    return {
+        "schema": "kindlemaster.rbf_svc.v1",
+        "classes": [str(value) for value in classifier.classes_.tolist()],
+        "gamma": float(classifier._gamma),
+        "support_vectors": classifier.support_vectors_.astype(np.float32).tolist(),
+        "dual_coef": classifier.dual_coef_.astype(np.float32).tolist(),
+        "intercept": classifier.intercept_.astype(np.float32).tolist(),
+        "n_support": classifier.n_support_.astype(int).tolist(),
+    }
+
+
+def _compiled_rbf_svc(spec: dict[str, Any]) -> dict[str, Any]:
+    cached = spec.get("__compiled")
+    if isinstance(cached, dict):
+        return cached
+    compiled = {
+        "classes": np.asarray(spec.get("classes") or [], dtype=str),
+        "gamma": float(spec.get("gamma") or 0.0),
+        "support_vectors": np.asarray(spec.get("support_vectors") or [], dtype=np.float32),
+        "dual_coef": np.asarray(spec.get("dual_coef") or [], dtype=np.float32),
+        "intercept": np.asarray(spec.get("intercept") or [], dtype=np.float32),
+        "n_support": np.asarray(spec.get("n_support") or [], dtype=int),
+    }
+    compiled["support_squared_norms"] = np.sum(compiled["support_vectors"] ** 2, axis=1)
+    spec["__compiled"] = compiled
+    return compiled
+
+
+def _predict_exported_rbf_svc(features: np.ndarray, spec: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    compiled = _compiled_rbf_svc(spec)
+    classes = compiled["classes"]
+    support_vectors = compiled["support_vectors"]
+    if not len(classes) or support_vectors.ndim != 2:
+        return np.asarray([], dtype=str), np.empty((0, 0), dtype=np.float32)
+    matrix = np.atleast_2d(np.asarray(features, dtype=np.float32))
+    squared_distances = (
+        np.sum(matrix**2, axis=1, keepdims=True)
+        + compiled["support_squared_norms"][None, :]
+        - 2.0 * (matrix @ support_vectors.T)
+    )
+    np.maximum(squared_distances, 0.0, out=squared_distances)
+    kernel = np.exp(-compiled["gamma"] * squared_distances)
+    starts = np.concatenate([[0], np.cumsum(compiled["n_support"])])
+    pair_decisions: list[np.ndarray] = []
+    pairs: list[tuple[int, int]] = []
+    pair_index = 0
+    for class_i in range(len(classes)):
+        for class_j in range(class_i + 1, len(classes)):
+            slice_i = slice(int(starts[class_i]), int(starts[class_i + 1]))
+            slice_j = slice(int(starts[class_j]), int(starts[class_j + 1]))
+            decision = (
+                kernel[:, slice_i] @ compiled["dual_coef"][class_j - 1, slice_i]
+                + kernel[:, slice_j] @ compiled["dual_coef"][class_i, slice_j]
+                + compiled["intercept"][pair_index]
+            )
+            pair_decisions.append(decision)
+            pairs.append((class_i, class_j))
+            pair_index += 1
+    decisions = np.asarray(pair_decisions, dtype=np.float32).T
+    votes = np.zeros((len(matrix), len(classes)), dtype=np.float32)
+    confidence_sums = np.zeros_like(votes)
+    for column, (class_i, class_j) in enumerate(pairs):
+        decision = decisions[:, column]
+        if len(classes) == 2:
+            # sklearn exposes the binary decision with positive values for class_j.
+            votes[:, class_i] += decision < 0
+            votes[:, class_j] += decision >= 0
+            confidence_sums[:, class_i] -= decision
+            confidence_sums[:, class_j] += decision
+        else:
+            # sklearn/libsvm OVO exposes positive values for class_i.
+            votes[:, class_i] += decision >= 0
+            votes[:, class_j] += decision < 0
+            confidence_sums[:, class_i] += decision
+            confidence_sums[:, class_j] -= decision
+    tie_break = confidence_sums / (3.0 * (np.abs(confidence_sums) + 1.0))
+    scores = votes + tie_break
+    logits = (scores - scores.max(axis=1, keepdims=True)) * 3.0
+    exponentials = np.exp(logits)
+    probabilities = exponentials / np.maximum(exponentials.sum(axis=1, keepdims=True), 1e-9)
+    return classes[scores.argmax(axis=1)], probabilities
+
+
+def _predict_rbf_svc_feature_matrix(features: np.ndarray, model: dict[str, Any]) -> list[dict[str, Any]]:
+    binary_labels, binary_probabilities = _predict_exported_rbf_svc(features, model.get("binary_classifier") or {})
+    piece_labels, piece_probabilities = _predict_exported_rbf_svc(features, model.get("piece_classifier") or {})
+    binary_classes = list((model.get("binary_classifier") or {}).get("classes") or [])
+    piece_classes = list((model.get("piece_classifier") or {}).get("classes") or [])
+    binary_index = {label: index for index, label in enumerate(binary_classes)}
+    rows: list[dict[str, Any]] = []
+    for index in range(len(features)):
+        empty_probability = float(binary_probabilities[index, binary_index.get("empty", 0)])
+        occupied_probability = float(binary_probabilities[index, binary_index.get("occupied", 0)])
+        probabilities = {"empty": empty_probability}
+        for piece_index, piece in enumerate(piece_classes):
+            probabilities[piece] = occupied_probability * float(piece_probabilities[index, piece_index])
+        total = sum(probabilities.values()) or 1.0
+        probabilities = {label: value / total for label, value in probabilities.items()}
+        predicted = "empty" if str(binary_labels[index]) == "empty" else str(piece_labels[index])
+        entropy = -sum(value * math.log(max(value, 1e-9)) for value in probabilities.values())
+        entropy /= max(1e-9, math.log(max(2, len(probabilities))))
+        rows.append(
+            {
+                "class": "" if predicted == "empty" else predicted,
+                "label": predicted,
+                "confidence": round(float(probabilities.get(predicted, 0.0)), 4),
+                "probabilities": {key: round(value, 4) for key, value in sorted(probabilities.items())},
+                "entropy": round(float(entropy), 4),
+                "source": "model_rbf_svc_hog",
+            }
+        )
+    return rows
 
 
 def _square_features(image: Image.Image) -> list[float]:
@@ -11087,7 +12690,7 @@ def _train_centroid_classifier(rows: list[dict[str, Any]]) -> dict[str, list[flo
     return centroids
 
 
-def _predict_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str, Any]:
+def _predict_centroid_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str, Any]:
     centroids = model.get("class_centroids") or {}
     if not centroids:
         return {"class": "", "confidence": 0.0, "probabilities": {}, "entropy": 1.0}
@@ -11110,6 +12713,17 @@ def _predict_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str
     }
 
 
+def _predict_square_classes(images: list[Image.Image], model: dict[str, Any]) -> list[dict[str, Any]]:
+    if model.get("model_type") == "rbf_svc_hog_two_stage":
+        features = np.asarray([_square_classifier_features(image) for image in images], dtype=np.float32)
+        return _predict_rbf_svc_feature_matrix(features, model)
+    return [_predict_centroid_square_class(image, model) for image in images]
+
+
+def _predict_square_class(image: Image.Image, model: dict[str, Any]) -> dict[str, Any]:
+    return _predict_square_classes([image], model)[0]
+
+
 def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -> list[dict[str, Any]]:
     probabilities = result.get("probabilities") if isinstance(result.get("probabilities"), dict) else {}
     rows: list[dict[str, Any]] = []
@@ -11121,7 +12735,7 @@ def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -
                 "class": label_text,
                 "piece": piece if piece in "KQRBNPkqrbnp" else "",
                 "confidence": round(float(probability or 0.0), 4),
-                "source": "model_centroid",
+                "source": str(result.get("source") or "model_centroid"),
             }
         )
     if not rows:
@@ -11132,33 +12746,84 @@ def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -
                 "class": label_text,
                 "piece": piece if piece in "KQRBNPkqrbnp" else "",
                 "confidence": round(float(result.get("confidence") or 0.0), 4),
-                "source": "model_centroid",
+                "source": str(result.get("source") or "model_centroid"),
             }
         )
     return rows
 
 
-def _evaluate_square_classifier(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
-    eval_rows = [row for row in rows if row.get("split") in {"val", "holdout"}]
-    if not eval_rows:
-        eval_rows = rows
+def _evaluate_square_classifier(
+    rows: list[dict[str, Any]],
+    model: dict[str, Any],
+    *,
+    feature_matrix: np.ndarray | None = None,
+) -> dict[str, Any]:
+    usable_rows = rows
+    features = feature_matrix
+    if model.get("model_type") == "rbf_svc_hog_two_stage" and features is None:
+        usable_rows, features, _labels, _failures = _fen_square_feature_matrix(rows)
+    eval_indexes = [index for index, row in enumerate(usable_rows) if row.get("split") in {"val", "holdout"}]
+    if not eval_indexes:
+        eval_indexes = list(range(len(usable_rows)))
+    eval_rows = [usable_rows[index] for index in eval_indexes]
+    if model.get("model_type") == "rbf_svc_hog_two_stage":
+        assert features is not None
+        prediction_rows = _predict_rbf_svc_feature_matrix(features[eval_indexes], model)
+    else:
+        board_cache: dict[str, list[Image.Image]] = {}
+        prediction_rows = [
+            _predict_centroid_square_class(_dataset_square_image(row, board_cache), model)
+            for row in eval_rows
+        ]
     confusion: dict[str, dict[str, int]] = {}
     correct = 0
     total = 0
-    for row in eval_rows:
-        path = Path(str(row.get("image_path") or ""))
-        if not path.is_file():
-            continue
+    occupied_total = 0
+    occupied_correct = 0
+    empty_total = 0
+    empty_correct = 0
+    board_results: dict[tuple[str, str], list[bool]] = {}
+    split_samples: dict[str, list[bool]] = {}
+    for row, prediction in zip(eval_rows, prediction_rows):
         expected = str(row.get("class") or "empty")
-        predicted = str(_predict_square_class(Image.open(path), model).get("label") or "empty")
+        predicted = str(prediction.get("label") or "empty")
         confusion.setdefault(expected, {})
         confusion[expected][predicted] = confusion[expected].get(predicted, 0) + 1
-        correct += int(expected == predicted)
+        matched = expected == predicted
+        correct += int(matched)
         total += 1
+        if expected == "empty":
+            empty_total += 1
+            empty_correct += int(matched)
+        else:
+            occupied_total += 1
+            occupied_correct += int(matched)
+        split = str(row.get("split") or "unknown")
+        split_samples.setdefault(split, []).append(matched)
+        board_key = (split, str(row.get("diagram_id") or ""))
+        board_results.setdefault(board_key, []).append(matched)
+    exact_boards = {key: len(matches) == 64 and all(matches) for key, matches in board_results.items()}
+    per_split: dict[str, dict[str, Any]] = {}
+    for split, matches in sorted(split_samples.items()):
+        split_boards = [value for (board_split, _diagram_id), value in exact_boards.items() if board_split == split]
+        per_split[split] = {
+            "sample_count": len(matches),
+            "square_accuracy": round(sum(matches) / max(1, len(matches)), 4),
+            "board_count": len(split_boards),
+            "exact_board_count": sum(split_boards),
+            "exact_board_accuracy": round(sum(split_boards) / max(1, len(split_boards)), 4),
+        }
     return {
         "sample_count": total,
         "exact_square_count": correct,
         "square_accuracy": round(correct / max(1, total), 4),
+        "occupied_square_accuracy": round(occupied_correct / max(1, occupied_total), 4),
+        "empty_square_accuracy": round(empty_correct / max(1, empty_total), 4),
+        "board_count": len(board_results),
+        "exact_board_count": sum(exact_boards.values()),
+        "exact_board_accuracy": round(sum(exact_boards.values()) / max(1, len(exact_boards)), 4),
+        "holdout_exact_board_accuracy": (per_split.get("holdout") or {}).get("exact_board_accuracy", 0.0),
+        "per_split": per_split,
         "confusion": confusion,
         "per_class_accuracy": {
             label: round(values.get(label, 0) / max(1, sum(values.values())), 4)
@@ -11177,6 +12842,7 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
         "source_document_sha256": str(source.get("source_document_sha256") or ""),
         "page": int(source.get("page") or 0),
         "source_crop": str(crop_path),
+        "source_crop_hash": _file_sha256(crop_path) if crop_path.is_file() else "",
         "status": "needs_review",
         "fen_candidate": "",
         "placement": "",
@@ -11184,16 +12850,29 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
         "mean_entropy": 1.0,
         "squares": [],
         "deterministic_validation": {"valid": False, "warnings": ["not_run"]},
+        "side_to_move": str(source.get("side_to_move") or ""),
+        "side_to_move_status": "verified_fen" if source.get("verified_fen_evidence_trusted") else "",
+        "side_to_move_evidence": "verified_fen" if source.get("verified_fen_evidence_trusted") else "",
+        "verified_fen": str(source.get("verified_fen") or ""),
+        "verified_fen_evidence_trusted": bool(source.get("verified_fen_evidence_trusted")),
+        "verified_fen_evidence_source": str(source.get("verified_fen_evidence_source") or ""),
+        "verified_label_crop_sha256": str(source.get("verified_label_crop_sha256") or ""),
+        "verified_label_provenance": str(source.get("verified_label_provenance") or ""),
+        "mapping_square_match": source.get("mapping_square_match"),
+        "mapping_occupied_match": source.get("mapping_occupied_match"),
+        "mapping_margin": source.get("mapping_margin"),
     }
     if not crop_path.is_file():
         row["deterministic_validation"] = {"valid": False, "warnings": ["source_crop_missing"]}
         return row
     try:
         board = _normalize_board_image(crop_path)
-        square_results = [_predict_square_class(square, model) for square in _split_board_into_squares(board)]
+        square_results = _predict_square_classes(_split_board_into_squares(board), model)
         cells = [str(result.get("class") or "") for result in square_results]
         placement = _cells_to_placement(cells)
-        side_label = _infer_side_to_move(str(source.get("caption") or ""))
+        side_label = str(source.get("side_to_move") or "").strip() or _infer_side_to_move(
+            str(source.get("caption") or "")
+        )
         side_label_normalized = str(side_label or "").strip().lower()
         side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(
             side_label_normalized,
@@ -11218,7 +12897,7 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
                         "confidence": result.get("confidence"),
                         "entropy": result.get("entropy"),
                         "alternatives": _square_prediction_alternatives(result, top_n=3),
-                        "source": "model_centroid",
+                        "source": str(result.get("source") or "model_centroid"),
                     }
                     for index, result in enumerate(square_results)
                 ],
@@ -11261,6 +12940,14 @@ def _fen_ensemble_verdict(
         "reasons": reasons,
         "source": "local_model_ensemble",
         "verified_label_match_method": verified_match_method,
+        "source_crop_hash": str(prediction.get("source_crop_hash") or ""),
+        "evidence": {
+            "verified_label_match_method": verified_match_method,
+            "verified_label_provenance": str((label or {}).get("label_provenance") or ""),
+            "source_crop_hash": str(prediction.get("source_crop_hash") or ""),
+            "square_alternatives_checked": bool(prediction.get("squares"))
+            and all(bool(square.get("alternatives")) for square in prediction.get("squares") or []),
+        },
         "accepted_fen_changed": 0,
     }
 
@@ -11343,6 +13030,13 @@ def _fen_model_card(out_dir: Path, dataset_path: Path, model_path: Path, eval_pa
             "status": eval_payload.get("status"),
             "sample_count": eval_payload.get("sample_count"),
             "square_accuracy": eval_payload.get("square_accuracy"),
+            "occupied_square_accuracy": eval_payload.get("occupied_square_accuracy"),
+            "empty_square_accuracy": eval_payload.get("empty_square_accuracy"),
+            "board_count": eval_payload.get("board_count"),
+            "exact_board_count": eval_payload.get("exact_board_count"),
+            "exact_board_accuracy": eval_payload.get("exact_board_accuracy"),
+            "holdout_exact_board_accuracy": eval_payload.get("holdout_exact_board_accuracy"),
+            "per_split": eval_payload.get("per_split") or {},
         },
         "git_commit": _current_git_commit(),
         "policy": "Model card links the local model to dataset evidence and validation status.",
@@ -11354,6 +13048,14 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     for row in rows:
         value = str(row.get(key) or "")
         counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _count_values(values: Iterable[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = str(value or "")
+        counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
 
 

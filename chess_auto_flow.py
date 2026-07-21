@@ -154,6 +154,8 @@ def run_auto_chess_process(
     chess_fen_recognition_max_diagrams: str | int = "all",
     diagram_page_ranges: str = "",
     glyph_mapping_file: str | Path | None = None,
+    fen_labels_path: str | Path | None = None,
+    fen_model_path: str | Path | None = None,
     resume: bool = False,
 ) -> dict[str, Any]:
     """Run the front-door chess flow and map existing chess-study outputs.
@@ -171,6 +173,7 @@ def run_auto_chess_process(
         build_chess_quality_dashboard,
         evaluate_fen_ensemble,
         preprocess_chess_board_crops,
+        recover_fen_label_crops,
         recognize_fen_local,
         render_semantic_source_reader,
         run_chess_study_export,
@@ -198,11 +201,45 @@ def run_auto_chess_process(
             ),
             stages,
         )
+        runtime_fen_labels: Path | None = None
+        if fen_labels_path and fen_model_path:
+            board_manifest_path = out / "chess_diagrams.json"
+            if not board_manifest_path.is_file():
+                board_manifest_path = out / "report" / "chess_diagrams.json"
+            recovery_payload = _run_auto_stage(
+                "recover_fen_label_crops",
+                lambda: recover_fen_label_crops(
+                    fen_labels_path,
+                    board_manifest_path=board_manifest_path,
+                    model_path=fen_model_path,
+                    out_dir=out,
+                ),
+                stages,
+            )
+            recovered_value = str(recovery_payload.get("recovered_labels_path") or "").strip()
+            if int(recovery_payload.get("accepted_mapping_count") or 0) > 0 and recovered_value:
+                runtime_fen_labels = Path(recovered_value)
         _run_auto_stage("preprocess_chess_board_crops", lambda: preprocess_chess_board_crops(out), stages)
-        _run_auto_stage("recognize_fen_local", lambda: recognize_fen_local(out), stages)
-        _run_auto_stage("evaluate_fen_ensemble", lambda: evaluate_fen_ensemble(out), stages)
+        _run_auto_stage(
+            "recognize_fen_local",
+            lambda: recognize_fen_local(
+                out,
+                model_path=fen_model_path,
+                labels_path=runtime_fen_labels,
+            ),
+            stages,
+        )
+        _run_auto_stage(
+            "evaluate_fen_ensemble",
+            lambda: evaluate_fen_ensemble(out, labels_path=runtime_fen_labels),
+            stages,
+        )
         _run_auto_stage("generate_fen_template_candidates", lambda: build_runtime_template_candidates(out), stages)
-        _run_auto_stage("generate_fen_beam_candidates", lambda: build_fen_beam_candidates(out), stages)
+        _run_auto_stage(
+            "generate_fen_beam_candidates",
+            lambda: build_fen_beam_candidates(out, verified_labels_path=runtime_fen_labels),
+            stages,
+        )
         _run_auto_stage(
             "build_auto_chess_flow_artifacts_before_apply",
             lambda: build_auto_chess_flow_artifacts(
@@ -316,6 +353,8 @@ def build_auto_chess_flow_artifacts(
     book = _read_optional_json(out / "data" / "book.json")
     diagrams_payload = _read_optional_json(out / "data" / "diagrams.json")
     export_diagrams_payload = _read_optional_json(out / "chess_diagrams.json")
+    if not export_diagrams_payload:
+        export_diagrams_payload = _read_optional_json(out / "report" / "chess_diagrams.json")
     two_crop_checkpoint = _read_optional_json(
         out / "reports" / "chess_fen" / "two_crop_progress.json"
     )
@@ -704,6 +743,7 @@ def is_auto_chess_output(path: str | Path) -> bool:
         (candidate / "auto_chess_flow.json").is_file()
         or (candidate / "data" / "book.json").is_file()
         or (candidate / "reports" / "chess_quality_dashboard.json").is_file()
+        or (candidate / "report" / "chess_diagrams.json").is_file()
     )
 
 
@@ -1106,6 +1146,7 @@ def _fen_raw_candidates(
                         "fen": fen,
                         "authoritative": False,
                         **_side_marker_fields({**diagram, **deterministic_row}),
+                        **_verified_fen_evidence_fields(deterministic_row),
                         "confidence": _first_float(
                             deterministic_row.get("confidence"),
                             deterministic_row.get("global_confidence"),
@@ -1113,9 +1154,12 @@ def _fen_raw_candidates(
                         ),
                         "warnings": _string_list(deterministic_row.get("warnings")),
                         "method": "deterministic_ensemble",
-                        "squares": deterministic_row.get("squares") or [],
+                        "squares": deterministic_row.get("squares") or (model_row or {}).get("squares") or [],
                         "evidence": evidence,
-                        "source_crop_hash": deterministic_row.get("source_crop_hash") or evidence.get("source_crop_hash") or "",
+                        "source_crop_hash": deterministic_row.get("source_crop_hash")
+                        or evidence.get("source_crop_hash")
+                        or (model_row or {}).get("source_crop_hash")
+                        or "",
                         "score_margin_to_second_candidate": deterministic_row.get("score_margin_to_second_candidate")
                         or evidence.get("score_margin_to_second_candidate"),
                         "changed_squares": deterministic_row.get("changed_squares") or [],
@@ -1190,6 +1234,20 @@ def _side_marker_fields(source: dict[str, Any]) -> dict[str, Any]:
         "marker_bbox",
         "marker_crop_bbox",
         "selected_marker_zone",
+    )
+    return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
+
+
+def _verified_fen_evidence_fields(source: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "verified_fen",
+        "verified_fen_evidence_trusted",
+        "verified_fen_evidence_source",
+        "verified_label_crop_sha256",
+        "verified_label_provenance",
+        "mapping_square_match",
+        "mapping_occupied_match",
+        "mapping_margin",
     )
     return {key: source.get(key) for key in keys if source.get(key) not in (None, "")}
 
@@ -1892,7 +1950,7 @@ def _extract_diagrams(
     export_diagram_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if isinstance(diagrams_payload.get("diagrams"), list) and diagrams_payload.get("diagrams"):
-        return list(diagrams_payload.get("diagrams") or [])
+        return [_normalize_diagram_row(row) for row in diagrams_payload.get("diagrams") or [] if isinstance(row, dict)]
     diagrams: list[dict[str, Any]] = []
     for page in book.get("pages") or []:
         page_number = int(page.get("page") or 0)
@@ -1900,12 +1958,32 @@ def _extract_diagrams(
             if isinstance(diagram, dict):
                 diagrams.append({**diagram, "page": int(diagram.get("page") or page_number)})
     if diagrams:
-        return diagrams
+        return [_normalize_diagram_row(row) for row in diagrams]
     if isinstance((export_diagrams_payload or {}).get("diagrams"), list):
-        return list((export_diagrams_payload or {}).get("diagrams") or [])
+        return [
+            _normalize_diagram_row(row)
+            for row in (export_diagrams_payload or {}).get("diagrams") or []
+            if isinstance(row, dict)
+        ]
+    if isinstance((export_diagrams_payload or {}).get("records"), list):
+        return [
+            _normalize_diagram_row(row)
+            for row in (export_diagrams_payload or {}).get("records") or []
+            if isinstance(row, dict)
+        ]
     if export_diagram_rows:
-        return list(export_diagram_rows)
+        return [_normalize_diagram_row(row) for row in export_diagram_rows]
     return diagrams
+
+
+def _normalize_diagram_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    normalized["diagram_id"] = str(row.get("diagram_id") or row.get("id") or "")
+    page = row.get("page") or row.get("page_number")
+    if not page and row.get("page_index") is not None:
+        page = int(row.get("page_index") or 0) + 1
+    normalized["page"] = int(page or 0)
+    return normalized
 
 
 def _accepted_fen_by_source(diagrams: list[dict[str, Any]], fen_payload: dict[str, Any]) -> dict[str, str]:

@@ -182,6 +182,56 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(job["status"], "ready")
         self.assertIn("chess_fen_review", job["artifacts"])
 
+    def test_reader_position_uses_accepted_full_fen_side_without_marker(self) -> None:
+        position = app_module._diagram_record_to_reader_position(
+            {
+                "id": "diagram-1",
+                "status": "accepted",
+                "full_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                "full_fen_status": "FEN_MACHINE_ACCEPTED",
+                "full_fen_allowed": True,
+                "manual_review_required": False,
+                "side_marker_status": "inferred_only",
+            },
+            1,
+        )
+
+        self.assertEqual(position["status"], "accepted")
+        self.assertEqual(position["side_to_move"], "w")
+        self.assertEqual(position["fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+
+    def test_library_refreshes_chess_reader_metrics_from_semantic_manifest(self) -> None:
+        job_id = "library-reader-refresh"
+        source_html = self._register_chess_html_job(job_id, "<!doctype html><html><body>source</body></html>")
+        semantic_dir = source_html.parents[1] / "semantic_chess_html"
+        (semantic_dir / "data").mkdir(parents=True)
+        (semantic_dir / "reports").mkdir(parents=True)
+        (semantic_dir / "index.html").write_text(
+            '<!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader"></body></html>',
+            encoding="utf-8",
+        )
+        manifest = {
+            "artifact_type": "final_pdf_two_crop_reader",
+            "pipeline_mode": "pdf_two_crop_reader",
+            "diagrams_total": 4,
+            "fen_accepted": 1,
+            "side_unknown_count": 3,
+        }
+        (semantic_dir / "data" / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (semantic_dir / "reports" / "final_reader_health_gate.json").write_text(
+            json.dumps({**manifest, "decision": "pass", "status": "PASS", "blockers": []}),
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/convert/library")
+
+        self.assertEqual(response.status_code, 200)
+        item = next(row for row in response.get_json()["items"] if row["job_id"] == job_id)
+        reader = item["artifacts"]["chess_pgn_html"]
+        self.assertEqual(reader["fen_accepted"], 1)
+        self.assertEqual(reader["side_unknown_count"], 3)
+        self.assertEqual(reader["diagrams_total"], 4)
+
     def _register_chess_pgn_artifact(self, job_id: str, pgn_text: str) -> Path:
         job_root = self._artifact_root(job_id)
         report_dir = job_root / "report"

@@ -548,6 +548,9 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         },
         "policy": "runtime_machine_acceptance_only",
     }
+    verified_fen_evidence = _verified_fen_evidence(candidate, fen, normalized_source=normalized_source)
+    trusted_verified_fen = bool(verified_fen_evidence.get("trusted"))
+    trace["verified_fen_evidence"] = verified_fen_evidence
 
     if not fen:
         blockers.append({"code": "fen_candidate_missing", "message": "No FEN candidate was supplied."})
@@ -634,7 +637,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
     trace["crop_quality"]["marker_crop_quality"] = marker_crop_quality or "missing"
     trace["crop_quality"]["marker_crop_fail_reason"] = marker_crop_fail_reason
     trace["crop_quality"]["marker_crop_quality_gate_reasons"] = marker_crop_gate_reasons
-    if board_crop_quality != "pass":
+    if board_crop_quality != "pass" and not trusted_verified_fen:
         blockers.append(
             {
                 "code": "full_fen_blocked_by_board_crop_quality",
@@ -643,7 +646,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "board_crop_fail_reason": sorted(set(board_crop_fail_reason + board_crop_gate_reasons)),
             }
         )
-    if side_status == "inferred" or side_evidence == "inferred":
+    if (side_status == "inferred" or side_evidence == "inferred") and not trusted_verified_fen:
         blockers.append(
             {
                 "code": "side_to_move_inferred",
@@ -662,7 +665,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "manual_review_reason": manual_review_reason,
             }
         )
-    if side_marker_status in MACHINE_BLOCKING_SIDE_MARKER_STATUSES:
+    if side_marker_status in MACHINE_BLOCKING_SIDE_MARKER_STATUSES and not trusted_verified_fen:
         blockers.append(
             {
                 "code": side_marker_status,
@@ -677,7 +680,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                     "side_marker_status": side_marker_status,
                 }
             )
-    if side_marker_status not in MACHINE_TRUSTED_SIDE_MARKER_STATUSES:
+    if side_marker_status not in MACHINE_TRUSTED_SIDE_MARKER_STATUSES and not trusted_verified_fen:
         blockers.append(
             {
                 "code": "full_fen_blocked_by_marker",
@@ -685,7 +688,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "side_marker_status": side_marker_status or "marker_missing",
             }
         )
-    if marker_crop_quality != "pass":
+    if marker_crop_quality != "pass" and not trusted_verified_fen:
         blockers.append(
             {
                 "code": "full_fen_blocked_by_marker_crop_quality",
@@ -694,7 +697,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "marker_crop_fail_reason": sorted(set(marker_crop_fail_reason + marker_crop_gate_reasons)),
             }
         )
-    if side_marker_status == "trusted_marker" and marker_crop_quality != "pass":
+    if side_marker_status == "trusted_marker" and marker_crop_quality != "pass" and not trusted_verified_fen:
         blockers.append(
             {
                 "code": "marker_crop_quality_failed",
@@ -703,7 +706,7 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
                 "marker_crop_fail_reason": marker_crop_fail_reason,
             }
         )
-    if side_marker_status == "trusted_marker":
+    if side_marker_status == "trusted_marker" and not trusted_verified_fen:
         if not marker_bbox_valid:
             blockers.append(
                 {
@@ -804,6 +807,53 @@ def machine_accept_fen(candidate: dict[str, Any], context: dict[str, Any] | None
         "acceptance_blockers": blockers,
         "acceptance_trace": trace,
         "acceptance_policy": "runtime_machine_acceptance_v1",
+    }
+
+
+def _verified_fen_evidence(
+    candidate: dict[str, Any],
+    fen: str,
+    *,
+    normalized_source: str,
+) -> dict[str, Any]:
+    expected_fen = str(candidate.get("verified_fen") or "").strip()
+    evidence_source = str(candidate.get("verified_fen_evidence_source") or "").strip().lower()
+    label_provenance = str(candidate.get("verified_label_provenance") or "").strip()
+    source_crop_hash = str(candidate.get("source_crop_hash") or "").strip().lower()
+    label_crop_hash = str(candidate.get("verified_label_crop_sha256") or "").strip().lower()
+    candidate_validation = validate_fen_detailed(fen)
+    expected_validation = validate_fen_detailed(expected_fen)
+    crop_hash_matches = (
+        len(source_crop_hash) == 64
+        and len(label_crop_hash) == 64
+        and all(char in "0123456789abcdef" for char in source_crop_hash + label_crop_hash)
+        and source_crop_hash == label_crop_hash
+    )
+    fen_matches = bool(
+        candidate_validation.normalized_fen
+        and expected_validation.normalized_fen
+        and candidate_validation.normalized_fen == expected_validation.normalized_fen
+    )
+    reasons: list[str] = []
+    if not _truthy_value(candidate.get("verified_fen_evidence_trusted")):
+        reasons.append("trusted_flag_missing")
+    if normalized_source != "deterministic-ensemble":
+        reasons.append("source_not_deterministic_ensemble")
+    if evidence_source != "source_bound_human_fen":
+        reasons.append("evidence_source_not_allowed")
+    if not label_provenance:
+        reasons.append("label_provenance_missing")
+    if not crop_hash_matches:
+        reasons.append("source_crop_hash_mismatch")
+    if not fen_matches:
+        reasons.append("verified_fen_mismatch")
+    return {
+        "trusted": not reasons,
+        "source": evidence_source,
+        "label_provenance": label_provenance,
+        "crop_hash_matches": crop_hash_matches,
+        "fen_matches": fen_matches,
+        "reasons": reasons,
     }
 
 

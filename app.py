@@ -772,7 +772,11 @@ def _app_trusted_marker_status(value: object) -> bool:
 
 
 def _side_to_move_from_diagram_record(record: Mapping[str, object], *, trusted_marker: bool) -> str:
-    if not trusted_marker:
+    trusted_full_fen = (
+        record.get("full_fen_allowed") is True
+        or _full_fen_status_accepted(record.get("full_fen_status"))
+    )
+    if not trusted_marker and not trusted_full_fen:
         return "unknown"
     raw = str(record.get("side_to_move") or record.get("side_to_move_code") or "").strip().lower()
     if raw in {"w", "white"}:
@@ -3868,6 +3872,19 @@ def _visible_conversion_jobs_snapshot() -> dict:
     }
 
 
+def _refresh_library_chess_artifacts(jobs: Mapping[str, Mapping[str, object]]) -> dict[str, dict]:
+    refreshed: dict[str, dict] = {}
+    for job_id, job in jobs.items():
+        current = dict(job)
+        current["artifacts"] = {
+            key: dict(value) if isinstance(value, Mapping) else value
+            for key, value in dict(job.get("artifacts", {}) or {}).items()
+        }
+        _enrich_job_chess_delivery_artifacts(str(job_id), current)
+        refreshed[str(job_id)] = current
+    return refreshed
+
+
 def _input_pdf_artifact(job: dict) -> dict:
     if str(job.get("source_type", "") or "").strip().lower() != "pdf":
         return {}
@@ -3959,7 +3976,7 @@ def _build_library_payload(*, default_include_text: bool = False) -> dict:
     _cleanup_expired_conversion_jobs()
     filters = _resolve_library_filters(default_include_text=default_include_text)
     return build_library_index(
-        _visible_conversion_jobs_snapshot(),
+        _refresh_library_chess_artifacts(_visible_conversion_jobs_snapshot()),
         quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
         output_size_resolver=lambda job: _read_output_size_bytes(dict(job)),
         filters=filters,
@@ -3977,14 +3994,14 @@ def _build_scoped_library_payload(
         payload["authenticated"] = False
         return payload
     try:
-        jobs = {
+        jobs = _refresh_library_chess_artifacts({
             job["job_id"]: job
             for job in _supabase_library_client().list_user_jobs(
                 user_id=auth_context.user_id,
                 limit=_resolve_library_filters(default_include_text=default_include_text).limit,
             )
             if not _is_internal_library_job(dict(job))
-        }
+        })
         payload = build_library_index(
             jobs,
             quality_state_builder=lambda job_id, job: _build_job_quality_state(job_id, dict(job)),
@@ -6224,10 +6241,10 @@ def convert_fen_manual_review_progress(job_id: str):
         else:
             submitted = request.get_json(silent=True)
             if not isinstance(submitted, dict):
-                raise FenReviewStoreError("Prze?lij obiekt JSON z polem rows.")
+                raise FenReviewStoreError("Prześlij obiekt JSON z polem rows.")
             rows = submitted.get("rows")
             if not isinstance(rows, list):
-                raise FenReviewStoreError("Pole rows musi by? list? rekord?w.")
+                raise FenReviewStoreError("Pole rows musi być listą rekordów.")
             payload = save_fen_review_progress(
                 review_dir,
                 rows,
@@ -6244,7 +6261,7 @@ def convert_fen_manual_review_progress(job_id: str):
         )
     except OSError as exc:
         return _json_error(
-            f"Nie uda?o si? zapisa? post?pu oznaczania: {exc}",
+            f"Nie udało się zapisać postępu oznaczania: {exc}",
             error_code=ERROR_UPLOAD_FAILED,
             status_code=500,
             phase="fen_review",

@@ -4,6 +4,7 @@ import importlib
 import mimetypes
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -148,7 +149,7 @@ class LocalArtifactStorage:
         policy = retention or RetentionPolicy.for_kind(normalized_kind)
         artifact_path = self.root / safe_job_id / normalized_kind.value / safe_filename
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_bytes(data)
+        _atomic_write_bytes(artifact_path, data)
 
         return ArtifactRecord(
             provider=self.provider,
@@ -289,6 +290,44 @@ def build_artifact_storage(
         return R2ArtifactStorage(config)
     configured_local_root = _first_env(env, "KINDLEMASTER_ARTIFACT_ROOT")
     return LocalArtifactStorage(configured_local_root or local_root)
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_temp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temp_path = Path(raw_temp_path)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _fsync_directory(directory: Path) -> None:
+    flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
+    try:
+        descriptor = os.open(directory, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def _first_env(env: Mapping[str, str], *names: str) -> str:

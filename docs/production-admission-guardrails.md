@@ -52,9 +52,10 @@ KINDLEMASTER_MAX_IMAGE_PIXELS=100000000
 KINDLEMASTER_MIN_DISK_FREE_BYTES=2147483648
 KINDLEMASTER_MIN_DISK_FREE_RATIO=0.10
 KINDLEMASTER_RATE_LIMIT_SECRET=<optional-long-random-secret>
+KINDLEMASTER_TRUST_GUEST_CAPABILITY=0
 ```
 
-When no rate-limit secret is configured, production startup creates a 0600 capability file next to the durable SQLite database. Raw bearer tokens, guest capabilities, IP addresses, filenames and document content are not used as stored rate-limit keys.
+When no rate-limit secret is configured, production startup creates a 0600 capability file next to the durable SQLite database. Raw bearer tokens, guest capabilities, IP addresses, filenames and document content are not stored as limiter keys.
 
 ## Input validation
 
@@ -95,7 +96,9 @@ image_pixel_limit
 
 ## Anonymous identity boundary
 
-The preferred guest identifier is `X-KindleMaster-Guest-Capability` from #341. Until that ownership change is merged, the admission layer uses a pseudonymous HMAC fallback derived from request network metadata only for rate limiting. It must never authorize access to a job or artifact.
+The preferred guest identifier is the server-issued `X-KindleMaster-Guest-Capability` from #341. It is deliberately ignored while `KINDLEMASTER_TRUST_GUEST_CAPABILITY=0`, because an arbitrary client-supplied value would allow rate-limit rotation. Enable the flag only after #341 validates and binds the capability to the anonymous browser owner.
+
+Until then, unauthenticated requests share a pseudonymous HMAC key derived from the connection address. User-Agent changes and random invalid Bearer tokens do not create authenticated identities or fresh limiter buckets. This fallback is admission-only and must never authorize access to a job or artifact.
 
 ## Validation
 
@@ -106,4 +109,4 @@ python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Before public rollout, run a bounded staging abuse test covering burst starts, retries, polling floods, queue saturation, low disk, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.
+Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.

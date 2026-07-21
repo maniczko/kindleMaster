@@ -5,13 +5,14 @@ import types
 import unittest
 from pathlib import Path
 
-from flask import Flask, g
+from flask import Flask, g, jsonify
 
-from durable_job_queue import DurableJobDatabase, SQLiteConversionJobStore
+from durable_job_queue import DurableJobDatabase, DurableJobQueue, SQLiteConversionJobStore
 from production_api_policy import (
     install_async_only_conversion_policy,
     install_idempotent_retry_response_policy,
     install_migrated_sqlite_store,
+    install_queued_cancellation_policy,
 )
 from production_runtime import install_durable_submission, install_sqlite_job_store
 
@@ -44,6 +45,45 @@ class CanonicalJobStore:
 
 
 class ProductionRuntimeTests(unittest.TestCase):
+    def _cancellation_module(
+        self,
+        database: DurableJobDatabase,
+        queue: DurableJobQueue,
+        *,
+        job_id: str,
+        status: str,
+    ) -> FakeAppModule:
+        flask_app = Flask(f"cancellation-test-{job_id}")
+        module = FakeAppModule(app=flask_app)
+        install_sqlite_job_store(module, database=database)
+        module._CONVERSION_JOB_STORE.create(
+            {
+                "job_id": job_id,
+                "status": status,
+                "runtime_queue": {"provider": "sqlite-worker", "status": status},
+            }
+        )
+        module._resolve_request_auth_context = lambda: types.SimpleNamespace(
+            authenticated=False,
+            error="",
+        )
+        module._get_conversion_job_for_auth = (
+            lambda requested_job_id, _auth: module._CONVERSION_JOB_STORE.get(requested_job_id)
+        )
+        module._json_auth_error = lambda _auth: ({"error_code": "auth_error"}, 401)
+        module._json_error = lambda message, **kwargs: (
+            {
+                "error": message,
+                "error_code": kwargs["error_code"],
+                **dict(kwargs.get("extra") or {}),
+            },
+            kwargs["status_code"],
+        )
+        module._sync_job_to_cloud = lambda _job_id: None
+        module.apply_no_store_headers = lambda _headers: None
+        install_queued_cancellation_policy(module, queue)
+        return module
+
     def test_submission_enqueues_without_calling_original_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database = DurableJobDatabase(Path(temp_dir) / "runtime.sqlite3")
@@ -150,6 +190,46 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["job_id"], "canonical-job")
         self.assertEqual(payload["retry_of"], "source-job")
         self.assertTrue(payload["idempotent_replay"])
+
+    def test_queued_job_can_be_cancelled_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = DurableJobDatabase(Path(temp_dir) / "runtime.sqlite3")
+            queue = DurableJobQueue(database)
+            queue.enqueue(job_id="queued-job", payload={})
+            module = self._cancellation_module(
+                database,
+                queue,
+                job_id="queued-job",
+                status="queued",
+            )
+
+            response = module.app.test_client().post("/convert/cancel/queued-job")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["status"], "cancelled")
+            self.assertEqual(queue.get("queued-job").status, "cancelled")
+            self.assertEqual(module._CONVERSION_JOB_STORE.get("queued-job")["status"], "cancelled")
+
+    def test_active_job_cancellation_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = DurableJobDatabase(Path(temp_dir) / "runtime.sqlite3")
+            queue = DurableJobQueue(database)
+            queue.enqueue(job_id="active-job", payload={})
+            queue.claim(worker_id="worker-a", lease_seconds=30)
+            module = self._cancellation_module(
+                database,
+                queue,
+                job_id="active-job",
+                status="running",
+            )
+
+            response = module.app.test_client().post("/convert/cancel/active-job")
+            record = queue.get("active-job")
+
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.get_json()["error_code"], "active_cancellation_unsupported")
+            self.assertEqual(record.status, "leased")
+            self.assertFalse(record.cancellation_requested)
 
     def test_railway_uses_supervised_production_entrypoint(self) -> None:
         dockerfile = Path("Dockerfile.railway").read_text(encoding="utf-8")

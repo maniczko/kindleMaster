@@ -74,11 +74,38 @@ def install_async_only_conversion_policy(app_module: ModuleType) -> None:
     app.view_functions[endpoint] = async_only_conversion
 
 
+def install_worker_cloud_failure_sync(app_module: ModuleType) -> None:
+    """Sync terminal/retry worker state without retaining a browser access token."""
+
+    from production_runtime import DurableConversionWorker
+
+    original = DurableConversionWorker._record_worker_failure
+    if getattr(original, "_kindlemaster_cloud_failure_sync", False):
+        return
+
+    def wrapped_record_worker_failure(self, job_id: str, error: Exception, *, retryable: bool) -> None:
+        original(self, job_id, error, retryable=retryable)
+        try:
+            app_module._sync_job_to_cloud(job_id)
+        except Exception as sync_error:
+            logger = getattr(getattr(app_module, "app", None), "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "Durable worker could not synchronize failed job %s to cloud: %s",
+                    job_id,
+                    sync_error.__class__.__name__,
+                )
+
+    wrapped_record_worker_failure._kindlemaster_cloud_failure_sync = True
+    DurableConversionWorker._record_worker_failure = wrapped_record_worker_failure
+
+
 def install_migrated_production_runtime(app_module: ModuleType) -> tuple[DurableJobQueue, dict[str, int]]:
     legacy_jobs = capture_legacy_jobs(app_module)
     queue = install_production_runtime(app_module)
     migration = migrate_legacy_jobs(app_module, legacy_jobs)
     install_async_only_conversion_policy(app_module)
+    install_worker_cloud_failure_sync(app_module)
     return queue, migration
 
 
@@ -89,4 +116,6 @@ def install_migrated_sqlite_store(
 ) -> dict[str, int]:
     legacy_jobs = capture_legacy_jobs(app_module)
     install_sqlite_job_store(app_module, database=database)
-    return migrate_legacy_jobs(app_module, legacy_jobs)
+    migration = migrate_legacy_jobs(app_module, legacy_jobs)
+    install_worker_cloud_failure_sync(app_module)
+    return migration

@@ -189,6 +189,7 @@ def export_portable_fen_square_model(
         },
         "calibration": dict(bundle.get("calibration") or {}),
         "acceptance": dict(bundle.get("acceptance") or {}),
+        "decoding": dict(bundle.get("decoding") or source_manifest.get("decoding") or {}),
         "orientation": {
             "value": "white_bottom",
             "source": "fixed_edition_profile",
@@ -259,10 +260,11 @@ def predict_portable_fen_board(
     )
     scores = _portable_ovr_decision_function(model, scaled)
     probabilities = _softmax(scores / max(float(model["temperature"]), 1e-6))
-    indexes = probabilities.argmax(axis=1)
     classes = model["classes"]
-    predicted = classes[indexes]
-    confidences = probabilities[np.arange(len(indexes)), indexes]
+    predicted, confidences, decoding = _decode_king_constrained_predictions(
+        probabilities,
+        classes,
+    )
     placement = _runtime_placement(predicted.tolist())
     validation_fen = f"{placement} w - - 0 1"
     from chess_position_recognizer import validate_fen
@@ -270,12 +272,13 @@ def predict_portable_fen_board(
     valid, validation_warnings = validate_fen(validation_fen)
     threshold = float(model["acceptance_threshold"])
     minimum_confidence = float(confidences.min()) if len(confidences) else 0.0
-    sorted_probabilities = np.sort(probabilities, axis=1)
-    runner_up_margins = (
-        sorted_probabilities[:, -1] - sorted_probabilities[:, -2]
-        if sorted_probabilities.shape[1] >= 2
-        else sorted_probabilities[:, -1]
+    assigned_indexes = np.asarray(
+        [int(np.where(classes == label)[0][0]) for label in predicted],
+        dtype=np.int64,
     )
+    alternatives_masked = probabilities.copy()
+    alternatives_masked[np.arange(len(assigned_indexes)), assigned_indexes] = -1.0
+    runner_up_margins = confidences - alternatives_masked.max(axis=1)
     minimum_runner_up_margin = (
         float(runner_up_margins.min()) if len(runner_up_margins) else 0.0
     )
@@ -315,6 +318,7 @@ def predict_portable_fen_board(
         "confidence_policy": "minimum_square_confidence",
         "acceptance_threshold": round(threshold, 6),
         "minimum_runner_up_margin": round(minimum_runner_up_margin, 6),
+        "decoding": decoding,
         "candidate_accepted": candidate_accepted,
         "publishable": bool(candidate_accepted and normalized_mode == "assist"),
         "blockers": blockers,
@@ -395,6 +399,7 @@ def load_portable_fen_square_model(model_path: str | Path) -> dict[str, Any]:
             "artifact_sha256": expected_hash,
             "calibration": dict(manifest.get("calibration") or {}),
             "acceptance": dict(manifest.get("acceptance") or {}),
+            "decoding": dict(manifest.get("decoding") or {}),
             "orientation": dict(manifest.get("orientation") or {}),
             "marker_calibration": dict(manifest.get("marker_calibration") or {}),
             "training_data": dict(manifest.get("training_data") or {}),
@@ -668,6 +673,7 @@ def train_fen_square_candidate(
         classifier,
         val_scores,
         temperature=temperature,
+        diagram_ids=diagram_ids[split_masks["val"]],
     )
     validation = _classification_metrics(
         labels[split_masks["val"]],
@@ -684,6 +690,7 @@ def train_fen_square_candidate(
         classifier,
         holdout_scores,
         temperature=temperature,
+        diagram_ids=diagram_ids[split_masks["holdout"]],
     )
     holdout = _classification_metrics(
         labels[split_masks["holdout"]],
@@ -720,6 +727,10 @@ def train_fen_square_candidate(
             "threshold": acceptance_threshold,
             "policy": "Abstain unless every square clears the validation-calibrated zero-false-board threshold.",
         },
+        "decoding": {
+            "policy": "exactly_one_king_per_color",
+            "confidence": "assigned_class_probability",
+        },
     }
     dependencies["joblib"].dump(bundle, artifact_path, compress=3)
 
@@ -746,6 +757,7 @@ def train_fen_square_candidate(
         "split_integrity": integrity,
         "calibration": bundle["calibration"],
         "acceptance": bundle["acceptance"],
+        "decoding": bundle["decoding"],
         "baseline": baseline,
         "validation": _without_boards(validation),
         "holdout": _without_boards(holdout),
@@ -778,6 +790,7 @@ def train_fen_square_candidate(
         "split_integrity": integrity,
         "calibration": bundle["calibration"],
         "acceptance": bundle["acceptance"],
+        "decoding": bundle["decoding"],
         "baseline": baseline,
         "validation": _without_boards(validation),
         "holdout": _without_boards(holdout),
@@ -838,6 +851,7 @@ def evaluate_fen_square_candidate(
         bundle["classifier"],
         scores,
         temperature=temperature,
+        diagram_ids=diagram_ids[mask],
     )
     metrics = _classification_metrics(labels[mask], predictions, confidences, diagram_ids[mask])
     stored_threshold = (bundle.get("acceptance") or {}).get("threshold")
@@ -989,11 +1003,94 @@ def _predictions_and_confidences(
     scores: np.ndarray,
     *,
     temperature: float,
+    diagram_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     probabilities = _softmax(scores / max(float(temperature), 1e-6))
     indexes = probabilities.argmax(axis=1)
     classes = np.asarray([str(value) for value in classifier.classes_])
-    return classes[indexes], probabilities[np.arange(len(indexes)), indexes]
+    predicted = classes[indexes]
+    confidences = probabilities[np.arange(len(indexes)), indexes]
+    if diagram_ids is None:
+        return predicted, confidences
+
+    normalized_ids = np.asarray([str(value) for value in diagram_ids])
+    for diagram_id in sorted(set(normalized_ids.tolist())):
+        board_indexes = np.flatnonzero(normalized_ids == diagram_id)
+        if len(board_indexes) != 64:
+            continue
+        board_predictions, board_confidences, _decoding = _decode_king_constrained_predictions(
+            probabilities[board_indexes],
+            classes,
+        )
+        predicted[board_indexes] = board_predictions
+        confidences[board_indexes] = board_confidences
+    return predicted, confidences
+
+
+def _decode_king_constrained_predictions(
+    probabilities: np.ndarray,
+    classes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Return the highest-probability board with exactly one white and black king."""
+    class_values = np.asarray([str(value) for value in classes])
+    raw_indexes = probabilities.argmax(axis=1)
+    raw_predictions = class_values[raw_indexes]
+    raw_confidences = probabilities[np.arange(len(raw_indexes)), raw_indexes]
+    default = {
+        "policy": "raw_argmax",
+        "constraint_applied": False,
+        "changed_square_count": 0,
+    }
+    if (
+        probabilities.shape[0] != 64
+        or probabilities.shape[1] != len(class_values)
+        or "K" not in class_values
+        or "k" not in class_values
+    ):
+        return raw_predictions, raw_confidences, default
+
+    white_king_index = int(np.where(class_values == "K")[0][0])
+    black_king_index = int(np.where(class_values == "k")[0][0])
+    non_king_indexes = np.asarray(
+        [index for index, label in enumerate(class_values) if label not in {"K", "k"}],
+        dtype=np.int64,
+    )
+    best_non_king = non_king_indexes[
+        probabilities[:, non_king_indexes].argmax(axis=1)
+    ]
+    clipped = np.clip(probabilities, 1e-12, 1.0)
+    base_scores = np.log(clipped[np.arange(64), best_non_king])
+    white_deltas = np.log(clipped[:, white_king_index]) - base_scores
+    black_deltas = np.log(clipped[:, black_king_index]) - base_scores
+
+    best_score = float("-inf")
+    best_white_square = 0
+    best_black_square = 1
+    for white_square in range(64):
+        pair_scores = white_deltas[white_square] + black_deltas
+        pair_scores = pair_scores.copy()
+        pair_scores[white_square] = float("-inf")
+        black_square = int(pair_scores.argmax())
+        score = float(pair_scores[black_square])
+        if score > best_score:
+            best_score = score
+            best_white_square = white_square
+            best_black_square = black_square
+
+    decoded_indexes = best_non_king.copy()
+    decoded_indexes[best_white_square] = white_king_index
+    decoded_indexes[best_black_square] = black_king_index
+    decoded_predictions = class_values[decoded_indexes]
+    decoded_confidences = probabilities[np.arange(64), decoded_indexes]
+    changed_count = int((decoded_indexes != raw_indexes).sum())
+    return decoded_predictions, decoded_confidences, {
+        "policy": "exactly_one_king_per_color",
+        "constraint_applied": bool(changed_count),
+        "changed_square_count": changed_count,
+        "white_king_square_index": best_white_square,
+        "black_king_square_index": best_black_square,
+        "confidence": "assigned_class_probability",
+    }
 
 
 def _classification_metrics(

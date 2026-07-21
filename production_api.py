@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import app as app_module
 from production_api_policy import install_migrated_production_runtime
@@ -11,34 +12,40 @@ from production_security_events import install_admission_security_logging
 from production_upload_limits import install_upload_limit_policy
 
 
-def configure_production_api() -> None:
+def configure_production_api(module: Any = app_module) -> dict[str, int]:
     if not durable_runtime_enabled():
         raise RuntimeError(
             "production_api.py requires KINDLEMASTER_DURABLE_RUNTIME=1; "
             "use `python kindlemaster.py serve` for local thread mode."
         )
-    queue, migration = install_migrated_production_runtime(app_module)
+    queue, migration = install_migrated_production_runtime(module)
     guardrail_policy = ProductionGuardrailPolicy.from_env()
     memory_policy = MemoryAdmissionPolicy.from_env()
     request_limit = install_upload_limit_policy(
-        app_module,
+        module,
         max_upload_bytes=guardrail_policy.max_upload_bytes,
     )
-    install_memory_admission_guard(app_module, policy=memory_policy)
+    install_memory_admission_guard(module, policy=memory_policy)
     install_production_guardrails(
-        app_module,
-        database=app_module._DURABLE_JOB_DATABASE,
+        module,
+        database=module._DURABLE_JOB_DATABASE,
         queue=queue,
         policy=guardrail_policy,
     )
-    install_admission_security_logging(app_module)
-    app_module.app.logger.info(
+    install_admission_security_logging(module)
+    module.app.logger.info(
         "Durable API initialized: migrated=%s preserved=%s failed=%s max_request_bytes=%s",
         migration["migrated"],
         migration["preserved"],
         migration["failed"],
         request_limit,
     )
+    return {
+        "migrated": int(migration["migrated"]),
+        "preserved": int(migration["preserved"]),
+        "failed": int(migration["failed"]),
+        "max_request_bytes": int(request_limit),
+    }
 
 
 def main() -> int:

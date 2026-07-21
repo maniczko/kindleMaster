@@ -13,6 +13,19 @@ feature schema, validation-only temperature, and validation-only board
 acceptance threshold are verified from the adjacent manifest before inference.
 A missing, malformed, or hash-mismatched model fails closed to review.
 
+## Board Decoding
+
+Square probabilities are decoded jointly under the invariant that a legal
+position contains exactly one white king and one black king. The decoder picks
+the maximum-probability board satisfying that invariant and reports the
+assigned-class probability for every square. If a runner-up king class is
+selected, its lower probability is retained, so the correction cannot inflate
+board confidence or bypass the calibrated abstention gate.
+
+The runtime response records the policy and changed-square count in
+`decoding`. All remaining legality checks and model-template conflict gates
+still run after decoding.
+
 ## Runtime Modes
 
 - `off`: exact rollback. Template and marker behavior is unchanged and the

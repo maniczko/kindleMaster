@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image, ImageDraw
+
+from chess_fen_square_model import _decode_king_constrained_predictions
 
 from chess_study_export import (
     build_fen_square_dataset,
@@ -66,6 +69,41 @@ def _write_source_book(out: Path, crop_rel: str) -> None:
 
 
 class ChessFenModelPipelineTests(unittest.TestCase):
+    def test_king_constrained_decoder_recovers_runner_up_white_king(self) -> None:
+        classes = np.asarray(["B", "K", "N", "P", "Q", "R", "b", "empty", "k", "n", "p", "q", "r"])
+        probabilities = np.full((64, len(classes)), 0.001, dtype=np.float64)
+        probabilities[:, 7] = 0.98
+        probabilities[4, 5] = 0.55
+        probabilities[4, 1] = 0.44
+        probabilities[60, 8] = 0.99
+
+        predicted, confidences, decoding = _decode_king_constrained_predictions(
+            probabilities,
+            classes,
+        )
+
+        self.assertEqual(list(predicted).count("K"), 1)
+        self.assertEqual(list(predicted).count("k"), 1)
+        self.assertEqual(predicted[4], "K")
+        self.assertAlmostEqual(confidences[4], 0.44)
+        self.assertTrue(decoding["constraint_applied"])
+
+    def test_king_constrained_decoder_preserves_legal_argmax_board(self) -> None:
+        classes = np.asarray(["B", "K", "N", "P", "Q", "R", "b", "empty", "k", "n", "p", "q", "r"])
+        probabilities = np.full((64, len(classes)), 0.001, dtype=np.float64)
+        probabilities[:, 7] = 0.98
+        probabilities[4, 8] = 0.99
+        probabilities[60, 1] = 0.99
+
+        predicted, _confidences, decoding = _decode_king_constrained_predictions(
+            probabilities,
+            classes,
+        )
+
+        self.assertEqual(predicted[4], "k")
+        self.assertEqual(predicted[60], "K")
+        self.assertFalse(decoding["constraint_applied"])
+
     def test_preprocess_boards_writes_evidence_without_accepting_fen(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir) / "out"

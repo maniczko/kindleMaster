@@ -261,7 +261,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     button,input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:10px}button{min-height:44px;padding:.66rem .9rem;color:var(--ink);background:#fff;font-weight:800;cursor:pointer}button:hover{border-color:var(--forest)}button.primary{color:#fff;border-color:var(--forest);background:var(--forest)}button.primary:hover{background:var(--forest-dark)}button.secondary{background:#f8f5ed}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .shell{width:min(1560px,calc(100% - 32px));margin:0 auto;padding:30px 0 72px}.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,440px);gap:28px;align-items:end;margin-bottom:20px}.eyebrow{color:var(--brick);font-size:.76rem;font-weight:900;letter-spacing:.11em;text-transform:uppercase}h1,h2,h3{margin:0;font-family:Georgia,"Times New Roman",serif}h1{max-width:900px;margin-top:7px;font-size:clamp(2.2rem,4.5vw,4.1rem);line-height:.98;letter-spacing:-.035em}.hero p{max-width:850px;margin:15px 0 0;color:var(--muted);font-size:1.02rem}.source{padding:13px 15px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.78);color:var(--muted);font-family:"Cascadia Mono",Consolas,monospace;font-size:.74rem;overflow-wrap:anywhere}
     .guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}.guide-step{min-height:94px;padding:14px 15px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.82)}.guide-step b{display:block;margin-bottom:4px;font-family:Georgia,serif}.guide-step span{color:var(--muted);font-size:.84rem}
-    .control-deck{position:sticky;top:10px;z-index:10;display:grid;gap:10px;margin-bottom:16px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.95);box-shadow:var(--shadow);backdrop-filter:blur(14px)}.metrics{display:grid;grid-template-columns:repeat(5,minmax(104px,1fr));gap:8px}.metric{min-height:62px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}.metric strong{display:block;font-family:Georgia,serif;font-size:1.35rem;line-height:1.1}.metric span{display:block;margin-top:3px;color:var(--muted);font-size:.74rem}.controls{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(2,minmax(150px,.7fr)) minmax(170px,.8fr) auto;gap:8px;align-items:center}.controls input,.controls select{width:100%;min-height:44px;padding:0 11px;background:#fff}.toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.toolbar-actions button{white-space:nowrap}.save-state{display:flex;gap:8px;align-items:center;min-height:32px;padding:5px 9px;border-radius:9px;background:#f1eee6;color:var(--muted);font-size:.73rem;font-weight:800}.save-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber)}.save-state[data-state="saved"]::before{background:var(--forest)}.save-state[data-state="saving"]::before{background:var(--focus);animation:pulse 1s infinite}.save-state[data-state="error"]{color:var(--red)}.save-state[data-state="error"]::before{background:var(--red)}@keyframes pulse{50%{opacity:.35}}
+    .control-deck{position:sticky;top:10px;z-index:10;display:grid;gap:10px;margin-bottom:16px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.95);box-shadow:var(--shadow);backdrop-filter:blur(14px)}.metrics{display:grid;grid-template-columns:repeat(5,minmax(104px,1fr));gap:8px}.metric{min-height:62px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}.metric strong{display:block;font-family:Georgia,serif;font-size:1.35rem;line-height:1.1}.metric span{display:block;margin-top:3px;color:var(--muted);font-size:.74rem}.controls{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(2,minmax(150px,.7fr)) minmax(170px,.8fr) auto;gap:8px;align-items:center}.controls input,.controls select{width:100%;min-height:44px;padding:0 11px;background:#fff}.toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.toolbar-actions button{white-space:nowrap}.save-state{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;min-height:32px;padding:5px 9px;border-radius:9px;background:#f1eee6;color:var(--muted);font-size:.73rem;font-weight:800}.save-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber)}.save-state[data-state="saved"]::before{background:var(--forest)}.save-state[data-state="saving"]::before{background:var(--focus);animation:pulse 1s infinite}.save-state[data-state="auth"]{color:#6d4b1c;background:#fff7e8}.save-state[data-state="error"]{color:var(--red)}.save-state[data-state="error"]::before{background:var(--red)}.auth-link{color:var(--forest-dark);text-decoration:underline;text-underline-offset:2px}.auth-link[hidden]{display:none}@keyframes pulse{50%{opacity:.35}}
     .review-grid{display:grid;gap:18px}.review-card{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper);box-shadow:0 8px 24px rgba(58,48,32,.06)}.review-card[hidden]{display:none}.review-card[data-state="verified"]{border-color:#6c9e83;box-shadow:inset 4px 0 var(--forest),0 8px 24px rgba(58,48,32,.06)}.review-card[data-state="invalid"]{border-color:#d68c84;box-shadow:inset 4px 0 var(--red),0 8px 24px rgba(58,48,32,.06)}.card-head{display:flex;justify-content:space-between;gap:14px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}.card-head h2{font-size:1.08rem;line-height:1.2}.meta{margin-top:4px;color:var(--muted);font-size:.78rem}.badges{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-content:flex-start}.badge{padding:4px 8px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font-size:.7rem;font-weight:900;white-space:nowrap}.badge.conflict{color:var(--red);border-color:#d99a93;background:#fff1ef}
     figure{margin:0}.media-grid{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(360px,.88fr);gap:14px;padding:15px;background:linear-gradient(135deg,#ded7ca,#eee8dc)}.board-panel,.evidence-panel{min-width:0}.evidence-panel{display:grid;gap:11px}.marker-evidence-grid{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.28fr);gap:10px}.crop-figure{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:7px}.crop-figure h3{font-size:.9rem}.crop-figure img{display:block;width:100%;object-fit:contain;border:1px solid var(--line-strong);border-radius:11px;background:#fff}.board-figure img{height:520px}.context-figure img{height:238px}.marker-figure img,.marker-search-figure img{height:170px}.crop-empty{display:grid;min-height:150px;place-items:center;padding:16px;border:1px dashed var(--line-strong);border-radius:11px;background:rgba(255,255,255,.64);color:var(--muted);text-align:center;font-size:.8rem}figcaption{color:var(--muted);font-size:.74rem}.machine-marker{margin:0;padding:8px 10px;border-left:3px solid var(--amber);background:rgba(255,253,247,.76);color:var(--muted);font-size:.76rem}
     .body{display:grid;gap:12px;padding:14px 15px 16px}.machine{padding:10px 11px;border:1px solid #dec49c;border-radius:10px;background:#fff7e8}.machine-head{display:flex;justify-content:space-between;gap:12px;align-items:center}.machine-head>div{display:grid;gap:5px;min-width:0}.machine b{color:var(--amber);font-size:.76rem;text-transform:uppercase;letter-spacing:.05em}.machine code{display:block}code,.fen-output{color:#293930;font-family:"Cascadia Mono",Consolas,monospace;font-size:.77rem;overflow-wrap:anywhere;word-break:break-word}.machine button{flex:0 0 auto;min-height:38px;padding:.42rem .66rem;font-size:.76rem}details{border:1px solid var(--line);border-radius:10px;background:#fff}summary{padding:9px 11px;font-weight:800;cursor:pointer}details p,details div{margin:0;padding:0 11px 10px;color:var(--muted);font-size:.8rem;white-space:pre-wrap}
@@ -279,7 +279,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <main class="shell">
     <header class="hero"><div><div class="eyebrow">KindleMaster · etykiety źródłowe</div><h1>Oznacz figury, nie zapis FEN</h1><p>Model wstępnie wypełnia planszę. Popraw błędne pola, potwierdź 64 pola i niezależnie sprawdź marker. Pełny FEN powstanie automatycznie.</p></div><div class="source"><b>Artefakt:</b> __ARTIFACT_ID__<br><b>Powiązanie:</b> __SOURCE_BINDING__<br><b>SHA:</b> __SOURCE_DIGEST__</div></header>
     <section class="guide" aria-label="Instrukcja"><div class="guide-step"><b>1. Crop planszy</b><span>Jeśli brakuje rzędu albo widzisz dwa diagramy, oznacz zły crop. Nie zgaduj.</span></div><div class="guide-step"><b>2. Siatka 8×8</b><span>Wybierz figurę i klikaj tylko pola różniące się od sugestii. Potem potwierdź 64 pola.</span></div><div class="guide-step"><b>3. Marker</b><span>△ = białe, ▼ = czarne. Strona ruchu trafia do wygenerowanego FEN.</span></div></section>
-    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading">Łączenie z zapisem…</span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
+    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading"><span id="save-state-text">Łączenie z zapisem…</span><a class="auth-link" id="auth-link" href="/" target="_blank" rel="noopener" hidden>Zaloguj się</a></span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
     <section class="review-grid">__CARDS__</section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -309,6 +309,8 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     try { state = JSON.parse(localStorage.getItem(stateKey) || '{}'); } catch { state = {}; }
     const reviewer = document.getElementById('reviewer');
     const saveState = document.getElementById('save-state');
+    const saveStateText = document.getElementById('save-state-text');
+    const authLink = document.getElementById('auth-link');
     const toggleSession = document.getElementById('toggle-session');
     reviewer.value = localStorage.getItem(reviewerKey) || '';
 
@@ -589,17 +591,35 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     function nextPending() { const card=cards.find(item=>!item.hidden&&['pending','invalid'].includes(item.dataset.state))||cards.find(item=>['pending','invalid'].includes(item.dataset.state));if(!card){toast('Wszystkie rekordy mają status końcowy.');return}card.hidden=false;hydrateEditor(card);card.scrollIntoView({behavior:'smooth',block:'start'});card.querySelector('.board-square').focus(); }
     function resetGridVerification(card) { const f=form(card);f.piece_labels_verified.checked=false;if(f.label_status.value==='verified')f.label_status.value='needs_piece_labels'; }
     function loadCandidate(card) { card._squareLabels=candidateCells(card);resetGridVerification(card);save(card);toast('Przywrócono sugestię modelu. Sprawdź wszystkie 64 pola.'); }
-    function setSaveState(value,message) { saveState.dataset.state=value;saveState.textContent=message; }
+    function setSaveState(value,message,showAuthLink=false) {
+      saveState.dataset.state=value;
+      saveStateText.textContent=message;
+      authLink.hidden=!showAuthLink;
+    }
+    function authenticationRequired(showToast=false) {
+      setSaveState('auth','Zaloguj się, aby odczytywać i zapisywać bazę',true);
+      if (showToast) toast('Zapis w bazie wymaga logowania. Zaloguj się w KindleMaster, wróć do raportu i ponów zapis.');
+    }
+    function responseError(response,payload) {
+      const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.errorCode = String(payload.error_code || '');
+      error.conflict = response.status === 409;
+      error.authRequired = response.status === 401 && ['auth_required','invalid_auth_token','invalid_auth'].includes(error.errorCode);
+      return error;
+    }
     function scheduleServerSave() {
       if (sessionStatus === 'complete') return;
       serverSavePending = true;
       if (!serverProgressUrl) { setSaveState('local','Zapis lokalny; serwer niedostępny'); return; }
+      if (!storedAccessToken()) { authenticationRequired(false); return; }
       setSaveState('pending','Zmiany czekają na zapis');
       clearTimeout(saveTimer);
       saveTimer = setTimeout(()=>saveAllToServer('save',false),1200);
     }
     async function saveAllToServer(action='save',showToast=true) {
       if (!serverProgressUrl || serverSaveInFlight) return false;
+      if (!storedAccessToken()) { authenticationRequired(showToast); return false; }
       clearTimeout(saveTimer);
       serverSaveInFlight = true;
       const savingRevision = stateRevision;
@@ -618,9 +638,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         });
         const payload = await response.json().catch(()=>({}));
         if (!response.ok || payload.success !== true) {
-          const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
-          error.conflict = response.status === 409;
-          throw error;
+          throw responseError(response,payload);
         }
         serverRevision = Number(payload.revision || serverRevision);
         applySessionStatus(payload.session_status || sessionStatus);
@@ -633,6 +651,10 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         return true;
       } catch (error) {
         serverSavePending = true;
+        if (error.authRequired) {
+          authenticationRequired(showToast);
+          return false;
+        }
         if (error.conflict) localStorage.setItem(conflictKey,'true');
         setSaveState('error',error.conflict ? 'Konflikt wersji; wczytaj nowszy zapis' : 'Błąd zapisu; dane są w tej przeglądarce');
         if (showToast || error.conflict) toast(error.conflict ? 'Inna sesja zapisała nowszą wersję. Twoje zmiany pozostały lokalnie; odśwież dane przed kolejnym zapisem.' : `Nie udało się zapisać na serwerze: ${error.message}`);
@@ -643,11 +665,12 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     }
     async function loadServerProgress() {
       if (!serverProgressUrl) { setSaveState('local','Zapis lokalny; użyj eksportu JSONL'); return; }
+      if (!storedAccessToken()) { authenticationRequired(false); return; }
       setSaveState('loading','Wczytywanie zapisu z serwera…');
       try {
         const response = await fetch(serverProgressUrl,{headers:serverHeaders({Accept:'application/json'})});
         const payload = await response.json().catch(()=>({}));
-        if (!response.ok || payload.success !== true || !Array.isArray(payload.rows)) throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.rows)) throw responseError(response,payload);
         const localModifiedAt = Date.parse(localStorage.getItem(localModifiedKey) || '') || 0;
         const serverSavedAt = Date.parse(payload.saved_at || '') || 0;
         serverRevision = Number(payload.revision || 0);
@@ -677,6 +700,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         }
         if (!serverSavePending) setSaveState('saved',payload.saved_at ? `Wczytano zapis ${new Date(payload.saved_at).toLocaleString('pl-PL')}` : 'Gotowe do zapisu na serwerze');
       } catch (error) {
+        if (error.authRequired) { authenticationRequired(false); return; }
         setSaveState('error','Serwer zapisu niedostępny; działa kopia lokalna');
       }
     }
@@ -728,6 +752,12 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       const rows=cards.map(rowFor),invalid=rows.map((row,index)=>({index,result:validateRow(row)})).filter(item=>!item.result.ok&&terminal(rows[item.index].label_status));
       if(invalid.length){const card=cards[invalid[0].index];card.hidden=false;card.scrollIntoView({behavior:'smooth',block:'center'});toast(`Popraw ${invalid.length} ${recordWord(invalid.length)} ze statusem końcowym przed eksportem.`);return;}
       const jsonl=rows.map(row=>JSON.stringify(row)).join('\n')+'\n',url=URL.createObjectURL(new Blob([jsonl],{type:'application/x-ndjson'})),link=document.createElement('a');link.href=url;link.download='fen_piece_grid_'+(artifactId||'review')+'.filled.jsonl';link.click();URL.revokeObjectURL(url);toast(`Wyeksportowano ${rows.length} rekordów, w tym ${rows.filter(row=>terminal(row.label_status)).length} zakończonych.`);
+    });
+    window.addEventListener('storage',event=>{
+      if ((event.key || '').startsWith('sb-') && (event.key || '').endsWith('-auth-token') && storedAccessToken()) loadServerProgress();
+    });
+    document.addEventListener('visibilitychange',()=>{
+      if (!document.hidden && saveState.dataset.state === 'auth' && storedAccessToken()) loadServerProgress();
     });
     refresh();
     loadServerProgress();

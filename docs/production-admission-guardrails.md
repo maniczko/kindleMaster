@@ -17,7 +17,7 @@ These controls limit accidental overload and automated abuse. They are not a rep
 Global defaults:
 
 - 4 active queued/running/retrying jobs;
-- 75 MiB upload body;
+- 75 MiB upload body, also enforced as Flask `MAX_CONTENT_LENGTH` before multipart parsing;
 - 1,200 PDF pages;
 - 250,000 PDF xref objects;
 - 5,000 DOCX archive members;
@@ -25,7 +25,8 @@ Global defaults:
 - 100 MiB per DOCX member;
 - archive expansion ratio not greater than 200:1;
 - 100 million pixels per embedded DOCX image;
-- at least 2 GiB and 10% free space before accepting new conversion work.
+- at least 2 GiB and 10% free disk space;
+- at least 256 MiB and 10% available memory before accepting new conversion work.
 
 Every value has an environment override. Production limits should later be calibrated from #381 rather than increased without measurement.
 
@@ -51,11 +52,24 @@ KINDLEMASTER_MAX_ARCHIVE_RATIO=200
 KINDLEMASTER_MAX_IMAGE_PIXELS=100000000
 KINDLEMASTER_MIN_DISK_FREE_BYTES=2147483648
 KINDLEMASTER_MIN_DISK_FREE_RATIO=0.10
+KINDLEMASTER_MEMORY_ADMISSION=1
+KINDLEMASTER_MIN_MEMORY_AVAILABLE_BYTES=268435456
+KINDLEMASTER_MIN_MEMORY_AVAILABLE_RATIO=0.10
 KINDLEMASTER_RATE_LIMIT_SECRET=<optional-long-random-secret>
 KINDLEMASTER_TRUST_GUEST_CAPABILITY=0
 ```
 
 When no rate-limit secret is configured, production startup creates a 0600 capability file next to the durable SQLite database. Raw bearer tokens, guest capabilities, IP addresses, filenames and document content are not stored as limiter keys.
+
+## Capacity admission
+
+New conversions are rejected before file parsing or queue creation when:
+
+- global or owner concurrency is exhausted;
+- persistent storage is below either the byte or ratio threshold;
+- container memory is below either the byte or ratio threshold.
+
+Memory measurement prefers cgroup v2 (`memory.max` and `memory.current`), then cgroup v1, then `/proc/meminfo`. This keeps the decision aligned with a container limit rather than host-wide free memory. Missing memory telemetry is reported as unavailable but does not make local development unusable.
 
 ## Input validation
 
@@ -75,6 +89,7 @@ rate_limit_exceeded
 owner_concurrency_exceeded
 global_capacity_exceeded
 storage_capacity_exceeded
+memory_capacity_exceeded
 upload_size_limit
 upload_magic_mismatch
 upload_mime_mismatch
@@ -103,10 +118,10 @@ Until then, unauthenticated requests share a pseudonymous HMAC key derived from 
 ## Validation
 
 ```powershell
-python -m unittest -v production_tests.test_production_guardrails
-python -m py_compile production_guardrails.py production_server.py
+python -m unittest -v production_tests.test_production_capacity production_tests.test_production_guardrails
+python -m py_compile production_capacity_guard.py production_guardrails.py production_server.py
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.
+Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, low memory, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.

@@ -9,6 +9,10 @@ from production_runtime import install_production_runtime, install_sqlite_job_st
 from production_store_compat import install_sqlite_mapping_write_through
 
 
+class ActiveCancellationUnsupported(RuntimeError):
+    pass
+
+
 def capture_legacy_jobs(app_module: ModuleType) -> dict[str, dict[str, Any]]:
     store = getattr(app_module, "_CONVERSION_JOB_STORE", None)
     if store is None or not callable(getattr(store, "snapshot", None)):
@@ -120,6 +124,127 @@ def install_idempotent_retry_response_policy(app_module: ModuleType) -> None:
         app.view_functions[endpoint] = wrapped_retry
 
 
+def install_safe_queue_cancel_guard() -> None:
+    """Prevent a cancellation flag from pretending to stop an active thread."""
+
+    original = DurableJobQueue.request_cancel
+    if getattr(original, "_kindlemaster_safe_cancel", False):
+        return
+
+    def safe_request_cancel(self: DurableJobQueue, job_id: str):
+        record = self.get(job_id)
+        if record is not None and record.status in {"leased", "running"}:
+            raise ActiveCancellationUnsupported(
+                "Active conversion cannot be cancelled safely before stage-aware hooks are available."
+            )
+        return original(self, job_id)
+
+    safe_request_cancel._kindlemaster_safe_cancel = True
+    DurableJobQueue.request_cancel = safe_request_cancel
+
+
+def install_queued_cancellation_policy(app_module: ModuleType, queue: DurableJobQueue) -> None:
+    """Expose cancellation only while a job is still safely queueable."""
+
+    from flask import jsonify
+
+    app = app_module.app
+    endpoint = "durable_conversion_cancel"
+    if endpoint in app.view_functions:
+        return
+
+    install_safe_queue_cancel_guard()
+
+    def cancel_job(job_id: str):
+        auth_context = app_module._resolve_request_auth_context()
+        if getattr(auth_context, "error", ""):
+            return app_module._json_auth_error(auth_context)
+        job = app_module._get_conversion_job_for_auth(job_id, auth_context)
+        if not job:
+            return app_module._json_error(
+                "Nie znaleziono zadania konwersji.",
+                error_code="missing_conversion_job",
+                status_code=404,
+                phase="cancel",
+                job_id=job_id,
+                retryable=False,
+            )
+        record = queue.get(job_id)
+        if record is None:
+            return app_module._json_error(
+                "Zadanie nie jest zarządzane przez trwałą kolejkę.",
+                error_code="durable_queue_record_missing",
+                status_code=409,
+                phase="cancel",
+                job_id=job_id,
+                retryable=False,
+            )
+        if record.status in {"succeeded", "failed", "dead_letter", "cancelled"}:
+            return app_module._json_error(
+                "Zadanie jest już zakończone.",
+                error_code="cancellation_not_applicable",
+                status_code=409,
+                phase="cancel",
+                job_id=job_id,
+                retryable=False,
+            )
+        try:
+            cancelled = queue.request_cancel(job_id)
+        except ActiveCancellationUnsupported:
+            return app_module._json_error(
+                "Aktywna konwersja nie może być jeszcze bezpiecznie anulowana.",
+                error_code="active_cancellation_unsupported",
+                status_code=409,
+                phase="cancel",
+                job_id=job_id,
+                retryable=False,
+            )
+        if cancelled is None or cancelled.status != "cancelled":
+            return app_module._json_error(
+                "Nie udało się anulować zadania przed rozpoczęciem pracy.",
+                error_code="cancellation_failed",
+                status_code=409,
+                phase="cancel",
+                job_id=job_id,
+                retryable=False,
+            )
+        updated = app_module._CONVERSION_JOB_STORE.update(
+            job_id,
+            {
+                "status": "cancelled",
+                "message": "Konwersja została anulowana przed rozpoczęciem pracy.",
+                "error": "",
+                "error_code": "cancelled",
+                "runtime_queue": {
+                    **dict(job.get("runtime_queue") or {}),
+                    "status": "cancelled",
+                    "cancellation_requested": True,
+                },
+            },
+        )
+        try:
+            app_module._sync_job_to_cloud(job_id)
+        except Exception:
+            pass
+        response = jsonify(
+            {
+                "success": True,
+                "job_id": job_id,
+                "status": "cancelled",
+                "message": str((updated or {}).get("message") or "Konwersja została anulowana."),
+            }
+        )
+        app_module.apply_no_store_headers(response.headers)
+        return response
+
+    app.add_url_rule(
+        "/convert/cancel/<job_id>",
+        endpoint=endpoint,
+        view_func=cancel_job,
+        methods=["POST"],
+    )
+
+
 def install_worker_cloud_failure_sync(app_module: ModuleType) -> None:
     """Sync terminal/retry worker state without retaining a browser access token."""
 
@@ -153,6 +278,7 @@ def install_migrated_production_runtime(app_module: ModuleType) -> tuple[Durable
     migration = migrate_legacy_jobs(app_module, legacy_jobs)
     install_async_only_conversion_policy(app_module)
     install_idempotent_retry_response_policy(app_module)
+    install_queued_cancellation_policy(app_module, queue)
     install_worker_cloud_failure_sync(app_module)
     return queue, migration
 

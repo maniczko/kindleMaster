@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from typing import Any, Callable
 
-from durable_job_queue import SQLiteJobMapping
+from durable_job_queue import SQLiteJobMapping, utc_now_label
 
 CommitCallback = Callable[[], None]
+_DELETE = object()
 
 
 def _to_plain(value: Any) -> Any:
@@ -28,6 +31,46 @@ def _wrap(value: Any, commit: CommitCallback) -> Any:
     if isinstance(value, tuple):
         return _WriteThroughList(list(value), commit)
     return value
+
+
+def _changed_paths(old: Any, new: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Any]]:
+    if isinstance(old, Mapping) and isinstance(new, Mapping):
+        changes: list[tuple[tuple[str, ...], Any]] = []
+        old_keys = {str(key) for key in old}
+        new_keys = {str(key) for key in new}
+        for key in sorted(old_keys - new_keys):
+            changes.append((path + (key,), _DELETE))
+        for key in sorted(new_keys - old_keys):
+            changes.append((path + (key,), deepcopy(new[key])))
+        for key in sorted(old_keys & new_keys):
+            changes.extend(_changed_paths(old[key], new[key], path + (key,)))
+        return changes
+    if old != new:
+        return [(path, deepcopy(new))]
+    return []
+
+
+def _apply_change(target: dict[str, Any], path: tuple[str, ...], value: Any) -> dict[str, Any]:
+    if not path:
+        if value is _DELETE:
+            return {}
+        if not isinstance(value, Mapping):
+            raise TypeError("A conversion job must remain a mapping.")
+        return {str(key): deepcopy(item) for key, item in value.items()}
+
+    parent: dict[str, Any] = target
+    for key in path[:-1]:
+        child = parent.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            parent[key] = child
+        parent = child
+    leaf = path[-1]
+    if value is _DELETE:
+        parent.pop(leaf, None)
+    else:
+        parent[leaf] = deepcopy(value)
+    return target
 
 
 class _WriteThroughDict(dict[str, Any]):
@@ -148,12 +191,50 @@ class _WriteThroughList(list[Any]):
 
 def _persistent_proxy(mapping: SQLiteJobMapping, job_id: str, payload: Mapping[str, Any]) -> _WriteThroughDict:
     holder: dict[str, _WriteThroughDict] = {}
+    baseline = {"value": deepcopy(_to_plain(payload))}
 
     def commit() -> None:
         root = holder.get("root")
         if root is None:
             return
-        mapping.__setitem__(job_id, _to_plain(root))
+        updated = _to_plain(root)
+        changes = _changed_paths(baseline["value"], updated)
+        if not changes:
+            return
+
+        now = utc_now_label()
+        with mapping.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload_json FROM conversion_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                current: dict[str, Any] = {"job_id": job_id}
+            else:
+                loaded = json.loads(str(row["payload_json"] or "{}"))
+                current = dict(loaded) if isinstance(loaded, Mapping) else {"job_id": job_id}
+            merged = deepcopy(_to_plain(current))
+            for path, value in changes:
+                merged = _apply_change(merged, path, value)
+            merged["job_id"] = job_id
+            merged["updated_at"] = now
+            connection.execute(
+                """
+                INSERT INTO conversion_jobs(job_id, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job_id,
+                    json.dumps(merged, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    now,
+                ),
+            )
+            connection.commit()
+        baseline["value"] = deepcopy(updated)
 
     root = _WriteThroughDict(payload, commit)
     holder["root"] = root
@@ -161,7 +242,7 @@ def _persistent_proxy(mapping: SQLiteJobMapping, job_id: str, payload: Mapping[s
 
 
 def install_sqlite_mapping_write_through() -> None:
-    """Make legacy direct job mutations durable without rewriting every caller."""
+    """Make legacy direct mutations durable without overwriting fresh fields."""
 
     current = SQLiteJobMapping.__getitem__
     if getattr(current, "_kindlemaster_write_through", False):

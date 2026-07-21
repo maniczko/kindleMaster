@@ -10,9 +10,11 @@ from production_attempt_audit import install_durable_attempt_audit
 from production_publication_guard import install_production_publication_guard
 from production_queue_projection import install_queue_state_projection
 from production_runtime import DurableConversionWorker, durable_database_path
+from production_sqlite_connections import install_closing_sqlite_connections
 
 
 def main() -> int:
+    install_closing_sqlite_connections()
     database = DurableJobDatabase(durable_database_path())
     install_migrated_sqlite_store(app_module, database=database)
     install_durable_attempt_audit(database)

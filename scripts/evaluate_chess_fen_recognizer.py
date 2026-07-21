@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,8 @@ from PIL import Image
 from chess_position_recognizer import (
     _estimate_board_grid_confidence,
     _has_board_visual_pattern,
+    _load_piece_templates_with_cache_info,
     _normalize_board_square,
-    load_piece_templates,
     recognize_chess_position_from_image,
 )
 from scripts.export_chess_fen_square_debug_artifacts import export_square_debug_artifacts
@@ -36,8 +37,14 @@ def evaluate_chess_fen_recognizer(
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate deterministic FEN recognition against labeled board crops."""
+    overall_started = time.perf_counter()
+    stage_started = time.perf_counter()
     labels = [json.loads(line) for line in Path(labels_path).read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-    templates = load_piece_templates(template_dir)
+    labels_load_elapsed = round(time.perf_counter() - stage_started, 4)
+
+    stage_started = time.perf_counter()
+    templates, template_cache = _load_piece_templates_with_cache_info(template_dir)
+    template_load_elapsed = round(time.perf_counter() - stage_started, 4)
     cases: list[dict[str, Any]] = []
     exact_count = 0
     fen_count = 0
@@ -46,8 +53,13 @@ def evaluate_chess_fen_recognizer(
     square_exact = 0
     per_piece: dict[str, dict[str, int]] = {}
     confusion: dict[str, dict[str, int]] = {}
+    crop_read_total_elapsed = 0.0
+    recognition_total_elapsed = 0.0
+    square_debug_total_elapsed = 0.0
+    diagnostics_total_elapsed = 0.0
 
     for record in labels:
+        case_started = time.perf_counter()
         expected_fen = str(record.get("fen") or "").strip()
         expected_placement = expected_fen.split()[0] if expected_fen else ""
         crop_path = Path(str(record.get("crop_path") or ""))
@@ -64,17 +76,32 @@ def evaluate_chess_fen_recognizer(
                     "square_accuracy": 0.0,
                     "requires_review": True,
                     "warnings": ["missing_label_or_crop"],
+                    "timing_breakdown": {
+                        "crop_read": 0.0,
+                        "recognize": 0.0,
+                        "square_debug": 0.0,
+                        "diagnostics": 0.0,
+                        "total": round(time.perf_counter() - case_started, 4),
+                    },
                 }
             )
             continue
+        stage_started = time.perf_counter()
         crop_bytes = crop_path.read_bytes()
+        crop_read_elapsed = round(time.perf_counter() - stage_started, 4)
+        crop_read_total_elapsed += crop_read_elapsed
+
+        stage_started = time.perf_counter()
         result = recognize_chess_position_from_image(
             crop_bytes,
             piece_templates=templates,
             min_confidence=min_confidence,
         ).to_dict()
+        recognize_elapsed = round(time.perf_counter() - stage_started, 4)
+        recognition_total_elapsed += recognize_elapsed
         square_debug_manifest = ""
         if square_debug_dir:
+            stage_started = time.perf_counter()
             case_id = str(record.get("id") or crop_path.stem)
             square_debug = export_square_debug_artifacts(
                 crop_path,
@@ -83,7 +110,15 @@ def evaluate_chess_fen_recognizer(
                 case_id=case_id,
             )
             square_debug_manifest = str(Path(square_debug.get("squares_jsonl") or ""))
+            square_debug_elapsed = round(time.perf_counter() - stage_started, 4)
+        else:
+            square_debug_elapsed = 0.0
+        square_debug_total_elapsed += square_debug_elapsed
+
+        stage_started = time.perf_counter()
         diagnostics = _image_board_diagnostics(crop_bytes)
+        diagnostics_elapsed = round(time.perf_counter() - stage_started, 4)
+        diagnostics_total_elapsed += diagnostics_elapsed
         actual_fen = str(result.get("fen") or result.get("full_fen") or "").strip()
         actual_placement = str(result.get("placement") or "").strip()
         matched = bool(actual_fen and actual_fen == expected_fen)
@@ -99,6 +134,7 @@ def evaluate_chess_fen_recognizer(
         )
         square_total += case_square_total
         square_exact += case_square_exact
+        case_total_elapsed = round(time.perf_counter() - case_started, 4)
         cases.append(
             {
                 "id": record.get("id", ""),
@@ -119,11 +155,19 @@ def evaluate_chess_fen_recognizer(
                     "suppressed_reason": _suppressed_reason(result.get("warnings", []), actual_fen=actual_fen),
                     "exact_placement_without_fen": bool(not actual_fen and actual_placement == expected_placement),
                 },
+                "timing_breakdown": {
+                    "crop_read": crop_read_elapsed,
+                    "recognize": recognize_elapsed,
+                    "square_debug": square_debug_elapsed,
+                    "diagnostics": diagnostics_elapsed,
+                    "total": case_total_elapsed,
+                },
             }
         )
 
     exact_fen_accuracy = round(exact_count / max(1, len(labels)), 4)
     status_passed = bool(labels and exact_fen_accuracy >= min_exact_accuracy and false_positive_count == 0)
+    total_elapsed = round(time.perf_counter() - overall_started, 4)
     summary = {
         "status": "passed" if status_passed else "failed",
         "case_count": len(labels),
@@ -141,6 +185,19 @@ def evaluate_chess_fen_recognizer(
         },
         "per_piece_counts": dict(sorted(per_piece.items())),
         "confusion": {piece: dict(sorted(values.items())) for piece, values in sorted(confusion.items())},
+        "template_cache": {
+            **template_cache,
+            "template_label_count": len(templates),
+        },
+        "timing_breakdown": {
+            "labels_load": labels_load_elapsed,
+            "template_load": template_load_elapsed,
+            "crop_read": round(crop_read_total_elapsed, 4),
+            "recognition": round(recognition_total_elapsed, 4),
+            "square_debug": round(square_debug_total_elapsed, 4),
+            "diagnostics": round(diagnostics_total_elapsed, 4),
+            "total": total_elapsed,
+        },
         "cases": cases,
     }
     if output_path:

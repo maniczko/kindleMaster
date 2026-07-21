@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
 from chess_study_export import (
     build_fen_square_dataset,
+    evaluate_fen_square_classifier,
     evaluate_fen_ensemble,
     export_fen_corpus_manifest,
     preprocess_chess_board_crops,
@@ -89,11 +92,22 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             labels.write_text(
                 json.dumps(
                     {
+                        "schema": "kindlemaster.chess_fen_label.v2",
+                        "id": "p001_d001",
                         "diagram_id": "p001_d001",
+                        "diagram_fingerprint": "1" * 64,
+                        "source_document_sha256": "a" * 64,
                         "manual_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
                         "manual_label": "correct_diagram",
                         "label_status": "verified",
                         "crop_path": str(crop),
+                        "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(),
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-07-16T12:00:00Z",
+                        "verification_source": "human_visual",
+                        "human_verified": True,
+                        "square_diff_ack": True,
                         "page": 1,
                     }
                 )
@@ -106,14 +120,75 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             self.assertEqual(payload["status"], "ok")
             self.assertEqual(payload["verified_label_count"], 1)
             self.assertEqual(payload["sample_count"], 64)
-            self.assertIn("holdout", {"train", "val", "holdout"})
+            self.assertEqual(payload["leakage_check"]["status"], "passed")
             self.assertTrue((out / "data" / "fen_square_dataset.jsonl").is_file())
+
+    def test_square_dataset_keeps_diagrams_from_one_page_in_one_split(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            out = root / "out"
+            labels = root / "labels.jsonl"
+            label_rows = []
+            for index in range(2):
+                crop = root / f"crop-{index}.png"
+                _make_board_crop(crop)
+                label_rows.append(
+                    {
+                        "schema": "kindlemaster.chess_fen_label.v2",
+                        "id": f"p001_d00{index + 1}",
+                        "diagram_id": f"p001_d00{index + 1}",
+                        "diagram_fingerprint": str(index + 1) * 64,
+                        "source_document_sha256": "a" * 64,
+                        "manual_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "manual_label": "correct_diagram",
+                        "label_status": "verified",
+                        "crop_path": str(crop),
+                        "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(),
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-07-16T12:00:00Z",
+                        "verification_source": "human_visual",
+                        "human_verified": True,
+                        "square_diff_ack": True,
+                        "page": 1,
+                    }
+                )
+            labels.write_text(
+                "".join(json.dumps(row) + "\n" for row in label_rows),
+                encoding="utf-8",
+            )
+
+            payload = build_fen_square_dataset(labels, out_dir=out, fold_count=5, holdout_fold=0)
+            dataset_rows = [
+                json.loads(line)
+                for line in (out / "data" / "fen_square_dataset.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(payload["leakage_check"]["status"], "passed")
+            self.assertEqual(len({row["split"] for row in dataset_rows}), 1)
+            self.assertEqual(len({row["split_group"] for row in dataset_rows}), 1)
+
+    def test_evaluate_classifier_fails_cleanly_when_candidate_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "out"
+            dataset = out / "data" / "fen_square_dataset.jsonl"
+            dataset.parent.mkdir(parents=True)
+            dataset.write_text("", encoding="utf-8")
+
+            with patch(
+                "chess_fen_square_model._import_training_dependencies",
+                return_value={"status": "unavailable", "exception": "No module named 'sklearn'"},
+            ):
+                payload = evaluate_fen_square_classifier(out)
+
+            self.assertEqual(payload["status"], "failed")
+            self.assertEqual(payload["error"], "model_missing")
 
     def test_missing_local_model_is_clean_review_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir) / "out"
 
-            payload = recognize_fen_local(out)
+            payload = recognize_fen_local(out, model_path=out / "models" / "missing.npz")
 
             self.assertEqual(payload["status"], "needs_review")
             self.assertEqual(payload["reason"], "model_missing")
@@ -131,11 +206,22 @@ class ChessFenModelPipelineTests(unittest.TestCase):
             labels.write_text(
                 json.dumps(
                     {
+                        "schema": "kindlemaster.chess_fen_label.v2",
+                        "id": "p001_d001",
                         "diagram_id": "p001_d001",
+                        "diagram_fingerprint": "1" * 64,
+                        "source_document_sha256": "a" * 64,
                         "manual_fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                        "fen": "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
                         "manual_label": "correct_diagram",
                         "label_status": "verified",
                         "crop_path": str(crop),
+                        "crop_sha256": hashlib.sha256(crop.read_bytes()).hexdigest(),
+                        "verified_by": "unit-test",
+                        "verified_at": "2026-07-16T12:00:00Z",
+                        "verification_source": "human_visual",
+                        "human_verified": True,
+                        "square_diff_ack": True,
                         "page": 1,
                     }
                 )

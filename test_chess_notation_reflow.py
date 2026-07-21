@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
+import zipfile
+from collections import Counter
 from pathlib import Path
 
 import fitz
@@ -11,101 +14,155 @@ from PIL import Image
 from converter import CHESS_REFLOW_CSS, ConversionConfig, dedupe_html_ids
 from publication_pipeline import _fragment_to_blocks
 from pymupdf_chess_extractor import (
+    _apply_notation_layout_placement_consensus_gate,
     _clean_chess_notation_line,
     _is_single_board_coordinate_line,
     _looks_like_board_coordinate_noise,
-    _notation_layout_marker_eligible,
     _scan_chess_pgn_extra_artifacts,
-    _summarize_notation_chess_fen,
     extract_chess_notation_pdf_reflow,
 )
 from chess_pgn_extractor import ChessPgnRecord
+from kindle_semantic_cleanup import (
+    _classify_chess_notation_paragraph,
+    _expand_semantic_blocks,
+    _looks_like_chess_notation_paragraph,
+    _process_chapter,
+)
 
 
 class ChessNotationReflowTests(unittest.TestCase):
-    def test_notation_marker_gate_only_allows_high_confidence_side_only_review(self) -> None:
-        eligible = {
-            "placement": "8/8/8/8/8/7p/N4K1k/8",
-            "confidence": 0.849,
-            "warnings": ["recognition_inner_border_trim_used", "side_to_move_inferred"],
+    def test_chess_notation_parser_covers_move_numbers_1_through_999(self) -> None:
+        for move_number in range(1, 1000):
+            with self.subTest(move_number=move_number):
+                self.assertTrue(_looks_like_chess_notation_paragraph(f"{move_number}.Rxe6+! fxe6"))
+                self.assertTrue(_looks_like_chess_notation_paragraph(f"{move_number}...e3! Rxe3"))
+
+    def test_chess_notation_parser_recognizes_special_moves_results_and_variations(self) -> None:
+        samples = [
+            "1.O-O O-O-O",
+            "42.e8=Q+ Kf7",
+            "17.Qh7# 1-0",
+            "23.Rxe6+! (23...fxe6 24.Qxe6+) 24.Rxe6",
+            "33 ... e3! 34.Rxe3",
+            "35.£c6 ¦xf7 36.¦a8+",
+            "1/2-1/2",
+        ]
+
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(_looks_like_chess_notation_paragraph(sample))
+
+        self.assertFalse(_looks_like_chess_notation_paragraph("Black attacks f3 and c6 before the exchange."))
+
+    def test_ambiguous_ocr_move_is_preserved_for_review_not_converted_to_list(self) -> None:
+        text = "23. R?e6+"
+        expanded = _expand_semantic_blocks(
+            [{"type": "paragraph", "text": text, "html": text, "class_name": ""}]
+        )
+
+        self.assertEqual(_classify_chess_notation_paragraph(text), "review")
+        self.assertEqual([block["type"] for block in expanded], ["paragraph"])
+        self.assertIn("chess-notation-review", expanded[0]["class_name"])
+
+    def test_chess_notation_is_classified_before_generic_ordered_lists(self) -> None:
+        text = "23. Rxe6+! fxe6 24. Qxe6+ Kf8"
+        expanded = _expand_semantic_blocks(
+            [{"type": "paragraph", "text": text, "html": text, "class_name": ""}]
+        )
+
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0]["type"], "paragraph")
+        self.assertEqual(expanded[0]["text"], text)
+        self.assertIn("chess-notation", expanded[0]["class_name"])
+        self.assertIn("notation-heavy", expanded[0]["class_name"])
+
+    def test_explicit_normal_list_class_keeps_generic_list_behavior(self) -> None:
+        expanded = _expand_semantic_blocks(
+            [
+                {
+                    "type": "paragraph",
+                    "text": "1. e4 2. e5 3. Nf3",
+                    "html": "1. e4 2. e5 3. Nf3",
+                    "class_name": "normal-list",
+                }
+            ]
+        )
+
+        self.assertEqual([block["type"] for block in expanded], ["list-item", "list-item", "list-item"])
+        self.assertTrue(all(block["list_kind"] == "ol" for block in expanded))
+
+    def test_chapter_render_preserves_notation_and_only_lists_explicit_prose(self) -> None:
+        source = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Solutions</title></head><body>
+<h1>Solutions</h1>
+<p>23. Rxe6+! fxe6 24. Qxe6+ Kf8</p>
+<p>33...e3! (33...Rde8+ 34.Bxe8) 34.Rxe3</p>
+<p class="normal-list">1. Prepare 2. Validate 3. Publish</p>
+</body></html>"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chapter = Path(temp_dir) / "solutions.xhtml"
+            chapter.write_text(source, encoding="utf-8")
+            result = _process_chapter(
+                chapter,
+                repeated_counts=Counter(),
+                keep_first_seen=set(),
+                title="Solutions",
+                author="Tester",
+                language="en",
+            )
+
+        self.assertIn('class="chess-notation notation-heavy"', result.xhtml)
+        self.assertIn("23. Rxe6+! fxe6 24. Qxe6+ Kf8", result.xhtml)
+        self.assertIn("33...e3! (33...Rde8+ 34.Bxe8) 34.Rxe3", result.xhtml)
+        self.assertEqual(result.xhtml.count("<ol>"), 1)
+        self.assertNotIn(">Rxe6+! fxe6</li>", result.xhtml)
+
+    def test_notation_layout_consensus_conflict_blocks_fen_without_losing_marker(self) -> None:
+        payload = {
+            "fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "full_fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "placement": "8/8/8/8/8/2k5/7P/K7",
+            "requires_review": False,
+            "side_to_move": "b",
+            "side_to_move_status": "explicit",
+            "side_to_move_evidence": "marker",
+            "full_fen_allowed": True,
+            "warnings": ["side_to_move_marker_applied"],
         }
 
-        self.assertTrue(_notation_layout_marker_eligible(eligible, min_confidence=0.835))
-        self.assertFalse(
-            _notation_layout_marker_eligible(
-                {**eligible, "warnings": ["black_king_count_invalid", "side_to_move_inferred"]},
-                min_confidence=0.835,
-            )
-        )
-        self.assertFalse(
-            _notation_layout_marker_eligible({**eligible, "confidence": 0.834}, min_confidence=0.835)
-        )
-
-    def test_fen_summary_reports_review_candidates_instead_of_false_pass(self) -> None:
-        summary = _summarize_notation_chess_fen(
-            [
-                {
-                    "status": "needs_review",
-                    "manual_review_required": True,
-                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
-                    "fen": "",
-                },
-                {
-                    "status": "needs_review",
-                    "manual_review_required": True,
-                    "placement": "7k/6p1/7p/4RN1r/5K2/6P1/8/8",
-                    "fen": "",
-                },
-            ],
-            {"fen_count": 0, "manual_review_count": 0},
+        updated = _apply_notation_layout_placement_consensus_gate(
+            payload,
+            {
+                "status": "conflict",
+                "dpis": [180, 216],
+                "expected_placement": payload["placement"],
+                "variants": [{"dpi": 180, "placement": "8/8/8/8/8/2k5/8/K7"}],
+            },
         )
 
-        self.assertEqual(summary["status"], "requires_review")
-        self.assertEqual(summary["fen_count"], 0)
-        self.assertEqual(summary["placement_candidate_count"], 2)
-        self.assertEqual(summary["diagram_manual_review_count"], 2)
-        self.assertEqual(summary["manual_review_count"], 2)
+        self.assertEqual(updated["fen"], "")
+        self.assertTrue(updated["requires_review"])
+        self.assertEqual(updated["side_to_move"], "b")
+        self.assertEqual(updated["side_to_move_evidence"], "marker")
+        self.assertFalse(updated["full_fen_allowed"])
+        self.assertIn("board_placement_multi_dpi_conflict", updated["full_fen_blockers"])
+        self.assertIn("notation_layout_multi_dpi_consensus_failed", updated["warnings"])
 
-    def test_fen_summary_does_not_count_unverified_fen_candidate(self) -> None:
-        summary = _summarize_notation_chess_fen(
-            [
-                {
-                    "status": "needs_review",
-                    "manual_review_required": True,
-                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
-                    "fen_candidate": "8/6K1/7Q/8/8/2p5/1k6/8 b - - 0 1",
-                }
-            ],
-            {"fen_count": 0, "manual_review_count": 0},
+    def test_notation_layout_exact_consensus_preserves_accepted_fen(self) -> None:
+        payload = {
+            "fen": "8/8/8/8/8/2k5/7P/K7 b - - 0 1",
+            "requires_review": False,
+            "warnings": ["side_to_move_marker_applied"],
+        }
+
+        updated = _apply_notation_layout_placement_consensus_gate(
+            payload,
+            {"status": "exact", "dpis": [180, 216], "variants": []},
         )
 
-        self.assertEqual(summary["status"], "requires_review")
-        self.assertEqual(summary["fen_count"], 0)
-        self.assertEqual(summary["manual_review_count"], 1)
-
-    def test_fen_summary_distinguishes_accepted_fen_from_remaining_review(self) -> None:
-        summary = _summarize_notation_chess_fen(
-            [
-                {
-                    "status": "accepted",
-                    "manual_review_required": False,
-                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
-                    "fen_candidate": "8/6K1/7Q/8/8/2p5/1k6/8 b - - 0 1",
-                },
-                {
-                    "status": "needs_review",
-                    "manual_review_required": True,
-                    "placement": "7k/6p1/7p/4RN1r/5K2/6P1/8/8",
-                    "fen": "",
-                },
-            ],
-            {"fen_count": 0, "manual_review_count": 0},
-        )
-
-        self.assertEqual(summary["status"], "passed_with_warnings")
-        self.assertEqual(summary["fen_count"], 1)
-        self.assertEqual(summary["accepted_diagram_fen_count"], 1)
-        self.assertEqual(summary["manual_review_count"], 1)
+        self.assertEqual(updated["fen"], payload["fen"])
+        self.assertFalse(updated["requires_review"])
+        self.assertIn("notation_layout_multi_dpi_exact_consensus", updated["warnings"])
 
     def test_large_collection_extractor_preserves_notation_and_skips_raster_boards(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -337,6 +394,38 @@ class ChessNotationReflowTests(unittest.TestCase):
 
         artifact_keys = sorted(artifact["key"] for artifact in content["extra_artifacts"])
         self.assertIn("chess_diagrams", artifact_keys)
+        self.assertIn("chess_fen_two_crop_review_artifacts", artifact_keys)
+        self.assertEqual(content["metadata"]["chess_fen"]["side_marker_crop_count"], 1)
+        self.assertEqual(content["metadata"]["chess_fen"]["trusted_marker_count"], 1)
+        self.assertEqual(
+            content["metadata"]["page_marker_assignment"]["page_marker_detection_run_count"],
+            1,
+        )
+        self.assertEqual(
+            content["metadata"]["page_marker_assignment"]["marker_candidate_assigned_count"],
+            1,
+        )
+        diagrams_artifact = next(
+            artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_diagrams"
+        )
+        diagram_record = json.loads(diagrams_artifact["data"])["records"][0]
+        self.assertTrue(diagram_record["side_marker_crop_path"])
+        self.assertEqual(diagram_record["marker_assignment_status"], "assigned")
+        self.assertEqual(diagram_record["side_marker_status"], "trusted_marker")
+        self.assertEqual(diagram_record["side_to_move_status"], "explicit")
+        self.assertEqual(diagram_record["side_to_move_evidence"], "marker")
+        review_artifact = next(
+            artifact
+            for artifact in content["extra_artifacts"]
+            if artifact["key"] == "chess_fen_two_crop_review_artifacts"
+        )
+        with zipfile.ZipFile(io.BytesIO(review_artifact["data"])) as archive:
+            report = json.loads(
+                archive.read("reports/chess_fen/page_marker_assignment.json")
+            )
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["summary"]["marker_candidate_assigned_count"], 1)
+            self.assertIn(diagram_record["side_marker_crop_path"], archive.namelist())
         html_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "chess_pgn_html")
         html = html_artifact["data"].decode("utf-8")
         preview_artifact = next(artifact for artifact in content["extra_artifacts"] if artifact["key"] == "pdf_layout_preview")

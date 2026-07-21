@@ -1,0 +1,12 @@
+{
+  "schema": "kindlemaster.chess.marker_confidence_calibration_manifest.v1",
+  "status": "ready",
+  "calibration_version": "yusupov-marker-reliability-v1",
+  "source_profile": "yusupov-fundamentals",
+  "classifier_version": "marker_adaptive_v3",
+  "artifact_path": "models/chess/chess_marker_calibration_yusupov_v1.json",
+  "artifact_sha256": "7a9f374834d6748ab6f163cbc4acd41a90d68e8c305440f89a337dc57dd9a84e",
+  "source_split": "calibration",
+  "holdout_used_for_tuning": false,
+  "rollback": "Set KINDLEMASTER_CHESS_FEN_MODEL_MODE=off."
+}

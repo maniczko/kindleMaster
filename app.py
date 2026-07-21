@@ -16,11 +16,14 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
+
+from bs4 import BeautifulSoup
 
 from app_runtime_services import (
     DEFAULT_DEBUG,
@@ -133,7 +136,9 @@ SENTRY_BACKEND_STATE = configure_sentry_backend()
 
 UPLOAD_DIR = os.environ.get("KINDLEMASTER_UPLOAD_DIR") or os.path.join(tempfile.gettempdir(), "kindlemaster")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-ARTIFACT_STORAGE = build_artifact_storage(local_root=Path("output") / "artifacts")
+# Keep the storage writer and artifact routes on the same persistent root in hosted runtimes.
+ARTIFACT_ROOT = Path(os.environ.get("KINDLEMASTER_ARTIFACT_ROOT") or Path(app.root_path) / "output" / "artifacts")
+ARTIFACT_STORAGE = build_artifact_storage(local_root=ARTIFACT_ROOT)
 DEFAULT_CONVERSION_JOB_STORE_PATH = Path(UPLOAD_DIR) / "conversion_jobs.json"
 RUNTIME_JOB_ADAPTER = build_runtime_job_adapter(
     retry_policy=RetryPolicy(max_attempts=1),
@@ -385,7 +390,7 @@ def _send_local_input_artifact_fallback(job_id: str, job: dict, artifact: dict):
 
 def _artifact_should_download_as_attachment(artifact_key: str, artifact: dict) -> bool:
     key = _safe_artifact_key(artifact_key)
-    if key in {"input", "pdf_layout_preview", "chess_reader", "chess_pgn_html", "chess_glyph_diagnostics", "deepseek_audit"}:
+    if key in {"input", "pdf_layout_preview", "chess_reader", "chess_pgn_html", "chess_fen_review", "chess_glyph_diagnostics", "deepseek_audit"}:
         return False
     content_type = str(artifact.get("content_type") or "").strip().lower()
     if key.startswith("chess_") and (content_type.startswith("text/html") or content_type.startswith("application/json")):
@@ -562,7 +567,7 @@ def _render_chess_pgn_semantic_artifact(
     semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
     if semantic_index is None or not semantic_index.is_file():
         return None
-    health_gate = _semantic_chess_reader_health_gate(semantic_index)
+    health_gate = _semantic_chess_reader_health_gate(job_id)
     if not health_gate:
         health_gate = _missing_final_reader_health_gate(semantic_index)
     if _reader_health_blocks_whole_artifact(health_gate):
@@ -573,7 +578,11 @@ def _render_chess_pgn_semantic_artifact(
         html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
     html_text = _sanitize_chess_reader_html(html_text)
     asset_base = f"/convert/artifact/{quote(job_id)}/{asset_route}/"
-    html_text = _rewrite_semantic_chess_asset_urls(html_text, asset_base=asset_base)
+    html_text = _rewrite_semantic_chess_asset_urls(
+        html_text,
+        asset_base=asset_base,
+        semantic_index=semantic_index,
+    )
     response = app.make_response(html_text)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -617,20 +626,119 @@ def _ensure_semantic_chess_html_artifact(job_id: str, job: dict, artifact_path: 
     return semantic_index if routing.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE else None
 
 
-def _rewrite_semantic_chess_asset_urls(html_text: str, *, asset_base: str) -> str:
-    replacements = {
-        'href="styles.css"': f'href="{asset_base}styles.css"',
-        "href='styles.css'": f"href='{asset_base}styles.css'",
-        'src="app.js"': f'src="{asset_base}app.js"',
-        "src='app.js'": f"src='{asset_base}app.js'",
-        'href="assets/': f'href="{asset_base}assets/',
-        "href='assets/": f"href='{asset_base}assets/",
-        'src="assets/': f'src="{asset_base}assets/',
-        "src='assets/": f"src='{asset_base}assets/",
-    }
-    for old, new in replacements.items():
-        html_text = html_text.replace(old, new)
-    return html_text
+_SEMANTIC_READER_ASSET_ATTR_RE = re.compile(
+    r"(?P<prefix>\b(?:src|href|poster)\s*=\s*(?P<quote>['\"]))(?P<url>.*?)(?P=quote)",
+    flags=re.IGNORECASE,
+)
+_SEMANTIC_READER_ASSET_HEALTH_CACHE: dict[str, dict[str, object]] = {}
+_SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK = threading.Lock()
+_SEMANTIC_READER_ASSET_HEALTH_CACHE_MAX = 128
+_SEMANTIC_READER_JOB_ROOT_PREFIXES = ("input/", "log/", "output/", "report/", "reports/", "review/")
+_SEMANTIC_READER_ASSET_RECOVERY_CACHE: dict[str, dict[str, object]] = {}
+_SEMANTIC_READER_ASSET_RECOVERY_LOCK = threading.Lock()
+_TWO_CROP_REVIEW_ZIP_NAME = "chess_fen_two_crop_review_artifacts.zip"
+_TWO_CROP_REVIEW_MEMBER_RE = re.compile(
+    r"review/chess_fen/two_crop/(?P<filename>[A-Za-z0-9_.-]+_(?P<kind>board|marker|overlay)\.png)"
+)
+_TWO_CROP_RECOVERY_MAX_MEMBERS = 4_096
+_TWO_CROP_RECOVERY_MAX_MEMBER_BYTES = 20 * 1024 * 1024
+_TWO_CROP_RECOVERY_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+_TWO_CROP_RECOVERY_MAX_COMPRESSION_RATIO = 200
+
+
+def _safe_semantic_reader_asset_path(value: object) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw or raw.startswith(("#", "/", "//")):
+        return ""
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return ""
+    decoded_path = urllib.parse.unquote(parsed.path).replace("\\", "/")
+    parts: list[str] = []
+    for part in decoded_path.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                parts.append(part)
+            elif parts[-1] == "..":
+                parts.append(part)
+            else:
+                parts.pop()
+            continue
+        if ":" in part or "\x00" in part:
+            return ""
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _named_artifact_child(directory: Path, name: str, *, directory_only: bool = False) -> Path | None:
+    if not name or "/" in name or "\\" in name or name in {".", ".."}:
+        return None
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name != name:
+                    continue
+                if directory_only and not entry.is_dir(follow_symlinks=False):
+                    return None
+                if not directory_only and not entry.is_file(follow_symlinks=False):
+                    return None
+                return Path(entry.path)
+    except OSError:
+        return None
+    return None
+
+
+def _semantic_reader_index_for_job(job_id: object) -> Path | None:
+    safe_job_id = str(job_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+    job_root = _artifact_job_root_for_id(safe_job_id)
+    if job_root is None:
+        return None
+    semantic_root = _named_artifact_child(job_root, "semantic_chess_html", directory_only=True)
+    if semantic_root is None:
+        return None
+    return _named_artifact_child(semantic_root, "index.html")
+
+
+def _artifact_job_root_for_id(job_id: object) -> Path | None:
+    safe_job_id = str(job_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+    return _named_artifact_child(ARTIFACT_ROOT, safe_job_id, directory_only=True)
+
+
+def _semantic_reader_asset_route_path(value: object, semantic_index: Path | None = None) -> str:
+    del semantic_index  # Compatibility argument; paths are normalized independently of the filesystem.
+    safe_path = _safe_semantic_reader_asset_path(value)
+    return "" if safe_path.startswith("../") else safe_path
+
+
+def _rewrite_semantic_chess_asset_urls(
+    html_text: str,
+    *,
+    asset_base: str,
+    semantic_index: Path | None = None,
+) -> str:
+    normalized_base = asset_base.rstrip("/") + "/"
+
+    def replace(match: re.Match[str]) -> str:
+        raw_url = match.group("url")
+        route_path = _semantic_reader_asset_route_path(raw_url, semantic_index)
+        if not route_path:
+            return match.group(0)
+        suffix = ""
+        parsed = urllib.parse.urlsplit(raw_url)
+        if parsed.query:
+            suffix += f"?{parsed.query}"
+        if parsed.fragment:
+            suffix += f"#{parsed.fragment}"
+        rewritten = f"{normalized_base}{quote(route_path, safe='/')}{suffix}"
+        return f"{match.group('prefix')}{rewritten}{match.group('quote')}"
+
+    return _SEMANTIC_READER_ASSET_ATTR_RE.sub(replace, html_text)
 
 
 def _artifact_job_dir_from_path(path: Path) -> Path | None:
@@ -1200,10 +1308,354 @@ def _semantic_chess_index_is_final_reader(path: Path | None) -> bool:
     return manifest.get("artifact_type") == FINAL_READER_ARTIFACT_TYPE
 
 
-def _semantic_chess_reader_health_gate(semantic_index: Path | None) -> dict:
+def _semantic_chess_reader_health_gate(job_id: object) -> dict:
+    semantic_index = _semantic_reader_index_for_job(job_id)
     if semantic_index is None:
         return {}
-    return _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
+    asset_recovery = _recover_semantic_reader_assets_from_zip(job_id)
+    stored = _read_json_file(semantic_index.parent / "reports" / "final_reader_health_gate.json")
+    if not stored:
+        return {}
+    asset_health = _semantic_reader_asset_health(job_id)
+    blockers = [str(value) for value in stored.get("blockers", []) or [] if str(value)]
+    warnings = [str(value) for value in stored.get("warnings", []) or [] if str(value)]
+    if asset_health["missing_required_asset_count"]:
+        blockers.append("missing_reader_assets")
+    if asset_health["missing_optional_asset_count"]:
+        warnings.append("missing_optional_reader_assets")
+    stored.update(asset_health)
+    stored["asset_recovery"] = asset_recovery
+    stored["blockers"] = list(dict.fromkeys(blockers))
+    stored["warnings"] = list(dict.fromkeys(warnings))
+    if stored["blockers"]:
+        stored["decision"] = "fail"
+        stored["status"] = "FAIL"
+    elif stored["warnings"]:
+        stored["decision"] = "pass"
+        stored["status"] = "PASS_WITH_WARNINGS"
+    return stored
+
+
+def _semantic_reader_asset_is_optional(node: object, asset_path: str) -> bool:
+    classes = " ".join(getattr(node, "get", lambda *_: [])("class", []) or []).lower()
+    alt = str(getattr(node, "get", lambda *_: "")("alt", "") or "").lower()
+    normalized = asset_path.lower()
+    return "debug" in classes or "debug overlay" in alt or normalized.endswith("_overlay.png")
+
+
+def _semantic_reader_asset_candidate_paths(semantic_index: Path, safe_path: str) -> tuple[Path, ...]:
+    semantic_root = semantic_index.parent
+    job_root = semantic_root.parent if semantic_root.name == "semantic_chess_html" else semantic_root
+    roots = (
+        (job_root, semantic_root)
+        if safe_path.lower().startswith(_SEMANTIC_READER_JOB_ROOT_PREFIXES)
+        else (semantic_root, job_root)
+    )
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.append(root / safe_path)
+    return tuple(candidates)
+
+
+def _named_artifact_descendant(root: Path, safe_path: str) -> Path | None:
+    parts = [part for part in safe_path.split("/") if part]
+    if not parts:
+        return None
+    current = root
+    for index, part in enumerate(parts):
+        current = _named_artifact_child(current, part, directory_only=index < len(parts) - 1)
+        if current is None:
+            return None
+    return current
+
+
+def _resolve_semantic_chess_asset_path(semantic_index: Path, asset_path: object) -> Path | None:
+    safe_path = _safe_semantic_reader_asset_path(asset_path)
+    if not safe_path or safe_path.startswith("../"):
+        return None
+    semantic_root = semantic_index.parent
+    job_root = semantic_root.parent if semantic_root.name == "semantic_chess_html" else semantic_root
+    roots = (
+        (job_root, semantic_root)
+        if safe_path.lower().startswith(_SEMANTIC_READER_JOB_ROOT_PREFIXES)
+        else (semantic_root, job_root)
+    )
+    for root in roots:
+        candidate = _named_artifact_descendant(root, safe_path)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _cached_semantic_reader_image_path(job_id: object, safe_path: str) -> Path | None:
+    semantic_index = _semantic_reader_index_for_job(job_id)
+    if semantic_index is None:
+        return None
+    _semantic_reader_asset_health(job_id)
+    cache_key = str(semantic_index)
+    with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+        cached = _SEMANTIC_READER_ASSET_HEALTH_CACHE.get(cache_key)
+    asset_paths = cached.get("asset_paths") if isinstance(cached, dict) else None
+    if not isinstance(asset_paths, dict):
+        return None
+    resolved = asset_paths.get(safe_path)
+    return Path(resolved) if isinstance(resolved, str) and resolved else None
+
+
+def _path_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _two_crop_recovery_source(job_id: object) -> tuple[Path, Path] | None:
+    job_root = _artifact_job_root_for_id(job_id)
+    if job_root is None:
+        return None
+    report_root = _named_artifact_child(job_root, "report", directory_only=True)
+    if report_root is None:
+        return None
+    archive_path = _named_artifact_child(report_root, _TWO_CROP_REVIEW_ZIP_NAME)
+    return (job_root, archive_path) if archive_path is not None else None
+
+
+def _two_crop_recovery_directory(job_root: Path) -> Path:
+    return job_root / "review" / "chess_fen" / "two_crop"
+
+
+def _two_crop_recovery_cache_key(job_root: Path) -> str:
+    return str(job_root)
+
+
+def _recover_semantic_reader_assets_from_zip(job_id: object) -> dict[str, object]:
+    source = _two_crop_recovery_source(job_id)
+    if source is None:
+        return {"status": "unavailable", "reason": "two_crop_review_zip_missing", "recovered_count": 0}
+    job_root, archive_path = source
+    target_dir = _two_crop_recovery_directory(job_root)
+    cache_key = _two_crop_recovery_cache_key(job_root)
+    archive_signature = _path_signature(archive_path)
+    target_signature = _path_signature(target_dir)
+    with _SEMANTIC_READER_ASSET_RECOVERY_LOCK:
+        cached = _SEMANTIC_READER_ASSET_RECOVERY_CACHE.get(cache_key)
+        if (
+            cached
+            and cached.get("archive_signature") == archive_signature
+            and cached.get("target_signature") == target_signature
+        ):
+            result = dict(cached.get("result") or {})
+            result["cached"] = True
+            return result
+
+        recovered_count = 0
+        existing_count = 0
+        ignored_count = 0
+        rejected_count = 0
+        total_uncompressed_bytes = 0
+        kind_counts = {"board": 0, "marker": 0, "overlay": 0}
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                members = archive.infolist()
+                if len(members) > _TWO_CROP_RECOVERY_MAX_MEMBERS:
+                    raise ValueError("two_crop_zip_member_limit_exceeded")
+                for info in members:
+                    if info.is_dir():
+                        ignored_count += 1
+                        continue
+                    match = _TWO_CROP_REVIEW_MEMBER_RE.fullmatch(info.filename)
+                    if match is None:
+                        ignored_count += 1
+                        continue
+                    if info.file_size < 1 or info.file_size > _TWO_CROP_RECOVERY_MAX_MEMBER_BYTES:
+                        rejected_count += 1
+                        continue
+                    total_uncompressed_bytes += info.file_size
+                    if total_uncompressed_bytes > _TWO_CROP_RECOVERY_MAX_TOTAL_BYTES:
+                        raise ValueError("two_crop_zip_uncompressed_limit_exceeded")
+                    compression_ratio = info.file_size / max(1, info.compress_size)
+                    if compression_ratio > _TWO_CROP_RECOVERY_MAX_COMPRESSION_RATIO:
+                        rejected_count += 1
+                        continue
+                    filename = match.group("filename")
+                    target = target_dir / filename
+                    if target.exists():
+                        existing_count += 1
+                        kind_counts[match.group("kind")] += 1
+                        continue
+                    payload = archive.read(info)
+                    if len(payload) != info.file_size:
+                        rejected_count += 1
+                        continue
+                    try:
+                        with target.open("xb") as output:
+                            output.write(payload)
+                    except FileExistsError:
+                        existing_count += 1
+                    except OSError:
+                        target.unlink(missing_ok=True)
+                        raise
+                    else:
+                        recovered_count += 1
+                    kind_counts[match.group("kind")] += 1
+        except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
+            result = {
+                "status": "failed",
+                "reason": str(error),
+                "recovered_count": recovered_count,
+                "existing_count": existing_count,
+                "ignored_count": ignored_count,
+                "rejected_count": rejected_count,
+            }
+        else:
+            result = {
+                "status": "recovered" if recovered_count else "already_recovered",
+                "reason": "",
+                "recovered_count": recovered_count,
+                "existing_count": existing_count,
+                "ignored_count": ignored_count,
+                "rejected_count": rejected_count,
+                "board_count": kind_counts["board"],
+                "marker_count": kind_counts["marker"],
+                "overlay_count": kind_counts["overlay"],
+            }
+
+        semantic_index = _semantic_reader_index_for_job(job_id)
+        if semantic_index is not None:
+            with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+                _SEMANTIC_READER_ASSET_HEALTH_CACHE.pop(str(semantic_index), None)
+        _SEMANTIC_READER_ASSET_RECOVERY_CACHE[cache_key] = {
+            "archive_signature": archive_signature,
+            "target_signature": _path_signature(target_dir),
+            "result": dict(result),
+        }
+        return result
+
+
+def _cached_semantic_reader_asset_health(semantic_index: Path) -> dict[str, object] | None:
+    cache_key = str(semantic_index)
+    with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+        cached = _SEMANTIC_READER_ASSET_HEALTH_CACHE.get(cache_key)
+    if not cached or cached.get("index_signature") != _path_signature(semantic_index):
+        return None
+    directory_signatures = cached.get("directory_signatures")
+    if not isinstance(directory_signatures, dict):
+        return None
+    for raw_path, signature in directory_signatures.items():
+        if _path_signature(Path(raw_path)) != signature:
+            return None
+    health = cached.get("health")
+    return dict(health) if isinstance(health, dict) else None
+
+
+def _store_semantic_reader_asset_health(
+    semantic_index: Path,
+    *,
+    directories: set[Path],
+    health: dict[str, object],
+    asset_paths: dict[str, Path],
+) -> None:
+    cache_key = str(semantic_index)
+    entry = {
+        "index_signature": _path_signature(semantic_index),
+        "directory_signatures": {str(path): _path_signature(path) for path in sorted(directories)},
+        "health": dict(health),
+        "asset_paths": {key: str(path) for key, path in asset_paths.items()},
+    }
+    with _SEMANTIC_READER_ASSET_HEALTH_CACHE_LOCK:
+        if len(_SEMANTIC_READER_ASSET_HEALTH_CACHE) >= _SEMANTIC_READER_ASSET_HEALTH_CACHE_MAX:
+            oldest_key = next(iter(_SEMANTIC_READER_ASSET_HEALTH_CACHE))
+            _SEMANTIC_READER_ASSET_HEALTH_CACHE.pop(oldest_key, None)
+        _SEMANTIC_READER_ASSET_HEALTH_CACHE[cache_key] = entry
+
+
+def _semantic_reader_asset_health(job_id: object) -> dict[str, object]:
+    semantic_index = _semantic_reader_index_for_job(job_id)
+    if semantic_index is None:
+        return {
+            "referenced_image_asset_count": 0,
+            "missing_required_asset_count": 1,
+            "missing_optional_asset_count": 0,
+            "missing_required_asset_paths": ["index.html"],
+            "missing_optional_asset_paths": [],
+        }
+    cached = _cached_semantic_reader_asset_health(semantic_index)
+    if cached is not None:
+        return cached
+    try:
+        html_text = semantic_index.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        html_text = semantic_index.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {
+            "referenced_image_asset_count": 0,
+            "missing_required_asset_count": 1,
+            "missing_optional_asset_count": 0,
+            "missing_required_asset_paths": ["index.html"],
+            "missing_optional_asset_paths": [],
+        }
+    soup = BeautifulSoup(html_text, "html.parser")
+    referenced_count = 0
+    missing_required: list[str] = []
+    missing_optional: list[str] = []
+    asset_directories: set[Path] = set()
+    image_references: list[tuple[object, str, tuple[Path, ...]]] = []
+    for image in soup.find_all("img"):
+        raw_src = str(image.get("src") or "").strip()
+        route_path = _semantic_reader_asset_route_path(raw_src, semantic_index)
+        if not route_path:
+            if raw_src and urllib.parse.urlsplit(raw_src).scheme in {"http", "https", "data"}:
+                continue
+            missing_required.append(raw_src or "<empty-src>")
+            continue
+        referenced_count += 1
+        candidates = _semantic_reader_asset_candidate_paths(semantic_index, route_path)
+        asset_directories.update(candidate.parent for candidate in candidates)
+        image_references.append((image, route_path, candidates))
+
+    directory_files: dict[Path, dict[str, Path]] = {}
+    for directory in asset_directories:
+        try:
+            with os.scandir(directory) as entries:
+                directory_files[directory] = {
+                    entry.name: Path(entry.path)
+                    for entry in entries
+                    if entry.is_file(follow_symlinks=False)
+                }
+        except OSError:
+            directory_files[directory] = {}
+
+    resolved_asset_paths: dict[str, Path] = {}
+    for image, route_path, candidates in image_references:
+        resolved_candidate = next(
+            (
+                directory_files.get(candidate.parent, {}).get(candidate.name)
+                for candidate in candidates
+                if candidate.name in directory_files.get(candidate.parent, {})
+            ),
+            None,
+        )
+        if resolved_candidate is not None:
+            resolved_asset_paths[route_path] = resolved_candidate
+            continue
+        target = missing_optional if _semantic_reader_asset_is_optional(image, route_path) else missing_required
+        target.append(route_path)
+    health = {
+        "referenced_image_asset_count": referenced_count,
+        "missing_required_asset_count": len(missing_required),
+        "missing_optional_asset_count": len(missing_optional),
+        "missing_required_asset_paths": missing_required[:25],
+        "missing_optional_asset_paths": missing_optional[:25],
+    }
+    _store_semantic_reader_asset_health(
+        semantic_index,
+        directories=asset_directories,
+        health=health,
+        asset_paths=resolved_asset_paths,
+    )
+    return health
 
 
 def _missing_final_reader_health_gate(semantic_index: Path | None) -> dict:
@@ -1255,6 +1707,12 @@ def _final_reader_health_summary(
         "board_crop_count",
         "empty_img_src_count",
         "asset_missing_empty_src_count",
+        "referenced_image_asset_count",
+        "missing_required_asset_count",
+        "missing_optional_asset_count",
+        "missing_required_asset_paths",
+        "missing_optional_asset_paths",
+        "asset_recovery",
         "diagrams_total",
         "fen_accepted",
     ):
@@ -1368,7 +1826,7 @@ def _chess_reader_routing_metadata(
         and artifact_path != final_reader_path_obj
     ):
         source_html_evidence_path = str(artifact_path)
-    health_gate = _semantic_chess_reader_health_gate(final_reader_path_obj)
+    health_gate = _semantic_chess_reader_health_gate(job_id)
     if final_reader_path_obj is not None and not health_gate:
         health_gate = _missing_final_reader_health_gate(final_reader_path_obj)
     artifact_health = artifact_mapping.get("final_reader_health")
@@ -1759,8 +2217,14 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         None,
     )
     chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
+    chess_diagrams_file = _first_file(job_dir / "report", "chess_diagrams.json")
+    chess_fen_two_crop_review_artifacts_file = _first_file(
+        job_dir / "report",
+        _TWO_CROP_REVIEW_ZIP_NAME,
+    )
+    chess_fen_review_file = _first_file(job_dir / "review", "fen_manual_review.html")
     runtime_json_file = _first_file(job_dir / "log", "*.runtime.json")
-    if input_file is None and output_file is None and quality_json_file is None:
+    if input_file is None and output_file is None and quality_json_file is None and chess_fen_review_file is None:
         return None
 
     quality_payload = _read_json_file(quality_json_file)
@@ -1786,7 +2250,11 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     status = str(report_job.get("status") or runtime_payload.get("status") or "").strip().lower()
     runtime_status = str(runtime.get("status") or "").strip().lower()
     if status not in {"queued", "running", "repairing_headings", "ready", "failed", "timed_out"}:
-        status = "ready" if output_file is not None or runtime_status == "succeeded" else "failed"
+        status = (
+            "ready"
+            if output_file is not None or chess_fen_review_file is not None or runtime_status == "succeeded"
+            else "failed"
+        )
 
     source_path = str(input_file) if input_file is not None else ""
     job = build_conversion_job_record(
@@ -1799,7 +2267,17 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     job.update(
         {
             "status": status,
-            "message": str(report_job.get("message") or quality_state.get("message") or ("EPUB gotowy do pobrania." if status == "ready" else "Historia odtworzona z lokalnych artefaktow.")),
+            "message": str(
+                report_job.get("message")
+                or quality_state.get("message")
+                or (
+                    "Zestaw do oznaczania FEN jest gotowy."
+                    if chess_fen_review_file is not None and output_file is None
+                    else "EPUB gotowy do pobrania."
+                    if status == "ready"
+                    else "Historia odtworzona z lokalnych artefaktow."
+                )
+            ),
             "updated_at": updated_at,
             "output_path": str(output_file) if output_file is not None else "",
             "download_name": str(report_job.get("download_name") or (output_file.name if output_file is not None else Path(filename).with_suffix(".epub").name)),
@@ -1810,6 +2288,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
             "error": str(report_job.get("error") or ""),
             "error_code": str(report_job.get("error_code") or ""),
             "artifact_storage": _artifact_storage_status(),
+            "recovered_from_artifacts": True,
             "restored_from_artifacts": True,
         }
     )
@@ -1851,6 +2330,32 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         )
         artifacts["chess_glyph_diagnostics"]["download_url"] = f"/convert/artifact/{job_id}/chess_glyph_diagnostics"
         artifacts["chess_glyph_diagnostics"]["label"] = "Chess glyph diagnostics"
+    if chess_diagrams_file is not None:
+        artifacts["chess_diagrams"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_diagrams_file,
+        )
+        artifacts["chess_diagrams"]["download_url"] = f"/convert/artifact/{job_id}/chess_diagrams"
+        artifacts["chess_diagrams"]["label"] = "Chess diagrams"
+    if chess_fen_two_crop_review_artifacts_file is not None:
+        artifacts["chess_fen_two_crop_review_artifacts"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_fen_two_crop_review_artifacts_file,
+        )
+        artifacts["chess_fen_two_crop_review_artifacts"]["download_url"] = (
+            f"/convert/artifact/{job_id}/chess_fen_two_crop_review_artifacts"
+        )
+        artifacts["chess_fen_two_crop_review_artifacts"]["label"] = "Chess FEN two-crop review artifacts"
+    if chess_fen_review_file is not None:
+        artifacts["chess_fen_review"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_fen_review_file,
+        )
+        artifacts["chess_fen_review"]["download_url"] = f"/convert/artifact/{job_id}/chess_fen_review"
+        artifacts["chess_fen_review"]["label"] = "Oznaczanie FEN i markerow"
     if pdf_layout_preview_file is not None:
         artifacts["pdf_layout_preview"] = _local_artifact_metadata(job_id, ArtifactKind.REPORT, pdf_layout_preview_file)
         artifacts["pdf_layout_preview"]["download_url"] = f"/convert/artifact/{job_id}/pdf_layout_preview"
@@ -2111,6 +2616,67 @@ def _resolve_local_artifact_path(artifact: dict | None) -> Path | None:
     if not resolved.is_file():
         return None
     return resolved
+
+
+def _ensure_local_fen_review_artifact(job_id: str, job: dict) -> dict | None:
+    safe_job_id = str(job_id or "").strip()
+    if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
+        return None
+    artifacts = dict(job.get("artifacts", {}) or {})
+    job_root = _artifact_job_root_for_id(safe_job_id)
+    if job_root is None:
+        return None
+    review_dir = _named_artifact_child(job_root, "review", directory_only=True)
+    review_path = (
+        _named_artifact_child(review_dir, "fen_manual_review.html")
+        if review_dir is not None
+        else None
+    )
+    if review_path is None:
+        diagrams_artifact = artifacts.get("chess_diagrams")
+        diagrams_path = _resolve_local_artifact_path(
+            diagrams_artifact if isinstance(diagrams_artifact, dict) else None
+        )
+        if diagrams_path is None:
+            report_dir = _named_artifact_child(job_root, "report", directory_only=True)
+            diagrams_path = (
+                _named_artifact_child(report_dir, "chess_diagrams.json")
+                if report_dir is not None
+                else None
+            )
+        if diagrams_path is None or not _is_path_under(diagrams_path, job_root):
+            return None
+        try:
+            from chess_fen_review_builder import build_conversion_fen_review
+
+            result = build_conversion_fen_review(
+                artifact_id=safe_job_id,
+                diagrams_path=diagrams_path,
+            )
+        except Exception as exc:
+            app.logger.warning("Automatic FEN review build failed: %s", type(exc).__name__)
+            return None
+        review_path = Path(str(result.get("review_html") or ""))
+        if not review_path.is_file() or not _is_path_under(review_path, job_root):
+            return None
+    artifact = _local_artifact_metadata(safe_job_id, ArtifactKind.REPORT, review_path)
+    artifact["download_url"] = f"/convert/artifact/{safe_job_id}/chess_fen_review"
+    artifact["label"] = "Oznaczanie FEN i markerow"
+    artifacts = dict(job.get("artifacts", {}) or {})
+    artifacts["chess_fen_review"] = artifact
+    job["artifacts"] = artifacts
+    _set_conversion_job(safe_job_id, artifacts=artifacts)
+    return artifact
+
+
+def _resolve_local_fen_review_dir(job_id: str, job: dict) -> Path | None:
+    artifact = dict(job.get("artifacts", {}) or {}).get("chess_fen_review")
+    if not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return None
+    return artifact_path.parent
 
 
 def _resolve_retry_source_path(job: dict) -> Path | None:
@@ -3273,6 +3839,87 @@ def _save_supabase_conversion_job(token: str, user_id: str, job_id: str, job: di
     return {"status": "synced", "provider": "supabase", "error": ""}
 
 
+def _delete_supabase_conversion_job(token: str, user_id: str, job_id: str) -> dict:
+    """Delete one owned cloud job and its stored artifacts without orphaning history rows."""
+    if not token or not user_id or not job_id:
+        return {"status": "skipped", "provider": "supabase", "reason": "missing_identity"}
+
+    artifact_path = (
+        "/rest/v1/conversion_artifacts"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        f"&job_id=eq.{quote(job_id, safe='')}"
+        "&select=storage_bucket,storage_path"
+    )
+    artifact_status, artifact_payload = _supabase_request_json(artifact_path, token=token)
+    if artifact_status != 200 or not isinstance(artifact_payload, list):
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "error": f"artifact_lookup_failed_{artifact_status}",
+        }
+
+    paths_by_bucket: dict[str, list[str]] = {}
+    for artifact in artifact_payload:
+        if not isinstance(artifact, dict):
+            continue
+        bucket = str(artifact.get("storage_bucket") or SUPABASE_ARTIFACT_BUCKET).strip()
+        storage_path = str(artifact.get("storage_path") or "").strip()
+        if not bucket or not storage_path:
+            continue
+        paths_by_bucket.setdefault(bucket, []).append(storage_path)
+
+    deleted_object_count = 0
+    for bucket, storage_paths in paths_by_bucket.items():
+        unique_paths = list(dict.fromkeys(storage_paths))
+        for offset in range(0, len(unique_paths), 1000):
+            batch = unique_paths[offset : offset + 1000]
+            storage_status, _storage_payload = _supabase_request_json(
+                f"/storage/v1/object/{quote(bucket, safe='')}",
+                token=token,
+                method="DELETE",
+                payload={"prefixes": batch},
+            )
+            if storage_status != 200:
+                return {
+                    "status": "failed",
+                    "provider": "supabase",
+                    "error": f"storage_delete_failed_{storage_status}",
+                    "deleted_object_count": deleted_object_count,
+                }
+            deleted_object_count += len(batch)
+
+    job_path = (
+        "/rest/v1/conversion_jobs"
+        f"?user_id=eq.{quote(user_id, safe='')}"
+        f"&job_id=eq.{quote(job_id, safe='')}"
+    )
+    job_status, job_payload = _supabase_request_json(
+        job_path,
+        token=token,
+        method="DELETE",
+        prefer="return=representation",
+    )
+    if job_status != 200:
+        return {
+            "status": "failed",
+            "provider": "supabase",
+            "error": f"job_delete_failed_{job_status}",
+            "deleted_object_count": deleted_object_count,
+        }
+    if not isinstance(job_payload, list) or not job_payload:
+        return {
+            "status": "missing",
+            "provider": "supabase",
+            "reason": "job_not_found",
+            "deleted_object_count": deleted_object_count,
+        }
+    return {
+        "status": "deleted",
+        "provider": "supabase",
+        "deleted_object_count": deleted_object_count,
+    }
+
+
 def _save_supabase_conversion_artifact(
     token: str,
     *,
@@ -4352,7 +4999,7 @@ def _cleanup_expired_conversion_jobs(*, now: datetime | None = None, force: bool
             source_path = _normalize_temp_artifact_path(job.get("source_path", ""))
             output_path = _normalize_temp_artifact_path(job.get("output_path", ""))
 
-            if job.get("recovered_from_artifacts"):
+            if job.get("recovered_from_artifacts") or job.get("restored_from_artifacts"):
                 if source_path:
                     active_paths.add(source_path)
                 if output_path:
@@ -5060,17 +5707,60 @@ def convert_jobs():
 
 @app.route("/convert/jobs/<job_id>", methods=["DELETE"])
 def convert_job_delete(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
+    cloud_user, cloud_token = _authenticated_request_context()
+    if not job and cloud_user and cloud_token:
+        job = _load_supabase_conversion_jobs(
+            cloud_token,
+            str(cloud_user.get("id") or ""),
+            limit=MAX_CONVERSION_JOB_HISTORY_LIMIT,
+        ).get(job_id)
+        if job:
+            job["cloud"] = True
     if not job:
-        return _json_error(
-            "Nie znaleziono zadania konwersji.",
-            error_code=ERROR_MISSING_OUTPUT,
-            status_code=404,
-            phase="delete",
-            job_id=job_id,
+        if cloud_user and cloud_token:
+            cloud_delete = _delete_supabase_conversion_job(
+                cloud_token,
+                str(cloud_user.get("id") or ""),
+                job_id,
+            )
+            if cloud_delete.get("status") != "failed":
+                response = jsonify(
+                    {
+                        "success": True,
+                        "job_id": job_id,
+                        "status": "already_missing",
+                        "cleanup": {"status": "skipped", "reason": "job_missing"},
+                        "cloud_delete": cloud_delete,
+                    }
+                )
+                apply_no_store_headers(response.headers)
+                return response
+            return _json_error(
+                "Nie udalo sie usunac publikacji z historii konta.",
+                error_code="conversion_job_cloud_delete_failed",
+                status_code=502,
+                phase="delete",
+                job_id=job_id,
+                retryable=True,
+                extra={"cloud_delete": cloud_delete},
+            )
+        response = jsonify(
+            {
+                "success": True,
+                "job_id": job_id,
+                "status": "already_missing",
+                "cleanup": {"status": "skipped", "reason": "job_missing"},
+                "cloud_delete": {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"},
+            }
         )
+        apply_no_store_headers(response.headers)
+        return response
     if is_active_conversion_status(str(job.get("status") or "")):
         return _json_error(
             "Nie można usunąć publikacji, która jest jeszcze przetwarzana.",
@@ -5081,8 +5771,24 @@ def convert_job_delete(job_id: str):
             retryable=True,
         )
 
+    cloud_delete = (
+        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
+        if cloud_user and cloud_token
+        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
+    )
+    if cloud_delete.get("status") == "failed":
+        return _json_error(
+            "Nie udało się usunąć publikacji z historii konta. Spróbuj ponownie.",
+            error_code="conversion_job_cloud_delete_failed",
+            status_code=502,
+            phase="delete",
+            job_id=job_id,
+            retryable=True,
+            extra={"cloud_delete": cloud_delete},
+        )
+
     deleted = _CONVERSION_JOB_STORE.delete(job_id)
-    if not deleted:
+    if not deleted and not bool(job.get("cloud")):
         return _json_error(
             "Nie znaleziono zadania konwersji.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -5091,16 +5797,10 @@ def convert_job_delete(job_id: str):
             job_id=job_id,
         )
 
-    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted)
-    cloud_user, cloud_token = _authenticated_request_context()
-    cloud_delete = (
-        _delete_supabase_conversion_job(cloud_token, str(cloud_user.get("id") or ""), job_id)
-        if cloud_user and cloud_token
-        else {"status": "skipped", "provider": "supabase", "reason": "anonymous_or_local"}
-    )
+    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted or job)
     behavior_signal = _record_user_behavior_signal_safely(
         job_id=job_id,
-        job=deleted,
+        job=deleted or job,
         event_type="job_deleted",
     )
     response = jsonify(
@@ -6072,6 +6772,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
+    if key == "chess_fen_review" and not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
     if key == "chess_reader":
         source_reader_artifact = artifacts.get("chess_pgn_html")
         if isinstance(source_reader_artifact, dict):
@@ -6116,6 +6818,48 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         if semantic_response is not None:
             return semantic_response
         return _final_reader_missing_response(job_id, artifact_path, artifact)
+    if key == "chess_fen_review":
+        from chess_fen_review_repository import ChessFenReviewRepository
+        from chess_fen_review_store import load_fen_review_progress
+        from chess_fen_review_ui import render_fen_manual_review_html
+
+        try:
+            auth_context = _resolve_request_auth_context()
+            authorized_job = (
+                _get_conversion_job_for_auth(job_id, auth_context)
+                if auth_context.authenticated and not auth_context.error
+                else None
+            )
+            review_payload = (
+                ChessFenReviewRepository(
+                    artifact_path.parent,
+                    artifact_id=job_id,
+                    owner_user_id=auth_context.user_id,
+                ).load()
+                if authorized_job is not None
+                else load_fen_review_progress(artifact_path.parent)
+            )
+            review_rows = list(review_payload.get("rows") or [])
+            response = app.response_class(
+                render_fen_manual_review_html(
+                    review_rows,
+                    source_identity=review_rows[0] if review_rows else {},
+                    artifact_id=job_id,
+                ),
+                mimetype="text/html",
+            )
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-KindleMaster-Artifact-Source"] = str(
+                review_payload.get("storage") or "local"
+            )
+            return response
+        except Exception as exc:
+            app.logger.warning(
+                "FEN review dynamic render failed for %s; serving stored HTML: %s",
+                job_id,
+                exc,
+            )
     response = send_file(
         artifact_path,
         mimetype=str(artifact.get("content_type") or mimetypes.guess_type(artifact_path.name)[0] or "application/octet-stream"),
@@ -6125,6 +6869,193 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-KindleMaster-Artifact-Source"] = "local"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/chess_fen_review_progress", methods=["GET", "PUT"])
+def convert_fen_manual_review_progress(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
+    auth_config = load_supabase_auth_config()
+    if auth_config.enabled and auth_config.configured and not auth_context.authenticated:
+        return _json_auth_error(
+            AuthContext(
+                error="Logowanie jest wymagane do zapisu oznaczeń w bazie.",
+                error_code="auth_required",
+                status_code=401,
+            )
+        )
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job_for_auth(job_id, auth_context)
+    if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job_for_auth(job_id, auth_context)
+    if not job:
+        restored = _restore_local_artifact_job_by_id(job_id)
+        job = _get_conversion_job_for_auth(job_id, auth_context) if restored else None
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
+        return _json_error(
+            "Nie znaleziono zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_review",
+            job_id=job_id,
+        )
+
+    from chess_fen_review_repository import ChessFenReviewRepository
+    from chess_fen_review_store import (
+        FenReviewConflictError,
+        FenReviewOwnershipError,
+        FenReviewSessionClosedError,
+        FenReviewStoreError,
+    )
+
+    repository = ChessFenReviewRepository(
+        review_dir,
+        artifact_id=job_id,
+        owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
+    )
+
+    try:
+        if request.method == "GET":
+            payload = repository.load()
+        else:
+            submitted = request.get_json(silent=True)
+            if not isinstance(submitted, dict):
+                raise FenReviewStoreError("Prze?lij obiekt JSON z polem rows.")
+            rows = submitted.get("rows")
+            if not isinstance(rows, list):
+                raise FenReviewStoreError("Pole rows musi by? list? rekord?w.")
+            try:
+                expected_revision = int(submitted.get("expected_revision") or 0)
+            except (TypeError, ValueError) as error:
+                raise FenReviewStoreError("Pole expected_revision musi być liczbą całkowitą.") from error
+            if expected_revision < 0:
+                raise FenReviewStoreError("Pole expected_revision nie może być ujemne.")
+            action = str(submitted.get("action") or "save").strip().lower()
+            change_source = str(submitted.get("change_source") or "autosave").strip().lower()
+            payload = repository.save(
+                rows,
+                source_digest=str(submitted.get("source_digest") or ""),
+                owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
+                expected_revision=expected_revision,
+                action=action,
+                change_source=change_source,
+            )
+    except FenReviewConflictError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_revision_conflict",
+            status_code=409,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except FenReviewSessionClosedError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_session_closed",
+            status_code=409,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except FenReviewOwnershipError as exc:
+        return _json_error(
+            str(exc),
+            error_code="fen_review_owner_mismatch",
+            status_code=403,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except FenReviewStoreError as exc:
+        return _json_error(
+            str(exc),
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=400,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    except OSError as exc:
+        return _json_error(
+            f"Nie uda?o si? zapisa? post?pu oznaczania: {exc}",
+            error_code=ERROR_UPLOAD_FAILED,
+            status_code=500,
+            phase="fen_review",
+            job_id=job_id,
+        )
+    response = jsonify({"success": True, "job_id": job_id, **payload})
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/fen_manual_assets/<path:asset_path>", methods=["GET"])
+def convert_fen_manual_review_asset(job_id: str, asset_path: str):
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job(job_id)
+    if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_local_artifact_job_by_id(job_id)
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact = dict(job.get("artifacts", {}) or {}).get("chess_fen_review")
+    if not isinstance(artifact, dict):
+        artifact = _ensure_local_fen_review_artifact(job_id, job)
+    if not isinstance(artifact, dict):
+        return _json_error(
+            "Nie znaleziono zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    artifact_path = _resolve_local_artifact_path(artifact)
+    if artifact_path is None or not artifact_path.is_file():
+        return _json_error(
+            "Nie znaleziono lokalnego zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    root = (artifact_path.parent / "fen_manual_assets").resolve()
+    requested = (root / asset_path).resolve()
+    if (root not in requested.parents and requested != root) or not requested.is_file():
+        return _json_error(
+            "Nieprawidlowa sciezka cropa FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="download",
+            job_id=job_id,
+        )
+    response = send_file(
+        requested,
+        mimetype=mimetypes.guess_type(requested.name)[0] or "application/octet-stream",
+        as_attachment=False,
+        download_name=requested.name,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-KindleMaster-Artifact-Source"] = "fen-manual-review-asset"
     return response
 
 
@@ -6161,12 +7092,12 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
             phase="download",
             job_id=job_id,
         )
-    semantic_index = _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
+    _ensure_semantic_chess_html_artifact(job_id, job, artifact_path)
+    semantic_index = _semantic_reader_index_for_job(job_id)
     if semantic_index is None:
         return _final_reader_missing_response(job_id, artifact_path, artifact)
-    root = semantic_index.parent.resolve()
-    requested = (root / asset_path).resolve()
-    if root not in requested.parents and requested != root:
+    safe_asset_path = _safe_semantic_reader_asset_path(asset_path)
+    if not safe_asset_path or safe_asset_path.startswith("../"):
         return _json_error(
             "Nieprawidłowa ścieżka artefaktu.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -6174,7 +7105,10 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
             phase="download",
             job_id=job_id,
         )
-    if not requested.is_file():
+    requested = _cached_semantic_reader_image_path(job_id, safe_asset_path)
+    if requested is None:
+        requested = _resolve_semantic_chess_asset_path(semantic_index, safe_asset_path)
+    if requested is None:
         return _json_error(
             "Nie znaleziono assetu semantycznego HTML.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -6748,6 +7682,21 @@ def _get_publication_recommendation(publication_analysis: dict) -> str:
         "fixed_layout_fallback": "Preserve Layout",
     }
     return mapping.get(profile, "Auto Premium")
+
+
+from chess_evidence_review_routes import register_chess_evidence_review_routes
+
+register_chess_evidence_review_routes(
+    app,
+    mark_timed_out_conversion_jobs=_mark_timed_out_conversion_jobs,
+    cleanup_expired_conversion_jobs=_cleanup_expired_conversion_jobs,
+    get_conversion_job=_get_conversion_job,
+    ensure_local_artifact_history_loaded=_ensure_local_artifact_history_loaded,
+    restore_local_artifact_job_by_id=_restore_local_artifact_job_by_id,
+    json_error=_json_error,
+    error_missing_output=ERROR_MISSING_OUTPUT,
+    error_upload_failed=ERROR_UPLOAD_FAILED,
+)
 
 
 if __name__ == "__main__":

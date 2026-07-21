@@ -1405,23 +1405,25 @@ class AppRuntimeServicesTests(unittest.TestCase):
                 "candidates": [{"label": "auto_repair", "premium_score": 9.4}],
             },
         )
+        passing_validation = _build_runtime_validation_report()
 
         with patch("epub_delivery_repair.has_progressive_jpeg", return_value=True):
             with patch("epub_delivery_repair.repair_epub_for_delivery", return_value=repair_result) as repair_mock:
-                outcome = run_document_conversion(
-                    ConversionRequest(
-                        source_path="sample.pdf",
-                        source_type="pdf",
-                        original_filename="sample.pdf",
-                        profile="auto-premium",
-                        language="en",
-                        heading_repair_enabled=False,
-                        quality_gate_mode="draft",
-                        feedback_enabled=False,
-                    ),
-                    convert_impl=convert_impl,
-                    heading_repair_impl=Mock(),
-                )
+                with patch("epub_validation.validate_epub_bytes", return_value=passing_validation):
+                    outcome = run_document_conversion(
+                        ConversionRequest(
+                            source_path="sample.pdf",
+                            source_type="pdf",
+                            original_filename="sample.pdf",
+                            profile="auto-premium",
+                            language="en",
+                            heading_repair_enabled=False,
+                            quality_gate_mode="draft",
+                            feedback_enabled=False,
+                        ),
+                        convert_impl=convert_impl,
+                        heading_repair_impl=Mock(),
+                    )
 
         self.assertEqual(outcome.epub_bytes, repaired_epub)
         self.assertEqual(outcome.metadata["auto_repair"]["status"], "applied")

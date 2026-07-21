@@ -43,7 +43,7 @@ def load_env_file(path: str | Path) -> dict[str, str]:
         key = key.strip().lstrip("\ufeff")
         if not key:
             continue
-        values[key] = value.strip().strip('"').strip("'")
+        values[key] = value.strip().strip('"').strip("'").lstrip("\ufeff")
     return values
 
 
@@ -53,7 +53,11 @@ def resolve_runtime_environment(
     env_files: Sequence[str] = DEFAULT_LOCAL_ENV_FILES,
     cwd: str | Path | None = None,
 ) -> dict[str, str]:
-    resolved = {str(key): str(value) for key, value in environ.items()} if environ is not None else dict(os.environ)
+    source = environ.items() if environ is not None else os.environ.items()
+    resolved = {
+        str(key).lstrip("\ufeff"): str(value).lstrip("\ufeff")
+        for key, value in source
+    }
     root = Path(cwd or Path.cwd())
     configured_files = [] if environ is not None else list(env_files)
     configured_files.append(str(resolve_app_env_file(resolved)))

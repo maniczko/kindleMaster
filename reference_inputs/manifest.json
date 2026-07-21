@@ -179,7 +179,7 @@
       "generator": "list_table_image",
       "source_path": "<generated:list_table_image>",
       "target_path": "reference_inputs/docx/list_table_image.docx",
-      "size_bytes": 38818
+      "size_bytes": 38816
     },
     {
       "id": "no_heading_document_docx",

@@ -20,10 +20,15 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 import fitz
+import numpy as np
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
+from chess_exercise_model import build_chess_exercise_model, exercise_to_reader_item
+from chess_page_geometry import analyze_exercise_page_geometry, bbox_containment, order_geometry_items
+from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
+from chess_fen_square_model import predict_portable_fen_board
 from chess_position_recognizer import validate_fen
 from chess_side_marker_blockers import build_side_marker_blocker_attribution, side_marker_blocker_attribution_markdown
 from chess_side_to_move_trust_audit import build_side_to_move_diagnostic_report
@@ -170,6 +175,7 @@ class ChessStudyConfig:
     min_grid_confidence: float = 0.50
     max_candidates_per_page: int = 6
     quality_profile: str = "default"
+    debug_artifact_policy: str = "all"
     render_pages: bool = False
     ocr_fallback: bool = False
     strict_thresholds: bool = False
@@ -323,15 +329,30 @@ class StudyDiagram:
     board_placement_status: str
     full_fen_allowed: bool
     full_fen_blockers: list[str]
+    marker_board_bbox: list[float]
+    marker_raw_board_bbox: list[float]
+    marker_board_localization_method: str
     marker_candidate_id: str
     marker_candidate_bbox: list[float]
+    marker_candidate_crop_bbox: list[float]
     marker_candidate_crop_path: str
     marker_candidate_features: dict[str, Any]
     marker_candidate_class: str
+    marker_candidate_classifier_status: str
+    marker_candidate_classifier_reason: str
+    marker_candidate_classifier_crop_variant: str
+    marker_candidate_classifier_crop_bbox: list[float]
+    marker_candidate_classifier_attempts: list[dict[str, Any]]
+    marker_candidate_side: str
     marker_candidate_confidence: float
     marker_assignment_status: str
     marker_assignment_confidence: float
     marker_assignment_runner_up_margin: float
+    marker_assignment_ownership_margin: float
+    marker_assignment_cost: float
+    marker_assignment_zone: str
+    marker_assignment_competing_candidate_ids: list[str]
+    marker_assignment_competing_candidate_sides: list[str]
     marker_assignment_rejected_reasons: list[str]
     strict_fen_side_evidence_trusted: bool
     placement: str
@@ -398,16 +419,41 @@ class StudyDiagram:
             "board_placement_status": self.board_placement_status,
             "full_fen_allowed": bool(self.full_fen_allowed),
             "full_fen_blockers": list(self.full_fen_blockers),
+            "marker_board_bbox": list(self.marker_board_bbox),
+            "marker_raw_board_bbox": list(self.marker_raw_board_bbox),
+            "marker_board_localization_method": self.marker_board_localization_method,
             "marker_candidate_id": self.marker_candidate_id,
             "marker_candidate_bbox": list(self.marker_candidate_bbox),
+            "marker_candidate_crop_bbox": list(self.marker_candidate_crop_bbox),
             "marker_candidate_crop_path": self.marker_candidate_crop_path,
             "marker_candidate_features": dict(self.marker_candidate_features),
             "marker_candidate_class": self.marker_candidate_class,
+            "marker_candidate_classifier_status": self.marker_candidate_classifier_status,
+            "marker_candidate_classifier_reason": self.marker_candidate_classifier_reason,
+            "marker_candidate_classifier_crop_variant": self.marker_candidate_classifier_crop_variant,
+            "marker_candidate_classifier_crop_bbox": list(
+                self.marker_candidate_classifier_crop_bbox
+            ),
+            "marker_candidate_classifier_attempts": list(
+                self.marker_candidate_classifier_attempts
+            ),
+            "marker_candidate_side": self.marker_candidate_side,
             "marker_candidate_confidence": round(float(self.marker_candidate_confidence or 0.0), 4),
             "marker_assignment_status": self.marker_assignment_status,
             "marker_assignment_confidence": round(float(self.marker_assignment_confidence or 0.0), 4),
             "marker_assignment_runner_up_margin": round(
                 float(self.marker_assignment_runner_up_margin or 0.0), 4
+            ),
+            "marker_assignment_ownership_margin": round(
+                float(self.marker_assignment_ownership_margin or 0.0), 4
+            ),
+            "marker_assignment_cost": round(float(self.marker_assignment_cost or 0.0), 4),
+            "marker_assignment_zone": self.marker_assignment_zone,
+            "marker_assignment_competing_candidate_ids": list(
+                self.marker_assignment_competing_candidate_ids
+            ),
+            "marker_assignment_competing_candidate_sides": list(
+                self.marker_assignment_competing_candidate_sides
             ),
             "marker_assignment_rejected_reasons": list(self.marker_assignment_rejected_reasons),
             "strict_fen_side_evidence_trusted": bool(self.strict_fen_side_evidence_trusted),
@@ -503,6 +549,7 @@ def run_chess_study_export(
     max_candidates_per_page: int = 6,
     quality_profile: str = "default",
     render_pages: bool = False,
+    debug_artifact_policy: str = "all",
     ocr_fallback: bool = False,
     strict_thresholds: bool = False,
     low_confidence_diagram_review: bool = True,
@@ -528,6 +575,7 @@ def run_chess_study_export(
         min_grid_confidence=min_grid_confidence,
         max_candidates_per_page=max_candidates_per_page,
         quality_profile=normalized_profile,
+        debug_artifact_policy=_normalize_debug_artifact_policy(debug_artifact_policy),
         render_pages=effective_render_pages,
         ocr_fallback=ocr_fallback,
         strict_thresholds=strict_thresholds,
@@ -2213,6 +2261,7 @@ def build_fen_square_dataset(
     out_dir: str | Path,
     fold_count: int = 5,
     holdout_fold: int = 0,
+    require_canonical_labels: bool = True,
 ) -> dict[str, Any]:
     """Build a 64-square supervised dataset from verified FEN labels."""
     out = Path(out_dir)
@@ -2223,9 +2272,37 @@ def build_fen_square_dataset(
     data_dir.mkdir(parents=True, exist_ok=True)
     squares_root.mkdir(parents=True, exist_ok=True)
 
+    labels_validation: dict[str, Any] = {"status": "not_required"}
+    if require_canonical_labels:
+        from scripts.validate_chess_fen_labels import validate_chess_fen_labels
+
+        labels_validation = validate_chess_fen_labels(Path(labels_path))
+        if labels_validation.get("status") != "passed":
+            payload = {
+                "schema": "kindlemaster.fen_square_dataset.v1",
+                "status": "failed",
+                "reason": "canonical_labels_validation_failed",
+                "labels_path": str(labels_path),
+                "verified_label_count": 0,
+                "board_count": 0,
+                "sample_count": 0,
+                "class_counts": {},
+                "split_counts": {},
+                "fold_count": max(2, int(fold_count or 5)),
+                "holdout_fold": int(holdout_fold or 0),
+                "dataset_path": "",
+                "squares_root": str(squares_root),
+                "skipped": [],
+                "labels_validation": labels_validation,
+                "policy": "Dataset generation fails closed unless every canonical label passes provenance validation.",
+            }
+            _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
+            return payload
+
     labels = _promote_verified_fen_labels(Path(labels_path), out)
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    split_groups: dict[str, str] = {}
     for label in labels:
         crop_path = Path(str(label.get("crop_path") or ""))
         diagram_id = str(label.get("diagram_id") or crop_path.stem)
@@ -2235,7 +2312,9 @@ def build_fen_square_dataset(
         except Exception as exc:
             skipped.append({"diagram_id": diagram_id, "crop_path": str(crop_path), "reason": str(exc)})
             continue
-        split = _dataset_split(diagram_id, fold_count=fold_count, holdout_fold=holdout_fold)
+        split_group, split_group_type = _dataset_split_group(label, diagram_id=diagram_id)
+        split = _dataset_split(split_group, fold_count=fold_count, holdout_fold=holdout_fold)
+        split_groups[split_group] = split
         for index, cell in enumerate(_split_board_into_squares(board)):
             square_name = _square_name(index)
             class_name = cells[index] or "empty"
@@ -2256,6 +2335,9 @@ def build_fen_square_dataset(
                     "source_crop": str(crop_path),
                     "fen": label.get("fen"),
                     "page": int(label.get("page") or 0),
+                    "chapter": str(label.get("chapter_id") or label.get("chapter") or ""),
+                    "split_group": split_group,
+                    "split_group_type": split_group_type,
                     "label_source": label.get("source") or str(labels_path),
                     "board_sha256": _image_sha256(board),
                 }
@@ -2265,6 +2347,18 @@ def build_fen_square_dataset(
     _write_jsonl(dataset_path, rows)
     class_counts = _count_by(rows, "class")
     split_counts = _count_by(rows, "split")
+    split_board_counts = {
+        split_name: len({row["diagram_id"] for row in rows if row.get("split") == split_name})
+        for split_name in ("train", "val", "holdout")
+    }
+    split_group_counts = {
+        split_name: len({row["split_group"] for row in rows if row.get("split") == split_name})
+        for split_name in ("train", "val", "holdout")
+    }
+    group_assignments: dict[str, set[str]] = {}
+    for row in rows:
+        group_assignments.setdefault(str(row.get("split_group") or ""), set()).add(str(row.get("split") or ""))
+    leaked_groups = sorted(group for group, assignments in group_assignments.items() if len(assignments) > 1)
     payload = {
         "schema": "kindlemaster.fen_square_dataset.v1",
         "status": "ok" if rows else "failed",
@@ -2274,12 +2368,20 @@ def build_fen_square_dataset(
         "sample_count": len(rows),
         "class_counts": class_counts,
         "split_counts": split_counts,
+        "split_board_counts": split_board_counts,
+        "split_group_counts": split_group_counts,
         "fold_count": max(2, int(fold_count or 5)),
         "holdout_fold": int(holdout_fold or 0),
         "dataset_path": str(dataset_path),
         "squares_root": str(squares_root),
         "skipped": skipped,
-        "policy": "Holdout split is assigned by diagram id and must not be used for training.",
+        "labels_validation": labels_validation,
+        "leakage_check": {
+            "status": "passed" if not leaked_groups else "failed",
+            "group_count": len(split_groups),
+            "leaked_groups": leaked_groups,
+        },
+        "policy": "Split is assigned before square extraction by chapter when present, otherwise by source-bound page.",
     }
     _write_json(reports_dir / "fen_square_dataset_summary.json", payload)
     build_chess_quality_dashboard(out)
@@ -2290,14 +2392,10 @@ def train_fen_square_classifier(
     out_dir: str | Path,
     *,
     dataset_path: str | Path | None = None,
-    model_name: str = "chess_fen_square_v1",
+    model_name: str = "chess_fen_square_rbf_svm_v2",
+    profile: str = "yusupov-fixed-edition",
 ) -> dict[str, Any]:
-    """Train a lightweight local square classifier profile from dataset samples.
-
-    This v1 uses deterministic feature centroids so it has no heavyweight runtime
-    dependency. A later optional trainer can replace the JSON profile with ONNX
-    while keeping the same report/model-card contract.
-    """
+    """Train the fixed-edition candidate while preserving centroid rollback."""
     out = Path(out_dir)
     reports_dir = out / "reports"
     models_dir = out / "models"
@@ -2307,37 +2405,109 @@ def train_fen_square_classifier(
     rows = _read_jsonl_rows(source)
     train_rows = [row for row in rows if row.get("split") == "train"]
     centroids = _train_centroid_classifier(train_rows)
-    model_path = models_dir / f"{_safe_filename(model_name)}.json"
-    model = {
+    legacy_model_path = models_dir / "chess_fen_square_v1.json"
+    legacy_model = {
         "schema": "kindlemaster.fen_square_classifier.v1",
         "model_type": "feature_centroid",
-        "model_name": model_name,
+        "model_name": "chess_fen_square_v1",
         "dataset_path": str(source),
         "class_centroids": centroids,
         "feature_names": ["mean", "stddev", "dark_ratio", "edge_density"],
         "onnx_available": False,
         "policy": "This model produces candidates only; ensemble validation controls accepted FEN.",
     }
-    _write_json(model_path, model)
-    eval_payload = _evaluate_square_classifier(rows, model)
-    eval_payload.update(
-        {
-            "schema": "kindlemaster.fen_square_model_eval.v1",
-            "status": "ok" if centroids else "failed",
-            "model_path": str(model_path),
-            "model_type": "feature_centroid",
-            "onnx_path": "",
-            "onnx_available": False,
+    _write_json(legacy_model_path, legacy_model)
+    baseline = {
+        "model_path": str(legacy_model_path),
+        "model_type": "feature_centroid",
+        "validation": _evaluate_square_classifier(rows, legacy_model, splits={"val"}),
+        "holdout": _evaluate_square_classifier(rows, legacy_model, splits={"holdout"}),
+    }
+    from chess_fen_square_model import (
+        export_portable_fen_square_model,
+        train_fen_square_candidate,
+    )
+
+    candidate = train_fen_square_candidate(
+        rows,
+        dataset_path=source,
+        models_dir=models_dir,
+        reports_dir=reports_dir,
+        model_name=model_name,
+        profile=profile,
+        baseline=baseline,
+    )
+    portable_export = (
+        export_portable_fen_square_model(
+            str(candidate.get("model_path") or ""),
+            output_path=models_dir
+            / f"{_safe_filename(model_name)}_portable.npz",
+        )
+        if str(candidate.get("model_path") or "").strip()
+        else {
+            "schema": "kindlemaster.fen_square_classifier.portable.v1",
+            "status": "not_exported",
+            "error": "candidate_model_missing",
         }
     )
+    candidate_holdout = candidate.get("holdout") if isinstance(candidate.get("holdout"), dict) else {}
+    eval_payload = {
+        "schema": "kindlemaster.fen_square_training_run.v2",
+        "status": candidate.get("status"),
+        "dataset_path": str(source),
+        "profile": profile,
+        "baseline": baseline,
+        "candidate": candidate,
+        "model_path": candidate.get("model_path") or "",
+        "manifest_path": candidate.get("manifest_path") or "",
+        "model_type": candidate.get("model_type") or "",
+        "sample_count": candidate_holdout.get("sample_count") or 0,
+        "square_accuracy": candidate_holdout.get("square_accuracy") or 0.0,
+        "exact_board_accuracy": candidate_holdout.get("exact_board_accuracy") or 0.0,
+        "confusion": candidate_holdout.get("confusion") or {},
+        "promotion": candidate.get("promotion") or {"status": "blocked", "passed": False},
+        "portable_runtime": portable_export,
+        "rollback_model_path": str(legacy_model_path),
+    }
     _write_json(reports_dir / "fen_square_model_eval.json", eval_payload)
-    _write_square_confusion_csv(reports_dir / "fen_square_confusion_matrix.csv", eval_payload.get("confusion") or {})
+    _write_square_confusion_csv(
+        reports_dir / "fen_square_confusion_matrix.csv",
+        candidate_holdout.get("confusion") or {},
+    )
     _write_json(
         models_dir / f"{_safe_filename(model_name)}.model-card.json",
-        _fen_model_card(out, source, model_path, eval_payload),
+        _fen_model_card(out, source, Path(str(candidate.get("model_path") or "")), eval_payload),
     )
     build_chess_quality_dashboard(out)
     return eval_payload
+
+
+def evaluate_fen_square_classifier(
+    out_dir: str | Path,
+    *,
+    dataset_path: str | Path | None = None,
+    model_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Evaluate an existing candidate on holdout without changing the model."""
+    out = Path(out_dir)
+    reports_dir = out / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(dataset_path) if dataset_path else out / "data" / "fen_square_dataset.jsonl"
+    resolved_model = (
+        Path(model_path)
+        if model_path
+        else out / "models" / "chess_fen_square_rbf_svm_v2.joblib"
+    )
+    from chess_fen_square_model import evaluate_fen_square_candidate
+
+    payload = evaluate_fen_square_candidate(
+        _read_jsonl_rows(source),
+        model_path=resolved_model,
+        split="holdout",
+    )
+    payload["dataset_path"] = str(source)
+    _write_json(reports_dir / "fen_square_holdout_eval.json", payload)
+    return payload
 
 
 def recognize_fen_local(
@@ -2352,7 +2522,7 @@ def recognize_fen_local(
     reports_dir = out / "reports"
     review_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    resolved_model = Path(model_path) if model_path else out / "models" / "chess_fen_square_v1.json"
+    resolved_model = Path(model_path) if model_path else DEFAULT_FEN_MODEL_PATH
     if not resolved_model.is_file():
         payload = {
             "schema": "kindlemaster.fen_model_runtime_eval.v1",
@@ -2367,19 +2537,24 @@ def recognize_fen_local(
         _write_jsonl(review_dir / "fen_model_predictions.jsonl", [])
         return payload
 
-    model = json.loads(resolved_model.read_text(encoding="utf-8"))
     sources = _board_preprocess_sources(out, labels_path=None)
     if limit and limit > 0:
         sources = sources[: int(limit)]
     rows: list[dict[str, Any]] = []
-    for source in sources:
-        rows.append(_predict_fen_for_source(source, out, model))
+    if resolved_model.suffix.lower() == ".json":
+        model = json.loads(resolved_model.read_text(encoding="utf-8"))
+        for source in sources:
+            rows.append(_predict_fen_for_source(source, out, model))
+    else:
+        for source in sources:
+            rows.append(_predict_portable_fen_for_source(source, resolved_model))
     _write_jsonl(review_dir / "fen_model_predictions.jsonl", rows)
     valid_count = len([row for row in rows if row.get("deterministic_validation", {}).get("valid")])
     payload = {
         "schema": "kindlemaster.fen_model_runtime_eval.v1",
         "status": "ok",
         "model_path": str(resolved_model),
+        "model_runtime": "portable_rbf_svm" if resolved_model.suffix.lower() == ".npz" else "legacy_centroid",
         "prediction_count": len(rows),
         "deterministic_valid": valid_count,
         "high_confidence_count": len([row for row in rows if float(row.get("global_confidence") or 0.0) >= 0.92]),
@@ -4040,13 +4215,21 @@ def build_chess_reader_semantic_book(book: Mapping[str, Any]) -> dict[str, Any]:
         blocks = [block for block in blocks if _semantic_book_block_has_value(block)]
         if blocks:
             semantic_pages.append({"page_number": page_number, "blocks": blocks})
+    exercise_model = build_chess_exercise_model(semantic_pages)
+    exercise_payload = exercise_model.to_dict()
+    summary = _semantic_book_summary(semantic_pages)
+    summary["canonical_exercise_count"] = len(exercise_payload["exercises"])
+    summary["exercise_warning_count"] = int(exercise_payload["summary"]["warning_count"])
     return {
         "schema": SEMANTIC_BOOK_SCHEMA,
         "book_title": str(source.get("title") or "Chess Study Reader"),
         "source_pdf": str(source.get("source_pdf") or ""),
         "source_html": str(source.get("source_html") or ""),
-        "summary": _semantic_book_summary(semantic_pages),
+        "summary": summary,
         "pages": semantic_pages,
+        "exercise_model_schema": exercise_payload["schema"],
+        "exercise_model_warnings": exercise_payload["warnings"],
+        "exercises": exercise_payload["exercises"],
     }
 
 
@@ -4055,6 +4238,18 @@ def _write_chess_reader_semantic_book_reports(out: Path, semantic_book: Mapping[
     report_dir.mkdir(parents=True, exist_ok=True)
     payload = dict(semantic_book or {})
     _write_json(report_dir / "semantic_book.json", payload)
+    _write_json(
+        report_dir / "chess_exercises.json",
+        {
+            "schema": payload.get("exercise_model_schema"),
+            "summary": {
+                "exercise_count": len(payload.get("exercises") or []),
+                "warning_count": int(dict(payload.get("summary") or {}).get("exercise_warning_count") or 0),
+            },
+            "warnings": list(payload.get("exercise_model_warnings") or []),
+            "exercises": list(payload.get("exercises") or []),
+        },
+    )
     (report_dir / "semantic_book.md").write_text(_semantic_book_markdown(payload), encoding="utf-8")
 
 
@@ -4180,6 +4375,7 @@ def _semantic_book_diagram_block(
         "source_page": int(diagram.get("page") or page.get("page") or page.get("page_number") or 0),
         "side_to_move": side,
         "fen": fen,
+        "fen_confidence": diagram.get("fen_confidence") or diagram.get("full_fen_confidence"),
         "fen_status": fen_status,
         "pgn": pgn_text,
         "book_line": str((pgn or {}).get("visible_review_text") or (pgn or {}).get("raw_text") or "").strip() or None,
@@ -4188,6 +4384,7 @@ def _semantic_book_diagram_block(
         "original_crop_path": str(diagram.get("original_crop_path") or diagram.get("image_path") or ""),
         "side_marker_crop_path": str(diagram.get("side_marker_crop_path") or ""),
         "side_marker_status": str(diagram.get("side_marker_status") or ""),
+        "side_to_move_confidence": diagram.get("side_to_move_confidence") or diagram.get("side_marker_confidence"),
         "asset_missing_reason": str(diagram.get("asset_missing_reason") or ""),
         "original_page_path": str(page.get("page_preview") or ""),
         "review_status": review_status,
@@ -4202,6 +4399,8 @@ def _semantic_book_exercise_block(page_number: int, diagram: Mapping[str, Any], 
         "exercise_id": exercise_id,
         "diagram_id": str(diagram.get("id") or diagram.get("diagram_id") or ""),
         "source_page": page_number,
+        "source_column": diagram.get("column"),
+        "bounding_box": diagram.get("bounding_box") or diagram.get("bbox"),
         "difficulty": _semantic_difficulty_from_text(caption),
     }
 
@@ -4379,6 +4578,20 @@ def _semantic_exercise_items_by_page(semantic_book: Mapping[str, Any]) -> dict[i
 
 
 def _semantic_exercise_items(semantic_book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    canonical_exercises = [item for item in semantic_book.get("exercises") or [] if isinstance(item, Mapping)]
+    if canonical_exercises:
+        return [
+            {
+                **exercise_to_reader_item(item),
+                "label": _semantic_exercise_label(str(item.get("exercise_id") or "")),
+                "solution_id": (
+                    _reader_anchor("solution", item.get("exercise_id"), fallback="exercise")
+                    if isinstance(item.get("solution"), Mapping)
+                    else ""
+                ),
+            }
+            for item in canonical_exercises
+        ]
     pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
     diagrams_by_exercise: dict[str, dict[str, Any]] = {}
     exercises_by_id: dict[str, dict[str, Any]] = {}
@@ -6613,6 +6826,12 @@ def segment_study_pages(
         final_labels = sorted(set(f"F-{match.group('number')}" for match in FINAL_LABEL_RE.finditer(text)))
         page_type = _classify_page_type(text, book_page, chapter, final_start=final_start, first_appendix=first_appendix)
         blocks = _segment_blocks_from_page(page, labels=labels, final_labels=final_labels)
+        exercise_geometry = analyze_exercise_page_geometry(
+            blocks,
+            page_number=book_page,
+            page_width=float(page.get("page_width") or 0.0),
+            page_height=float(page.get("page_height") or 0.0),
+        )
         segments.append(
             {
                 "page": book_page,
@@ -6623,6 +6842,7 @@ def segment_study_pages(
                 "exercise_labels": labels,
                 "final_test_labels": final_labels,
                 "blocks": blocks,
+                "exercise_geometry": exercise_geometry,
             }
         )
     payload = {"page_count": len(segments), "pages": segments}
@@ -6695,6 +6915,7 @@ def detect_study_diagrams(config: ChessStudyConfig) -> dict[str, Any]:
         dpi=config.diagram_dpi,
         min_confidence=config.min_grid_confidence,
         quality_profile=config.quality_profile,
+        debug_artifact_policy=config.debug_artifact_policy,
         resume=config.resume,
     )
     for record in normalized:
@@ -6752,6 +6973,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
     dpi: int,
     min_confidence: float,
     quality_profile: str = "default",
+    debug_artifact_policy: str = "all",
     resume: bool = False,
 ) -> dict[str, Any]:
     out = Path(out_dir)
@@ -6803,6 +7025,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
             fingerprint_schema=DIAGRAM_FINGERPRINT_SCHEMA,
             dpi=dpi,
             quality_profile=quality_profile,
+            debug_artifact_policy=debug_artifact_policy,
         )
         loaded = load_compatible_checkpoint(progress_path, identity) if resume else None
         if loaded is not None and loaded.compatible and loaded.checkpoint is not None:
@@ -6897,7 +7120,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     "bbox": board_bbox,
                 }
                 for diagram in page_diagrams
-                for board_bbox in [_study_pixel_bbox_xyxy(diagram)]
+                for board_bbox in [_study_pixel_bbox_xyxy(diagram, page_size=page_image.size)]
                 if board_bbox is not None
             ]
             page_assignment = _scan_chess_page_marker_pipeline(
@@ -6918,7 +7141,7 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
             }
             for diagram in page_diagrams:
                 before = copy.deepcopy(diagram)
-                board_bbox = _study_pixel_bbox_xyxy(diagram)
+                board_bbox = _study_pixel_bbox_xyxy(diagram, page_size=page_image.size)
                 if board_bbox is None:
                     page_checkpoint_records.append(_two_crop_checkpoint_record(diagram, before, []))
                     computed_diagram_count += 1
@@ -6937,6 +7160,8 @@ def _attach_pdf_side_marker_evidence_to_study_diagrams(
                     board_bbox=board_bbox,
                     side_marker_bbox=None,
                     marker_assignment=marker_assignment,
+                    debug_artifact_policy=debug_artifact_policy,
+                    blocker_context=payload,
                 )
                 payload.update(two_crop_fields)
                 payload = _apply_scan_chess_two_crop_quality_gate(payload, two_crop_fields)
@@ -7059,7 +7284,21 @@ def _print_two_crop_progress(
     )
 
 
-def _study_pixel_bbox_xyxy(diagram: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+def _study_pixel_bbox_xyxy(
+    diagram: Mapping[str, Any],
+    *,
+    page_size: tuple[int, int] | None = None,
+) -> tuple[float, float, float, float] | None:
+    normalized = diagram.get("normalized_bbox_xyxy")
+    if page_size and isinstance(normalized, (list, tuple)) and len(normalized) == 4:
+        try:
+            x0, y0, x1, y1 = [float(value) for value in normalized]
+        except (TypeError, ValueError):
+            pass
+        else:
+            if 0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0:
+                width, height = page_size
+                return (x0 * width, y0 * height, x1 * width, y1 * height)
     raw = diagram.get("pixel_bbox")
     if isinstance(raw, (list, tuple)) and len(raw) == 4:
         try:
@@ -7148,16 +7387,51 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "board_placement_status": str(marker.get("board_placement_status") or "review"),
             "full_fen_allowed": bool(marker.get("full_fen_allowed")),
             "full_fen_blockers": list(marker.get("full_fen_blockers") or []),
+            "marker_board_bbox": list(payload.get("marker_board_bbox") or []),
+            "marker_raw_board_bbox": list(payload.get("marker_raw_board_bbox") or []),
+            "marker_board_localization_method": str(
+                payload.get("marker_board_localization_method") or ""
+            ),
             "marker_candidate_id": str(payload.get("marker_candidate_id") or ""),
             "marker_candidate_bbox": list(payload.get("marker_candidate_bbox") or []),
+            "marker_candidate_crop_bbox": list(
+                payload.get("marker_candidate_crop_bbox") or []
+            ),
             "marker_candidate_crop_path": str(payload.get("marker_candidate_crop_path") or ""),
             "marker_candidate_features": dict(payload.get("marker_candidate_features") or {}),
             "marker_candidate_class": str(payload.get("marker_candidate_class") or ""),
+            "marker_candidate_classifier_status": str(
+                payload.get("marker_candidate_classifier_status") or ""
+            ),
+            "marker_candidate_classifier_reason": str(
+                payload.get("marker_candidate_classifier_reason") or ""
+            ),
+            "marker_candidate_classifier_crop_variant": str(
+                payload.get("marker_candidate_classifier_crop_variant") or ""
+            ),
+            "marker_candidate_classifier_crop_bbox": list(
+                payload.get("marker_candidate_classifier_crop_bbox") or []
+            ),
+            "marker_candidate_classifier_attempts": list(
+                payload.get("marker_candidate_classifier_attempts") or []
+            ),
+            "marker_candidate_side": str(payload.get("marker_candidate_side") or ""),
             "marker_candidate_confidence": float(payload.get("marker_candidate_confidence") or 0.0),
             "marker_assignment_status": str(payload.get("marker_assignment_status") or "unassigned"),
             "marker_assignment_confidence": float(payload.get("marker_assignment_confidence") or 0.0),
             "marker_assignment_runner_up_margin": float(
                 payload.get("marker_assignment_runner_up_margin") or 0.0
+            ),
+            "marker_assignment_ownership_margin": float(
+                payload.get("marker_assignment_ownership_margin") or 0.0
+            ),
+            "marker_assignment_cost": float(payload.get("marker_assignment_cost") or 0.0),
+            "marker_assignment_zone": str(payload.get("marker_assignment_zone") or ""),
+            "marker_assignment_competing_candidate_ids": list(
+                payload.get("marker_assignment_competing_candidate_ids") or []
+            ),
+            "marker_assignment_competing_candidate_sides": list(
+                payload.get("marker_assignment_competing_candidate_sides") or []
             ),
             "marker_assignment_rejected_reasons": list(
                 payload.get("marker_assignment_rejected_reasons") or []
@@ -7171,6 +7445,7 @@ def _apply_study_side_marker_payload(diagram: dict[str, Any], payload: Mapping[s
             "side_marker_review_crop_path": str(payload.get("side_marker_review_crop_path") or ""),
             "side_marker_review_crop_kind": str(payload.get("side_marker_review_crop_kind") or ""),
             "debug_overlay_path": str(payload.get("debug_overlay_path") or ""),
+            "debug_context_crop_path": str(payload.get("debug_context_crop_path") or ""),
             "board_bbox": list(payload.get("board_bbox") or []),
             "board_crop_quality": str(payload.get("board_crop_quality") or ""),
             "board_crop_fail_reason": list(payload.get("board_crop_fail_reason") or []),
@@ -7204,6 +7479,9 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
     started = time.perf_counter()
     written_count = 0
     written_bytes = 0
+    class_counts = {"required": 0, "optional": 0}
+    class_bytes = {"required": 0, "optional": 0}
+    class_seconds = {"required": 0.0, "optional": 0.0}
     for item in files:
         rel_path = str(item.get("path") or "").strip()
         data = item.get("data")
@@ -7212,14 +7490,27 @@ def _write_study_side_marker_artifact_files(out: Path, files: list[Mapping[str, 
         target = out / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = bytes(data)
+        artifact_class = str(item.get("artifact_class") or "required").strip().lower()
+        if artifact_class not in class_counts:
+            artifact_class = "required"
+        item_started = time.perf_counter()
         target.write_bytes(payload)
+        class_seconds[artifact_class] += time.perf_counter() - item_started
         written_count += 1
         written_bytes += len(payload)
+        class_counts[artifact_class] += 1
+        class_bytes[artifact_class] += len(payload)
     return {
         "file_write_measured": True,
         "file_write_seconds": round(time.perf_counter() - started, 6),
         "file_written_artifact_count": written_count,
         "file_written_bytes": written_bytes,
+        "required_file_write_seconds": round(class_seconds["required"], 6),
+        "required_file_written_artifact_count": class_counts["required"],
+        "required_file_written_bytes": class_bytes["required"],
+        "optional_file_write_seconds": round(class_seconds["optional"], 6),
+        "optional_file_written_artifact_count": class_counts["optional"],
+        "optional_file_written_bytes": class_bytes["optional"],
     }
 
 
@@ -7765,13 +8056,18 @@ def _study_side_to_move_label(value: Any) -> str:
 
 def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], out_dir: str | Path) -> dict[str, Any]:
     pages_by_number = {int(page.get("page") or 0): page for page in segments.get("pages", []) or []}
+    ordered_diagrams, geometry_report = _apply_exercise_geometry_assignments(
+        list(diagrams.get("diagrams", []) or []),
+        pages_by_number,
+    )
     positions: list[dict[str, Any]] = []
-    for index, diagram in enumerate(diagrams.get("diagrams", []) or [], start=1):
+    for index, diagram in enumerate(ordered_diagrams, start=1):
         if diagram.get("manual_label") == "false_positive":
             continue
         page_number = int(diagram.get("page") or 0)
         page = pages_by_number.get(page_number) or {}
-        label = _best_label_for_diagram(diagram, page, fallback_index=index)
+        printed_number = diagram.get("printed_exercise_number")
+        label = str(int(printed_number)) if printed_number else _best_label_for_diagram(diagram, page, fallback_index=index)
         chapter_no = page.get("chapter_no")
         item_type = "final_test" if str(label).startswith("F-") or page.get("page_type") == "final_test" else "exercise"
         fen = str(diagram.get("fen") or "").strip()
@@ -7818,6 +8114,12 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
                 "board_crop_path": str(diagram.get("board_crop_path") or diagram.get("source_crop") or ""),
                 "debug_overlay_path": str(diagram.get("debug_overlay_path") or ""),
                 "visual_order_on_page": diagram.get("visual_order_on_page"),
+                "source_column": diagram.get("source_column"),
+                "printed_exercise_number": printed_number,
+                "printed_exercise_number_candidate": diagram.get("printed_exercise_number_candidate"),
+                "exercise_geometry_status": str(diagram.get("exercise_geometry_status") or "unavailable"),
+                "exercise_geometry_warnings": list(diagram.get("exercise_geometry_warnings") or []),
+                "exercise_number_bbox": list(diagram.get("exercise_number_bbox") or []),
                 "stars": None,
                 "fen": fen,
                 "fen_candidate": str(diagram.get("fen_candidate") or ""),
@@ -7846,7 +8148,66 @@ def build_study_positions(diagrams: dict[str, Any], segments: dict[str, Any], ou
         )
     payload = {"positions": positions, "status_counts": _count_by_status(positions)}
     _write_json(Path(out_dir) / "positions.json", payload)
+    geometry_dir = Path(out_dir) / "reports" / "chess_geometry"
+    geometry_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(geometry_dir / "page_geometry.json", geometry_report)
     return payload
+
+
+def _apply_exercise_geometry_assignments(
+    diagrams: list[dict[str, Any]],
+    pages_by_number: Mapping[int, Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    report_pages: list[dict[str, Any]] = []
+    for page_number in sorted({int(item.get("page") or 0) for item in diagrams}):
+        page_diagrams = [dict(item) for item in diagrams if int(item.get("page") or 0) == page_number]
+        page = dict(pages_by_number.get(page_number) or {})
+        geometry = dict(page.get("exercise_geometry") or {})
+        assignments = [dict(item) for item in geometry.get("assignments") or []]
+        page_width = float(geometry.get("page_width") or 1.0)
+        page_diagrams = order_geometry_items(
+            page_diagrams,
+            bbox_getter=lambda item: item.get("bbox_xyxy") or item.get("board_bbox") or item.get("bbox") or [],
+            page_width=page_width,
+        )
+        used_assignments: set[int] = set()
+        for visual_order, diagram in enumerate(page_diagrams, start=1):
+            diagram_bbox = diagram.get("bbox_xyxy") or diagram.get("board_bbox") or diagram.get("bbox") or []
+            ranked = sorted(
+                (
+                    (bbox_containment(diagram_bbox, assignment.get("diagram_bbox")), assignment_index, assignment)
+                    for assignment_index, assignment in enumerate(assignments)
+                    if assignment_index not in used_assignments
+                ),
+                reverse=True,
+                key=lambda item: item[0],
+            )
+            selected = ranked[0] if ranked and ranked[0][0] >= 0.45 else None
+            diagram["visual_order_on_page"] = visual_order
+            if selected:
+                _, assignment_index, assignment = selected
+                used_assignments.add(assignment_index)
+                diagram["source_column"] = assignment.get("column")
+                diagram["printed_exercise_number"] = assignment.get("exercise_number")
+                diagram["printed_exercise_number_candidate"] = assignment.get("candidate_number")
+                diagram["exercise_geometry_status"] = assignment.get("status")
+                diagram["exercise_geometry_warnings"] = list(assignment.get("warnings") or [])
+                diagram["exercise_number_bbox"] = list(assignment.get("number_bbox") or [])
+                if assignment.get("status") != "accepted":
+                    diagram["warnings"] = sorted(set([*list(diagram.get("warnings") or []), "exercise_geometry_needs_review"]))
+            else:
+                diagram["exercise_geometry_status"] = "needs_review" if assignments else "unavailable"
+                diagram["exercise_geometry_warnings"] = ["AMBIGUOUS_DIAGRAM_MATCH"] if assignments else []
+            enriched.append(diagram)
+        report_pages.append(geometry)
+    return enriched, {
+        "schema": "kindlemaster.chess.page_geometry_report.v1",
+        "page_count": len(report_pages),
+        "accepted_page_count": len([page for page in report_pages if page.get("status") == "accepted"]),
+        "needs_review_page_count": len([page for page in report_pages if page.get("status") != "accepted"]),
+        "pages": report_pages,
+    }
 
 
 def extract_study_notation_fragments(
@@ -9000,6 +9361,13 @@ def _normalize_quality_profile(value: str) -> str:
     return normalized if normalized in QUALITY_PROFILES else "default"
 
 
+def _normalize_debug_artifact_policy(value: str) -> str:
+    normalized = str(value or "all").strip().lower()
+    if normalized not in {"all", "blockers", "none"}:
+        raise ValueError(f"unsupported chess debug artifact policy: {value}")
+    return normalized
+
+
 def _render_pdf_page_image(
     page: fitz.Page,
     *,
@@ -9569,17 +9937,56 @@ def _study_diagram_record(record: dict[str, Any]) -> StudyDiagram:
         board_placement_status=str(record.get("board_placement_status") or "review"),
         full_fen_allowed=bool(record.get("full_fen_allowed")),
         full_fen_blockers=[str(blocker) for blocker in record.get("full_fen_blockers") or []],
+        marker_board_bbox=_bbox4(record.get("marker_board_bbox") or []),
+        marker_raw_board_bbox=_bbox4(record.get("marker_raw_board_bbox") or []),
+        marker_board_localization_method=str(
+            record.get("marker_board_localization_method") or ""
+        ),
         marker_candidate_id=str(record.get("marker_candidate_id") or ""),
         marker_candidate_bbox=_bbox4(record.get("marker_candidate_bbox") or []),
+        marker_candidate_crop_bbox=_bbox4(record.get("marker_candidate_crop_bbox") or []),
         marker_candidate_crop_path=str(record.get("marker_candidate_crop_path") or ""),
         marker_candidate_features=dict(record.get("marker_candidate_features") or {}),
         marker_candidate_class=str(record.get("marker_candidate_class") or ""),
+        marker_candidate_classifier_status=str(
+            record.get("marker_candidate_classifier_status") or ""
+        ),
+        marker_candidate_classifier_reason=str(
+            record.get("marker_candidate_classifier_reason") or ""
+        ),
+        marker_candidate_classifier_crop_variant=str(
+            record.get("marker_candidate_classifier_crop_variant") or ""
+        ),
+        marker_candidate_classifier_crop_bbox=_bbox4(
+            record.get("marker_candidate_classifier_crop_bbox") or []
+        ),
+        marker_candidate_classifier_attempts=[
+            dict(attempt)
+            for attempt in record.get("marker_candidate_classifier_attempts") or []
+            if isinstance(attempt, Mapping)
+        ],
+        marker_candidate_side=str(record.get("marker_candidate_side") or ""),
         marker_candidate_confidence=float(record.get("marker_candidate_confidence") or 0.0),
         marker_assignment_status=str(record.get("marker_assignment_status") or "unassigned"),
         marker_assignment_confidence=float(record.get("marker_assignment_confidence") or 0.0),
         marker_assignment_runner_up_margin=float(
             record.get("marker_assignment_runner_up_margin") or 0.0
         ),
+        marker_assignment_ownership_margin=float(
+            record.get("marker_assignment_ownership_margin") or 0.0
+        ),
+        marker_assignment_cost=float(record.get("marker_assignment_cost") or 0.0),
+        marker_assignment_zone=str(record.get("marker_assignment_zone") or ""),
+        marker_assignment_competing_candidate_ids=[
+            str(candidate_id)
+            for candidate_id in record.get("marker_assignment_competing_candidate_ids") or []
+            if str(candidate_id)
+        ],
+        marker_assignment_competing_candidate_sides=[
+            str(side)
+            for side in record.get("marker_assignment_competing_candidate_sides") or []
+            if str(side)
+        ],
         marker_assignment_rejected_reasons=[
             str(reason) for reason in record.get("marker_assignment_rejected_reasons") or []
         ],
@@ -10884,9 +11291,20 @@ def _square_name(index: int) -> str:
     return f"{chr(ord('a') + file_index)}{8 - rank_index}"
 
 
-def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> str:
+def _dataset_split_group(label: Mapping[str, Any], *, diagram_id: str) -> tuple[str, str]:
+    source_sha = str(label.get("source_document_sha256") or "source-unknown")
+    chapter = str(label.get("chapter_id") or label.get("chapter") or "").strip()
+    if chapter:
+        return f"{source_sha}:chapter:{chapter}", "chapter"
+    page = int(label.get("page") or 0)
+    if page > 0:
+        return f"{source_sha}:page:{page}", "page"
+    return f"{source_sha}:diagram:{diagram_id}", "diagram_fallback"
+
+
+def _dataset_split(split_group: str, *, fold_count: int, holdout_fold: int) -> str:
     folds = max(2, int(fold_count or 5))
-    fold = int(hashlib.sha256(str(diagram_id).encode("utf-8")).hexdigest()[:8], 16) % folds
+    fold = int(hashlib.sha256(str(split_group).encode("utf-8")).hexdigest()[:8], 16) % folds
     if fold == int(holdout_fold or 0) % folds:
         return "holdout"
     if fold == (int(holdout_fold or 0) + 1) % folds:
@@ -10896,17 +11314,15 @@ def _dataset_split(diagram_id: str, *, fold_count: int, holdout_fold: int) -> st
 
 def _square_features(image: Image.Image) -> list[float]:
     gray = ImageOps.autocontrast(image.convert("L")).resize((32, 32), Image.Resampling.LANCZOS)
-    pixels = [float(pixel) for pixel in gray.tobytes()]
-    mean = sum(pixels) / max(1, len(pixels)) / 255.0
-    variance = sum((pixel / 255.0 - mean) ** 2 for pixel in pixels) / max(1, len(pixels))
-    dark_ratio = len([pixel for pixel in pixels if pixel < 120]) / max(1, len(pixels))
-    edge = 0.0
-    width, height = gray.size
-    for y in range(height - 1):
-        for x in range(width - 1):
-            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x + 1, y)))
-            edge += abs(gray.getpixel((x, y)) - gray.getpixel((x, y + 1)))
-    edge_density = edge / max(1, (width - 1) * (height - 1) * 2 * 255)
+    pixels = np.asarray(gray, dtype=np.float64)
+    normalized = pixels / 255.0
+    mean = float(normalized.mean())
+    variance = float(normalized.var())
+    dark_ratio = float((pixels < 120).mean())
+    horizontal_edges = np.abs(pixels[:-1, 1:] - pixels[:-1, :-1]).sum()
+    vertical_edges = np.abs(pixels[1:, :-1] - pixels[:-1, :-1]).sum()
+    edge_count = pixels[:-1, :-1].size * 2
+    edge_density = float((horizontal_edges + vertical_edges) / max(1, edge_count * 255))
     return [round(mean, 6), round(math.sqrt(variance), 6), round(dark_ratio, 6), round(edge_density, 6)]
 
 
@@ -10917,7 +11333,8 @@ def _train_centroid_classifier(rows: list[dict[str, Any]]) -> dict[str, list[flo
         if not image_path.is_file():
             continue
         label = str(row.get("class") or "empty")
-        grouped.setdefault(label, []).append(_square_features(Image.open(image_path)))
+        with Image.open(image_path) as image:
+            grouped.setdefault(label, []).append(_square_features(image))
     centroids: dict[str, list[float]] = {}
     for label, vectors in grouped.items():
         if not vectors:
@@ -10978,27 +11395,41 @@ def _square_prediction_alternatives(result: dict[str, Any], *, top_n: int = 3) -
     return rows
 
 
-def _evaluate_square_classifier(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
-    eval_rows = [row for row in rows if row.get("split") in {"val", "holdout"}]
+def _evaluate_square_classifier(
+    rows: list[dict[str, Any]],
+    model: dict[str, Any],
+    *,
+    splits: set[str] | None = None,
+) -> dict[str, Any]:
+    selected_splits = splits or {"val", "holdout"}
+    eval_rows = [row for row in rows if row.get("split") in selected_splits]
     if not eval_rows:
         eval_rows = rows
     confusion: dict[str, dict[str, int]] = {}
     correct = 0
     total = 0
+    board_correct: dict[str, bool] = {}
     for row in eval_rows:
         path = Path(str(row.get("image_path") or ""))
         if not path.is_file():
             continue
         expected = str(row.get("class") or "empty")
-        predicted = str(_predict_square_class(Image.open(path), model).get("label") or "empty")
+        with Image.open(path) as image:
+            predicted = str(_predict_square_class(image, model).get("label") or "empty")
         confusion.setdefault(expected, {})
         confusion[expected][predicted] = confusion[expected].get(predicted, 0) + 1
         correct += int(expected == predicted)
         total += 1
+        diagram_id = str(row.get("diagram_id") or "")
+        board_correct[diagram_id] = board_correct.get(diagram_id, True) and expected == predicted
+    exact_boards = sum(1 for value in board_correct.values() if value)
     return {
         "sample_count": total,
         "exact_square_count": correct,
         "square_accuracy": round(correct / max(1, total), 4),
+        "board_count": len(board_correct),
+        "exact_board_count": exact_boards,
+        "exact_board_accuracy": round(exact_boards / max(1, len(board_correct)), 4),
         "confusion": confusion,
         "per_class_accuracy": {
             label: round(values.get(label, 0) / max(1, sum(values.values())), 4)
@@ -11069,6 +11500,101 @@ def _predict_fen_for_source(source: dict[str, Any], out_dir: Path, model: dict[s
             row.setdefault("warnings", []).append("no_square_alternatives")
     except Exception as exc:
         row["deterministic_validation"] = {"valid": False, "warnings": [type(exc).__name__ + ": " + str(exc)]}
+    return row
+
+
+def _predict_portable_fen_for_source(
+    source: dict[str, Any],
+    model_path: Path,
+) -> dict[str, Any]:
+    diagram_id = str(source.get("diagram_id") or "diagram")
+    crop_path = Path(str(source.get("crop_path") or ""))
+    row: dict[str, Any] = {
+        "schema": "kindlemaster.fen_model_prediction.v1",
+        "diagram_id": diagram_id,
+        "diagram_fingerprint": str(source.get("diagram_fingerprint") or ""),
+        "source_document_sha256": str(source.get("source_document_sha256") or ""),
+        "page": int(source.get("page") or 0),
+        "source_crop": str(crop_path),
+        "status": "needs_review",
+        "fen_candidate": "",
+        "placement": "",
+        "global_confidence": 0.0,
+        "confidence_policy": "minimum_square_confidence",
+        "mean_entropy": 1.0,
+        "squares": [],
+        "deterministic_validation": {"valid": False, "warnings": ["not_run"]},
+        "model_runtime": {},
+        "recognition_blockers": [],
+    }
+    if not crop_path.is_file():
+        row["deterministic_validation"] = {
+            "valid": False,
+            "warnings": ["source_crop_missing"],
+        }
+        row["recognition_blockers"] = ["source_crop_missing"]
+        return row
+    try:
+        with Image.open(crop_path) as image:
+            board = image.convert("RGB")
+        runtime = predict_portable_fen_board(
+            board,
+            model_path=model_path,
+            mode="shadow",
+        )
+        placement = str(runtime.get("placement") or "")
+        side_label = str(_infer_side_to_move(str(source.get("caption") or "")) or "").strip().lower()
+        side = {"white": "w", "black": "b", "w": "w", "b": "b"}.get(side_label, "unknown")
+        fen = f"{placement} {side} - - 0 1" if placement and side in {"w", "b"} else ""
+        valid, warnings = validate_fen(fen) if fen else (False, ["side_to_move_unknown"])
+        blockers = list(runtime.get("blockers") or [])
+        if side not in {"w", "b"}:
+            blockers.append("side_to_move_unknown")
+        square_rows = [dict(square) for square in runtime.get("squares") or []]
+        entropy_values: list[float] = []
+        for square in square_rows:
+            probabilities = [
+                float(item.get("confidence") or 0.0)
+                for item in square.get("alternatives") or []
+            ]
+            if probabilities:
+                total = sum(probabilities)
+                normalized = [value / total for value in probabilities if value > 0.0]
+                entropy_values.append(
+                    -sum(value * math.log(value) for value in normalized)
+                    / max(math.log(max(2, len(normalized))), 1e-9)
+                )
+            square["source"] = "portable_rbf_svm"
+        row.update(
+            {
+                "status": (
+                    "deterministic_valid"
+                    if runtime.get("candidate_accepted") and valid and not warnings
+                    else "needs_review"
+                ),
+                "fen_candidate": fen,
+                "placement": placement,
+                "global_confidence": float(runtime.get("confidence") or 0.0),
+                "mean_entropy": round(
+                    sum(entropy_values) / max(1, len(entropy_values)),
+                    4,
+                ),
+                "squares": square_rows,
+                "deterministic_validation": {
+                    "valid": bool(runtime.get("candidate_accepted") and valid and not warnings),
+                    "warnings": list(dict.fromkeys([*warnings, *runtime.get("blockers", [])])),
+                },
+                "model_runtime": runtime,
+                "recognition_blockers": list(dict.fromkeys(blockers)),
+            }
+        )
+    except Exception as exc:
+        blocker = f"model_runtime_error:{type(exc).__name__}"
+        row["deterministic_validation"] = {
+            "valid": False,
+            "warnings": [blocker],
+        }
+        row["recognition_blockers"] = [blocker]
     return row
 
 
@@ -11278,7 +11804,13 @@ def _pdf_page_texts(pdf: Path, *, include_blocks: bool = False) -> list[dict[str
     with fitz.open(pdf) as document:
         for index, page in enumerate(document):
             text = page.get_text("text") or ""
-            row: dict[str, Any] = {"index": index, "page_number": index + 1, "text": text}
+            row: dict[str, Any] = {
+                "index": index,
+                "page_number": index + 1,
+                "page_width": float(page.rect.width or 0.0),
+                "page_height": float(page.rect.height or 0.0),
+                "text": text,
+            }
             if include_blocks:
                 row["blocks"] = _text_blocks(page)
             pages.append(row)
@@ -11348,7 +11880,16 @@ def _text_blocks(page: fitz.Page) -> list[dict[str, Any]]:
             if not text:
                 continue
             bbox = line.get("bbox") or block.get("bbox") or [0, 0, 0, 0]
-            blocks.append({"type": "text", "text": text, "bbox": [float(value) for value in bbox[:4]], "block_index": block_index, "line_index": line_index})
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": text,
+                    "bbox": [float(value) for value in bbox[:4]],
+                    "parent_bbox": [float(value) for value in (block.get("bbox") or bbox)[:4]],
+                    "block_index": block_index,
+                    "line_index": line_index,
+                }
+            )
     return blocks
 
 
@@ -11516,6 +12057,8 @@ def _position_id(*, item_type: str, chapter_no: Any, label: str, fallback_index:
     label_match = EXERCISE_LABEL_RE.search(label or "")
     if label_match:
         return f"ch{int(label_match.group('chapter')):02d}_ex_{int(label_match.group('number')):03d}"
+    if re.fullmatch(r"\d{1,4}", str(label or "").strip()):
+        return f"exercise_{int(label):04d}"
     if chapter_no:
         return f"ch{int(chapter_no):02d}_diag_{fallback_index:03d}"
     return f"diag_{fallback_index:03d}"

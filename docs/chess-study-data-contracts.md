@@ -2,6 +2,48 @@
 
 These contracts define evidence artifacts for the MasterKindle chess-study FEN/PGN quality loop.
 
+## Semantic Exercise Contract
+
+`reports/chess_reader/chess_exercises.json` is the deterministic, machine-readable
+intermediate model used before exercise and solution HTML is rendered. Each
+record has one explicit `exercise_id`, source page geometry, raw and normalized
+text, optional diagram and solution evidence, validation warnings, and a trace
+for automatic normalization. The reader derives both sides of the
+exercise-solution presentation from this same record.
+
+Records without an explicit identifier are not generated. Missing diagrams or
+solutions remain visible as QA warnings. Artifact paths are relative; local
+absolute paths and unrelated source text must not be exported. The model can be
+serialized and deserialized without changing its canonical JSON form.
+
+## Exercise Page Geometry Contract
+
+`reports/chess_geometry/page_geometry.json` records how printed exercise
+numbers are associated with diagram regions before positions are rendered. The
+reader uses visible column order rather than the technical order returned by
+the PDF parser. Each assignment retains the source page, column, visual order,
+diagram bounding box, number bounding box, candidate number, confidence, and
+warning codes.
+
+An exercise number is accepted only when every diagram on the page has one
+unique candidate, the printed sequence is consecutive, and each match clears
+the geometry confidence threshold. Duplicate, detached, ambiguous, or
+non-consecutive candidates remain `needs_review`; their candidate values and
+coordinates are retained for diagnosis but are not promoted to exercise IDs.
+
+## Chess Notation Paragraph Contract
+
+Chess move numbers are classified before generic ordered-list reconstruction.
+Paragraphs containing a valid numbered SAN move, castling, promotion, check,
+mate, result, or parenthesized variation remain paragraphs with the
+`chess-notation` and `notation-heavy` classes. Their move numbers and side dots
+must not be stripped or replaced by generated `<ol>` numbering.
+
+Malformed OCR tokens that still carry strong chess evidence remain paragraphs
+with `chess-notation-review`; this class is a QA signal and does not authorize
+PGN export. A source block explicitly marked `normal-list`, `ordered-list`, or
+`force-list` remains eligible for normal list reconstruction.
+
 ## Policy
 
 - AI, preprocessing, template matching, and local classifiers create candidates only.
@@ -31,6 +73,27 @@ Required fields:
 Rows with `draft`, `rejected`, `false_positive`, or invalid FEN are ignored.
 AI-only values such as `ai_suggested_fen`, `ai_approved`, `arbiter_approved`,
 or high confidence are never verification proof.
+
+## Manual Review Persistence Contract
+
+When Supabase is configured, `chess_fen_review_sessions` and
+`chess_fen_review_labels` are the primary source of truth for browser review
+progress. One label row is stored per source-bound diagram fingerprint so the
+training and evaluation pipeline can query verified, rejected, unreadable, and
+pending records without parsing an uploaded JSONL file.
+
+The Railway JSONL progress file is a recovery cache and export snapshot only.
+It must not override a newer database record. JSONL export remains supported
+for offline backup and deterministic dataset-building commands.
+
+Database payloads must:
+
+- retain the source document SHA-256, crop hashes, relative asset paths, 64
+  square labels, marker evidence, reviewer, and derived placement/FEN;
+- exclude local absolute paths and unrelated OCR page text;
+- remain review/training evidence only and never directly authorize publication;
+- be writable only through the backend service role after source-binding
+  validation.
 
 ## FEN Profile/Corpus Gate Contract
 
@@ -104,6 +167,10 @@ This artifact never changes accepted FEN.
 ## Square Dataset Contract
 
 `data/fen_square_dataset.jsonl` contains one row per board square.
+The split is assigned before square extraction. All diagrams from one chapter,
+or from one source-bound page when chapter metadata is unavailable, stay in the
+same `train`, `val`, or `holdout` partition. `val` calibrates confidence and the
+board-level abstention threshold; `holdout` is evaluation-only.
 
 Key fields:
 

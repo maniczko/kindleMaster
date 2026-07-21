@@ -32,6 +32,7 @@ from chess_diagram_fingerprint import (
     normalized_bbox,
     source_document_sha256,
 )
+from chess_page_geometry import order_geometry_items
 
 
 DEFAULT_TEMPLATE_DIR = ROOT_DIR / "reference_inputs" / "chess_fen" / "templates" / "fundamenty_merida_like"
@@ -161,8 +162,16 @@ def detect_chess_diagrams(
                     }
                 )
 
-            strict_selected.sort(key=_visual_envelope_order)
-            recovered_selected.sort(key=_visual_envelope_order)
+            strict_selected = order_geometry_items(
+                strict_selected,
+                bbox_getter=lambda item: item["normalized_bbox_xyxy"],
+                page_width=1.0,
+            )
+            recovered_selected = order_geometry_items(
+                recovered_selected,
+                bbox_getter=lambda item: item["normalized_bbox_xyxy"],
+                page_width=1.0,
+            )
             page_strict_records = [
                 _strict_diagram_record(
                     envelope,
@@ -530,11 +539,6 @@ def _explicit_side_to_move(result: ChessFenResult) -> str:
     ):
         return side
     return "unknown"
-
-
-def _visual_envelope_order(envelope: Mapping[str, Any]) -> tuple[float, float, float]:
-    x0, y0, x1, y1 = envelope["normalized_bbox_xyxy"]
-    return round(y0, 4), round(x0, 4), -((x1 - x0) * (y1 - y0))
 
 
 def _normalized_bbox_iou(left: tuple[float, ...], right: tuple[float, ...]) -> float:

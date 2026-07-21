@@ -646,7 +646,17 @@ class AutoChessFlowTests(unittest.TestCase):
     def test_kindlemaster_process_command_routes_to_auto_chess_flow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_payload = {"status": "MANUAL_REVIEW_AVAILABLE", "strict_failed": False, "out_dir": temp_dir}
-            argv = ["kindlemaster.py", "process", "study.pdf", "--out", temp_dir, "--mode", "auto"]
+            argv = [
+                "kindlemaster.py",
+                "process",
+                "study.pdf",
+                "--out",
+                temp_dir,
+                "--mode",
+                "auto",
+                "--debug-artifacts",
+                "blockers",
+            ]
             with patch.object(sys, "argv", argv):
                 with patch("chess_auto_flow.run_auto_chess_process", return_value=fake_payload) as run_mock:
                     with patch.object(kindlemaster, "_print_json") as print_json:
@@ -654,6 +664,7 @@ class AutoChessFlowTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             run_mock.assert_called_once()
+            self.assertEqual(run_mock.call_args.kwargs["debug_artifact_policy"], "blockers")
             self.assertEqual(print_json.call_args.args[0]["status"], "MANUAL_REVIEW_AVAILABLE")
 
     def test_run_auto_chess_process_executes_full_backend_chain(self) -> None:

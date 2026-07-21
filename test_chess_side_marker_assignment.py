@@ -545,6 +545,10 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(updated["side_to_move"], "b")
         self.assertEqual(updated["side_marker_symbol"], "\u25bc")
         self.assertEqual(updated["side_marker_status"], "trusted_marker")
+        self.assertEqual(updated["board_placement_status"], "accepted")
+        self.assertEqual(updated["full_fen_status"], "FEN_MACHINE_ACCEPTED")
+        self.assertTrue(updated["full_fen_allowed"])
+        self.assertEqual(updated["full_fen_blockers"], [])
         self.assertNotIn("side_to_move_marker_multi_region_conflict", updated["warnings"])
         self.assertEqual(updated["side_marker_assignment_trace"]["promotion_rule"], "marker_crop_quality_pass_v1")
 
@@ -835,6 +839,20 @@ class ChessSideMarkerAssignmentTests(unittest.TestCase):
         self.assertEqual(summary["marker_missing_count"], 1)
         self.assertEqual(summary["side_to_move_inferred_count"], 1)
         self.assertEqual(summary["side_unknown_count"], 1)
+
+    def test_fen_summary_excludes_unverified_fen_from_accepted_count(self) -> None:
+        summary = summarize_chess_fen_results(
+            [
+                {
+                    "fen": VALID_FEN,
+                    "requires_review": True,
+                }
+            ]
+        )
+
+        self.assertEqual(summary["status"], "requires_review")
+        self.assertEqual(summary["fen_count"], 0)
+        self.assertEqual(summary["manual_review_count"], 1)
 
     def test_pdf_side_marker_crop_evidence_reaches_study_diagram_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

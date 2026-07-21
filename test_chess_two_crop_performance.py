@@ -283,6 +283,18 @@ class ChessTwoCropPerformanceTests(unittest.TestCase):
             self.assertEqual(report["summary"]["full_grid_fallback_rate"], 0.5)
             self.assertEqual(report["summary"]["full_grid_probe_evaluations"], 15)
             self.assertEqual(report["summary"]["false_fast_path_count"], 0)
+            self.assertEqual(report["summary"]["artifact_policies"], {"all": 1, "blockers": 1})
+            self.assertEqual(report["summary"]["required_png_encoded_artifact_count"], 2)
+            self.assertEqual(report["summary"]["required_png_encoded_bytes"], 12)
+            self.assertEqual(report["summary"]["optional_png_encoded_artifact_count"], 1)
+            self.assertEqual(report["summary"]["optional_png_encoded_bytes"], 4)
+            self.assertEqual(report["summary"]["optional_debug_candidate_count"], 2)
+            self.assertEqual(report["summary"]["optional_debug_skipped_count"], 1)
+            self.assertEqual(report["summary"]["optional_debug_skipped_estimated_raw_bytes"], 100)
+            self.assertEqual(report["summary"]["required_file_written_artifact_count"], 2)
+            self.assertEqual(report["summary"]["required_file_written_bytes"], 12)
+            self.assertEqual(report["summary"]["optional_file_written_artifact_count"], 1)
+            self.assertEqual(report["summary"]["optional_file_written_bytes"], 4)
             self.assertEqual(report["summary"]["single_pass_record_count"], 1)
             self.assertEqual(report["summary"]["legacy_fallback_record_count"], 1)
             self.assertEqual(
@@ -450,6 +462,7 @@ def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: s
         "manual_review_required": True,
         "manual_review_reason": "marker_missing",
         "two_crop_performance": {
+            "artifact_policy": "blockers" if fallback else "all",
             "tight_board_localization_call_count": 2 if fallback else 1,
             "sliding_window_candidate_evaluations": candidates,
             "localization_path": (
@@ -467,10 +480,25 @@ def _runtime_row(diagram_id: str, seconds: float, candidates: int, board_path: s
             "png_encoding_seconds": seconds / 4,
             "png_encoded_artifact_count": 1,
             "png_encoded_bytes": 10,
+            "required_png_encoding_seconds": seconds / 8,
+            "required_png_encoded_artifact_count": 1,
+            "required_png_encoded_bytes": 6,
+            "optional_png_encoding_seconds": 0.0 if fallback else seconds / 8,
+            "optional_png_encoded_artifact_count": 0 if fallback else 1,
+            "optional_png_encoded_bytes": 0 if fallback else 4,
+            "optional_debug_candidate_count": 1,
+            "optional_debug_skipped_count": 1 if fallback else 0,
+            "optional_debug_skipped_estimated_raw_bytes": 100 if fallback else 0,
             "file_write_measured": True,
             "file_write_seconds": seconds / 10,
             "file_written_artifact_count": 1,
             "file_written_bytes": 10,
+            "required_file_write_seconds": seconds / 20,
+            "required_file_written_artifact_count": 1,
+            "required_file_written_bytes": 6,
+            "optional_file_write_seconds": 0.0 if fallback else seconds / 20,
+            "optional_file_written_artifact_count": 0 if fallback else 1,
+            "optional_file_written_bytes": 0 if fallback else 4,
             "board_analysis_mode": "legacy_fallback" if fallback else "single_pass",
             "legacy_localization_fallback_used": fallback,
             "legacy_localization_fallback_count": 1 if fallback else 0,

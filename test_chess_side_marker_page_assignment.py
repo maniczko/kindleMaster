@@ -11,6 +11,8 @@ from PIL import Image, ImageDraw
 
 import chess_study_export
 from pymupdf_chess_extractor import (
+    _scan_chess_classify_marker_candidate,
+    _scan_chess_page_marker_candidates,
     _scan_chess_page_marker_pipeline,
     _scan_chess_two_crop_review_artifacts,
 )
@@ -22,6 +24,9 @@ REQUIRED_ASSIGNMENT_FIELDS = {
     "marker_candidate_crop_path",
     "marker_candidate_features",
     "marker_candidate_class",
+    "marker_candidate_classifier_status",
+    "marker_candidate_classifier_crop_variant",
+    "marker_candidate_side",
     "marker_candidate_confidence",
     "marker_assignment_status",
     "marker_assignment_confidence",
@@ -51,6 +56,136 @@ def _page_with_two_boards() -> tuple[Image.Image, list[dict[str, object]]]:
 
 
 class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
+    def test_tight_component_crop_ignores_broad_caption_distractor(self) -> None:
+        image = Image.new("RGB", (220, 250), "white")
+        draw = ImageDraw.Draw(image)
+        board_bbox = [30, 90, 190, 250]
+        draw.rectangle(board_bbox, outline="black", width=2)
+        draw.line([(162, 60), (150, 82), (174, 82), (162, 60)], fill="black", width=2)
+        draw.polygon([(151, 36), (173, 36), (162, 52)], fill="black")
+
+        classification = _scan_chess_classify_marker_candidate(
+            image,
+            marker_bbox=[150, 60, 174, 82],
+            marker_crop_bbox=[144, 54, 180, 88],
+            board_bbox=board_bbox,
+        )
+
+        self.assertEqual(classification["status"], "trusted_marker", classification)
+        self.assertEqual(classification["side"], "w")
+        self.assertEqual(classification["classifier_crop_variant"], "tight_component")
+        self.assertEqual(len(classification["classifier_crop_attempts"]), 1)
+
+    def test_caption_marker_inside_raw_diagram_bbox_is_not_masked(self) -> None:
+        image = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(image)
+        grid = (100, 170, 300, 370)
+        draw.rectangle(grid, outline="black", width=3)
+        for step in range(1, 8):
+            position = 100 + step * 25
+            draw.line((position, 170, position, 370), fill="black", width=1)
+            draw.line((100, 70 + position, 300, 70 + position), fill="black", width=1)
+        draw.polygon([(272, 132), (294, 132), (283, 154)], fill="black")
+
+        pipeline = _scan_chess_page_marker_pipeline(
+            image,
+            [{"diagram_id": "captioned", "bbox": [70, 120, 320, 400]}],
+            page_number=1,
+        )
+
+        localization = pipeline["board_localizations"][0]
+        assignment = pipeline["assignments"][0]
+        self.assertEqual(localization["method"], "strong_border")
+        self.assertGreater(localization["marker_board_bbox"][1], 132)
+        self.assertEqual(assignment["marker_candidate_side"], "b")
+        self.assertEqual(assignment["marker_candidate_classifier_status"], "trusted_marker")
+        self.assertEqual(assignment["marker_assignment_status"], "assigned")
+
+    def test_overlapping_board_bbox_does_not_mask_neighbor_marker_zone(self) -> None:
+        image = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(image)
+        owner = {"diagram_id": "owner", "bbox": [100, 200, 300, 400]}
+        overlapping = {"diagram_id": "overlap", "bbox": [100, 100, 300, 250]}
+        draw.polygon([(272, 170), (294, 170), (283, 194)], fill="black")
+
+        candidates, _files = _scan_chess_page_marker_candidates(
+            image,
+            [overlapping, owner],
+            page_number=1,
+        )
+        pipeline = _scan_chess_page_marker_pipeline(
+            image,
+            [overlapping, owner],
+            page_number=1,
+        )
+        owner_assignment = next(
+            assignment
+            for assignment in pipeline["assignments"]
+            if assignment["diagram_id"] == "owner"
+        )
+
+        self.assertTrue(
+            any(candidate["marker_candidate_side"] == "b" for candidate in candidates),
+            candidates,
+        )
+        self.assertEqual(owner_assignment["marker_candidate_side"], "b", owner_assignment)
+        self.assertEqual(owner_assignment["marker_assignment_status"], "assigned")
+
+    def test_text_scale_competitor_does_not_beat_clear_marker(self) -> None:
+        image = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(image)
+        board = {"diagram_id": "board", "bbox": [100, 170, 300, 370]}
+        draw.polygon([(272, 132), (294, 132), (283, 154)], fill="black")
+        draw.line([(290, 376), (286, 392), (296, 392), (290, 376)], fill="black", width=2)
+
+        pipeline = _scan_chess_page_marker_pipeline(image, [board], page_number=1)
+
+        assignment = pipeline["assignments"][0]
+        text_like = [
+            candidate
+            for candidate in pipeline["candidates"]
+            if candidate["marker_candidate_features"].get("text_like_small_component")
+        ]
+        self.assertTrue(text_like, pipeline["candidates"])
+        self.assertEqual(assignment["marker_candidate_side"], "b", assignment)
+        self.assertEqual(assignment["marker_assignment_status"], "assigned", assignment)
+        self.assertLess(assignment["marker_candidate_bbox"][1], board["bbox"][1])
+
+    def test_caption_corner_prior_beats_triangle_like_heading_distractor(self) -> None:
+        image = Image.new("RGB", (420, 440), "white")
+        draw = ImageDraw.Draw(image)
+        grid = (100, 170, 300, 370)
+        draw.rectangle(grid, outline="black", width=3)
+        for step in range(1, 8):
+            position = 100 + step * 25
+            draw.line((position, 170, position, 370), fill="black", width=1)
+            draw.line((100, 70 + position, 300, 70 + position), fill="black", width=1)
+        draw.polygon([(160, 132), (182, 132), (171, 154)], fill="black")
+        draw.polygon([(272, 132), (294, 132), (283, 154)], fill="black")
+
+        pipeline = _scan_chess_page_marker_pipeline(
+            image,
+            [{"diagram_id": "captioned", "bbox": [70, 120, 320, 400]}],
+            page_number=1,
+        )
+
+        assignment = pipeline["assignments"][0]
+        self.assertGreaterEqual(pipeline["marker_candidate_count"], 2)
+        self.assertGreater(assignment["marker_candidate_bbox"][0], 260)
+        self.assertEqual(assignment["marker_candidate_side"], "b")
+
+    def test_normalized_bbox_overrides_mixed_detection_dpi_pixels(self) -> None:
+        bbox = chess_study_export._study_pixel_bbox_xyxy(
+            {
+                "normalized_bbox_xyxy": [0.10, 0.20, 0.30, 0.40],
+                "pixel_bbox": [216.0, 432.0, 432.0, 432.0],
+                "detection_dpi": 216,
+            },
+            page_size=(1000, 1500),
+        )
+
+        self.assertEqual(bbox, (100.0, 300.0, 300.0, 600.0))
+
     def test_review_candidate_gets_crop_before_classifier_trust(self) -> None:
         image, boards = _page_with_two_boards()
         ambiguous = {
@@ -245,6 +380,19 @@ class ChessSideMarkerPageAssignmentTests(unittest.TestCase):
         self.assertEqual(len({item["marker_candidate_id"] for item in diagrams}), 2)
         self.assertTrue(all(REQUIRED_ASSIGNMENT_FIELDS.issubset(item) for item in diagrams))
         self.assertTrue(candidate_files_exist)
+        self.assertTrue(
+            all(
+                item["two_crop_performance"]["localization_path"]
+                == "page_marker_assignment_reuse"
+                for item in diagrams
+            )
+        )
+        self.assertTrue(
+            all(
+                item["two_crop_performance"]["tight_board_localization_call_count"] == 0
+                for item in diagrams
+            )
+        )
         resumed_page_pipeline.assert_not_called()
         self.assertTrue(resumed_summary["resume_used"])
         self.assertEqual(report, resumed_report)

@@ -88,6 +88,11 @@ WORKFLOW_BASELINE_AREAS = {
     "area:corpus",
 }
 
+_CLOSING_ISSUE_LINE = re.compile(
+    r"^\s*(?:[-*+]\s*)?(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(?P<number>\d+)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class IssueContract:
@@ -97,6 +102,27 @@ class IssueContract:
     body: str
     labels: tuple[str, ...]
     url: str
+
+
+def linked_issue_number_from_pr_body(body: str) -> int | None:
+    """Return the first explicit closing reference outside fenced code blocks."""
+    fence: str | None = None
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        marker = None
+        if stripped.startswith("```"):
+            marker = "```"
+        elif stripped.startswith("~~~"):
+            marker = "~~~"
+        if marker:
+            fence = None if fence == marker else marker if fence is None else fence
+            continue
+        if fence is not None:
+            continue
+        match = _CLOSING_ISSUE_LINE.fullmatch(line)
+        if match:
+            return int(match.group("number"))
+    return None
 
 
 def load_issue_contracts(path: str | Path) -> list[IssueContract]:

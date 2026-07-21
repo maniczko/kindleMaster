@@ -99,6 +99,11 @@ MIN_DOMINANT_CONTENT_CROP_GRID = 0.34
 MIN_EMPTY_VS_PIECE_ERROR_MARGIN = 0.003
 MIN_RECOGNITION_TRIM_GRID_CONFIDENCE = 0.34
 MIN_RECOGNITION_TRIM_SCORE_GAIN = 0.04
+_LOADED_TEMPLATE_CACHE_LIMIT = 8
+_LOADED_TEMPLATE_CACHE: dict[
+    tuple[str, tuple[tuple[str, int, int], ...]],
+    dict[str, list[Image.Image]],
+] = {}
 _PREPARED_TEMPLATE_CACHE_LIMIT = 8
 _PREPARED_TEMPLATE_CACHE: dict[tuple[tuple[str, tuple[int, ...]], ...], dict[str, np.ndarray]] = {}
 
@@ -118,6 +123,8 @@ class ChessFenResult:
     requires_review: bool = True
     board_detected: bool = False
     squares: list[dict[str, Any]] = field(default_factory=list)
+    model_runtime: dict[str, Any] = field(default_factory=dict)
+    recognition_blockers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         full_fen = self.full_fen or self.fen
@@ -149,6 +156,8 @@ class ChessFenResult:
             "requires_review": requires_review,
             "board_detected": bool(self.board_detected),
             "squares": [dict(square) for square in self.squares],
+            "model_runtime": dict(self.model_runtime),
+            "recognition_blockers": list(self.recognition_blockers),
         }
 
 
@@ -554,6 +563,13 @@ def detect_board_candidates_in_page_image(
 
 
 def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image]]:
+    templates, _cache_info = _load_piece_templates_with_cache_info(template_dir)
+    return templates
+
+
+def _load_piece_templates_with_cache_info(
+    template_dir: str | Path,
+) -> tuple[dict[str, list[Image.Image]], dict[str, Any]]:
     """Load piece-cell templates from a directory.
 
     Filenames should start with a FEN piece marker (`K_*.png`, `p-dark.png`) or
@@ -561,8 +577,24 @@ def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image
     """
     root = Path(template_dir)
     if not root.exists() or not root.is_dir():
-        return {}
+        return {}, {
+            "cache_hit": False,
+            "template_dir": str(root),
+            "template_file_count": 0,
+            "template_variant_count": 0,
+        }
+    cache_key = _loaded_template_cache_key(root)
+    if cache_key is not None:
+        cached = _LOADED_TEMPLATE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, {
+                "cache_hit": True,
+                "template_dir": str(root),
+                "template_file_count": sum(len(images) for images in cached.values()),
+                "template_variant_count": sum(len(images) for images in cached.values()),
+            }
     templates: dict[str, list[Image.Image]] = {}
+    template_file_count = 0
     for path in sorted(root.iterdir()):
         if not path.is_file() or path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
             continue
@@ -574,7 +606,37 @@ def load_piece_templates(template_dir: str | Path) -> dict[str, list[Image.Image
         except Exception:
             continue
         templates.setdefault(label, []).append(image)
-    return templates
+        template_file_count += 1
+    if cache_key is not None:
+        if len(_LOADED_TEMPLATE_CACHE) >= _LOADED_TEMPLATE_CACHE_LIMIT:
+            _LOADED_TEMPLATE_CACHE.pop(next(iter(_LOADED_TEMPLATE_CACHE)))
+        _LOADED_TEMPLATE_CACHE[cache_key] = templates
+    return templates, {
+        "cache_hit": False,
+        "template_dir": str(root),
+        "template_file_count": template_file_count,
+        "template_variant_count": sum(len(images) for images in templates.values()),
+    }
+
+
+def _loaded_template_cache_key(root: Path) -> tuple[str, tuple[tuple[str, int, int], ...]] | None:
+    try:
+        parts = tuple(
+            (
+                path.name,
+                int(path.stat().st_mtime_ns),
+                int(path.stat().st_size),
+            )
+            for path in sorted(root.iterdir())
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        )
+    except OSError:
+        return None
+    try:
+        resolved_root = str(root.resolve())
+    except OSError:
+        resolved_root = str(root)
+    return resolved_root, parts
 
 
 def normalize_board_crop_for_templates(image: Image.Image) -> Image.Image:
@@ -612,7 +674,11 @@ def review_chess_fen_candidate(
 
 def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     total = len(records)
-    with_fen = [item for item in records if str(item.get("fen") or "").strip()]
+    with_fen = [
+        item
+        for item in records
+        if str(item.get("fen") or "").strip() and not bool(item.get("requires_review"))
+    ]
     review = [item for item in records if item.get("requires_review")]
     with_board_crop = [item for item in records if str(item.get("board_crop_path") or "").strip()]
     with_side_marker_crop = [item for item in records if str(item.get("side_marker_crop_path") or "").strip()]
@@ -631,6 +697,20 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
     side_to_move_inferred = [item for item in records if _side_to_move_inferred(item)]
     side_unknown = [item for item in records if _record_side_to_move(item) not in {"w", "b"}]
     probe_checked = [item for item in records if "side_to_move_marker_probes_checked" in _record_warnings(item)]
+    model_records = [
+        item
+        for item in records
+        if isinstance(item.get("model_runtime"), Mapping) and item.get("model_runtime")
+    ]
+    model_status_counts: dict[str, int] = {}
+    model_blocker_counts: dict[str, int] = {}
+    for item in model_records:
+        runtime = item.get("model_runtime") or {}
+        status = str(runtime.get("status") or "unknown")
+        model_status_counts[status] = model_status_counts.get(status, 0) + 1
+        blocker = str(runtime.get("owning_blocker") or "")
+        if blocker:
+            model_blocker_counts[blocker] = model_blocker_counts.get(blocker, 0) + 1
     return {
         "status": "not_applicable" if total == 0 else ("passed" if len(with_fen) == total else "requires_review"),
         "diagram_count": total,
@@ -646,6 +726,23 @@ def summarize_chess_fen_results(records: list[Mapping[str, Any]]) -> dict[str, A
         "marker_missing_count": len(marker_missing),
         "marker_conflict_count": len(marker_conflicts),
         "marker_ambiguous_count": len(marker_ambiguous),
+        "model_runtime_count": len(model_records),
+        "model_accepted_candidate_count": len(
+            [
+                item
+                for item in model_records
+                if bool((item.get("model_runtime") or {}).get("candidate_accepted"))
+            ]
+        ),
+        "model_publishable_count": len(
+            [
+                item
+                for item in model_records
+                if bool((item.get("model_runtime") or {}).get("publishable"))
+            ]
+        ),
+        "model_status_counts": dict(sorted(model_status_counts.items())),
+        "model_owning_blocker_counts": dict(sorted(model_blocker_counts.items())),
         "records": [dict(item) for item in records],
     }
 
@@ -893,6 +990,7 @@ def _piece_template_cache_key(piece_templates: Mapping[str, Iterable[Any]]) -> t
 
 
 def _clear_piece_template_cache() -> None:
+    _LOADED_TEMPLATE_CACHE.clear()
     _PREPARED_TEMPLATE_CACHE.clear()
 
 
@@ -1093,18 +1191,32 @@ def _normalize_board_square(image: Image.Image) -> Image.Image:
     shortest side keeps recognition and template extraction aligned without
     inventing any board content.
     """
+    normalized, _bbox, _method = _normalize_board_square_with_bbox(image)
+    return normalized
+
+
+def _normalize_board_square_with_bbox(
+    image: Image.Image,
+) -> tuple[Image.Image, tuple[int, int, int, int], str]:
+    """Return the normalized board plus its coordinates in the input crop."""
     grayscale = ImageOps.autocontrast(image.convert("L"))
-    border_crop = _strong_border_square_crop(grayscale)
-    if border_crop is not None:
-        return border_crop
-    inner_checkerboard_crop = _checkerboard_inner_square_crop(grayscale)
-    if inner_checkerboard_crop is not None:
-        return inner_checkerboard_crop
+    border_box = _strong_border_square_box(grayscale)
+    if border_box is not None:
+        return grayscale.crop(border_box), border_box, "strong_border"
+    checkerboard_box = _checkerboard_inner_square_box(grayscale)
+    if checkerboard_box is not None:
+        return grayscale.crop(checkerboard_box), checkerboard_box, "checkerboard_inner"
 
     side = max(1, min(grayscale.size))
     baseline_left = max(0, (grayscale.width - side) // 2)
     baseline_top = max(0, (grayscale.height - side) // 2)
-    return grayscale.crop((baseline_left, baseline_top, baseline_left + side, baseline_top + side))
+    baseline_box = (
+        baseline_left,
+        baseline_top,
+        baseline_left + side,
+        baseline_top + side,
+    )
+    return grayscale.crop(baseline_box), baseline_box, "center_square"
 
 
 def _recognition_trim_variant_crops(image: Image.Image) -> list[tuple[Image.Image, str]]:
@@ -1303,6 +1415,13 @@ def _recognition_marker_trim_candidates(
 
 
 def _checkerboard_inner_square_crop(image: Image.Image) -> Image.Image | None:
+    box = _checkerboard_inner_square_box(image)
+    return image.crop(box) if box is not None else None
+
+
+def _checkerboard_inner_square_box(
+    image: Image.Image,
+) -> tuple[int, int, int, int] | None:
     """Find the actual board square inside crops that include coordinates/captions.
 
     Many scanned chess books export a board plus file/rank labels and a caption
@@ -1378,7 +1497,12 @@ def _checkerboard_inner_square_crop(image: Image.Image) -> Image.Image | None:
     original_top = min(max(0, original_top), max(0, height - original_side))
     if original_side >= min_axis * 0.90:
         return None
-    return image.crop((original_left, original_top, original_left + original_side, original_top + original_side))
+    return (
+        original_left,
+        original_top,
+        original_left + original_side,
+        original_top + original_side,
+    )
 
 
 def _dominant_board_content_square_crop(image: Image.Image) -> Image.Image | None:
@@ -1462,6 +1586,13 @@ def _dominant_projection_group(values: np.ndarray, *, threshold: float, min_leng
 
 
 def _strong_border_square_crop(image: Image.Image) -> Image.Image | None:
+    box = _strong_border_square_box(image)
+    return image.crop(box) if box is not None else None
+
+
+def _strong_border_square_box(
+    image: Image.Image,
+) -> tuple[int, int, int, int] | None:
     pixels = np.array(image, dtype=np.uint8)
     if pixels.size == 0:
         return None
@@ -1492,7 +1623,7 @@ def _strong_border_square_crop(image: Image.Image) -> Image.Image | None:
     ratio = width / float(max(height, 1))
     if not (0.82 <= ratio <= 1.18):
         return None
-    return _square_crop_around_box(image, x0, y0, x1, y1)
+    return _square_box_around_box(image, x0, y0, x1, y1)
 
 
 def _dense_projection_groups(values: np.ndarray, *, threshold: float) -> list[tuple[int, int]]:
@@ -1567,6 +1698,16 @@ def _merge_close_projection_groups(groups: list[tuple[int, int]], *, max_gap: in
 
 
 def _square_crop_around_box(image: Image.Image, x0: int, y0: int, x1: int, y1: int) -> Image.Image:
+    return image.crop(_square_box_around_box(image, x0, y0, x1, y1))
+
+
+def _square_box_around_box(
+    image: Image.Image,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> tuple[int, int, int, int]:
     width = max(1, x1 - x0)
     height = max(1, y1 - y0)
     side = max(width, height)
@@ -1576,7 +1717,7 @@ def _square_crop_around_box(image: Image.Image, x0: int, y0: int, x1: int, y1: i
     top = int(round(center_y - side / 2.0))
     left = min(max(0, left), max(0, image.width - side))
     top = min(max(0, top), max(0, image.height - side))
-    return image.crop((left, top, left + side, top + side))
+    return (left, top, left + side, top + side)
 
 
 def _match_piece_template(

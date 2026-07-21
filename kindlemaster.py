@@ -32,6 +32,8 @@ QUICK_TESTS = [
     "test_supabase_library.py",
     "test_supabase_profile.py",
     "test_supabase_migrations.py",
+    "test_supabase_fen_review.py",
+    "test_app_chess_fen_review_persistence.py",
     "test_email_delivery.py",
     "test_user_profile.py",
     "test_conversion_library.py",
@@ -64,9 +66,18 @@ QUICK_TESTS = [
     "test_chess_pgn_extraction.py",
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",
+    "test_chess_page_geometry.py",
     "test_chess_diagram_multi_pass_detection.py",
     "test_chess_diagram_fingerprint.py",
+    "test_chess_diagram_manifest_reconciliation.py",
+    "test_chess_evidence_coverage_join.py",
+    "test_chess_evidence_review_store.py",
+    "test_chess_evidence_review_repository.py",
+    "test_supabase_evidence_review.py",
+    "test_app_chess_evidence_review.py",
     "test_chess_yusupov_acceptance_manifest.py",
+    "test_chess_fen_gold_corpus.py",
+    "test_chess_fen_auto_adjudication.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -87,6 +98,7 @@ QUICK_TESTS = [
     "test_chess_side_marker_final_reader_e2e.py",
     "test_chess_crop_qa_benchmark.py",
     "test_chess_two_crop_performance.py",
+    "test_chess_two_crop_artifact_policy.py",
     "test_chess_two_crop_checkpoint.py",
     "test_chess_marker_crop_corpus.py",
     "test_chess_marker_classifier.py",
@@ -94,6 +106,12 @@ QUICK_TESTS = [
     "test_chess_fen_pipeline_hardening.py",
     "test_chess_fen_ml_acceptance.py",
     "test_chess_fen_model_pipeline.py",
+    "test_chess_fen_runtime.py",
+    "test_chess_fen_review_builder.py",
+    "test_chess_fen_review_store.py",
+    "test_chess_fen_review_repository.py",
+    "test_chess_fen_review_ui_persistence.py",
+    "test_chess_fen_review_corpus.py",
     "test_chess_study_data_contracts.py",
     "test_pdf_layout_preview.py",
     "test_deepseek_quality_provider.py",
@@ -172,6 +190,7 @@ CORPUS_TESTS = [
     "test_premium_corpus_smoke.py",
     "test_premium_corpus_smoke_batches.py",
     "test_corpus_gate.py",
+    "test_chess_fen_evaluation.py",
     "test_chess_fen_recognition.py",
     "test_golden_epub_regression.py",
 ]
@@ -213,6 +232,7 @@ RUNTIME_TESTS = [
     "test_runtime_waitress_smoke.py",
     "test_browser_polling_e2e.py",
     "test_sprint2_playwright_smoke.py",
+    "test_chess_reader_asset_playwright.py",
     "test_browser_privacy_diagnostics.py",
     "test_ui_state_screenshot_pack.py",
 ]
@@ -303,6 +323,12 @@ def main() -> int:
     process_parser.add_argument("--html", default="")
     process_parser.add_argument("--quality-profile", choices=("smoke", "default", "masterkindle"), default="default")
     process_parser.add_argument("--render-pages", action="store_true")
+    process_parser.add_argument(
+        "--debug-artifacts",
+        choices=("all", "blockers", "none"),
+        default="all",
+        help="Optional two-crop debug artifacts: all, blockers only, or none.",
+    )
     process_parser.add_argument(
         "--resume",
         action="store_true",
@@ -540,6 +566,75 @@ def main() -> int:
         default="",
         help="Optional expected runtime commit; defaults to the validator checkout HEAD.",
     )
+    fen_gold_parser = chess_subparsers.add_parser(
+        "prepare-fen-gold-corpus",
+        help="Build a source-bound local full-FEN review package from a fixed-edition run.",
+    )
+    fen_gold_parser.add_argument("--source-pdf", required=True)
+    fen_gold_parser.add_argument("--job-output", required=True)
+    fen_gold_parser.add_argument("--marker-labels", required=True)
+    fen_gold_parser.add_argument("--out", required=True)
+    fen_gold_parser.add_argument("--source-profile", default="yusupov-fundamentals")
+    fen_gold_parser.add_argument(
+        "--asset-root",
+        action="append",
+        default=[],
+        help="Optional additional local asset root; may be repeated.",
+    )
+    fen_gold_import_parser = chess_subparsers.add_parser(
+        "import-fen-gold-labels",
+        help="Validate and import a completed source-bound full-FEN review JSONL.",
+    )
+    fen_gold_import_parser.add_argument("--source-pdf", required=True)
+    fen_gold_import_parser.add_argument("--manifest", required=True)
+    fen_gold_import_parser.add_argument("--filled-labels", required=True)
+    fen_gold_import_parser.add_argument("--out", required=True)
+    fen_auto_parser = chess_subparsers.add_parser(
+        "auto-label-fen-corpus",
+        help="Build automatic full-FEN consensus and an exception-only adjudication queue.",
+    )
+    fen_auto_parser.add_argument("--manifest", required=True)
+    fen_auto_parser.add_argument("--out", required=True)
+    fen_auto_parser.add_argument("--vision-mode", choices=("off", "replay", "live"), default="replay")
+    fen_auto_parser.add_argument("--replay", default="")
+    reconcile_manifest_parser = chess_subparsers.add_parser(
+        "reconcile-diagram-manifest",
+        help="Reconcile current detector records with a source-bound historical intake manifest.",
+    )
+    reconcile_manifest_parser.add_argument("--detected-manifest", required=True)
+    reconcile_manifest_parser.add_argument("--intake-manifest", required=True)
+    reconcile_manifest_parser.add_argument("--marker-labels", default="")
+    reconcile_manifest_parser.add_argument("--source-pdf", default="")
+    reconcile_manifest_parser.add_argument("--out", required=True)
+    reconcile_manifest_parser.add_argument("--source-profile", required=True)
+    reconcile_manifest_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
+    evidence_join_parser = chess_subparsers.add_parser(
+        "join-chess-evidence",
+        help="Join reconciled diagrams, canonical FEN labels, and marker labels into one review queue.",
+    )
+    evidence_join_parser.add_argument("--reconciliation-draft", required=True)
+    evidence_join_parser.add_argument("--fen-labels", required=True)
+    evidence_join_parser.add_argument("--fen-review-rows", required=True)
+    evidence_join_parser.add_argument("--marker-labels", required=True)
+    evidence_join_parser.add_argument("--source-pdf", required=True)
+    evidence_join_parser.add_argument("--out", required=True)
+    evidence_join_parser.add_argument("--source-profile", required=True)
+    evidence_join_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
+    evidence_import_parser = chess_subparsers.add_parser(
+        "import-evidence-review-queue",
+        help="Import a source-bound chess evidence queue into Supabase.",
+    )
+    evidence_import_parser.add_argument("--coverage", required=True)
+    evidence_import_parser.add_argument("--source-pdf", required=True)
+    evidence_import_parser.add_argument("--artifact-id", required=True)
+    evidence_import_parser.add_argument("--source-profile", required=True)
+    evidence_import_parser.add_argument("--owner-user-id", default="")
+    evidence_export_parser = chess_subparsers.add_parser(
+        "export-evidence-review-labels",
+        help="Export terminal marker labels from the Supabase evidence queue.",
+    )
+    evidence_export_parser.add_argument("--artifact-id", required=True)
+    evidence_export_parser.add_argument("--out", required=True)
 
     chess_study_parser = subparsers.add_parser("chess-study", help="Build a static chess training-book study export.")
     chess_study_subparsers = chess_study_parser.add_subparsers(dest="chess_study_command")
@@ -570,6 +665,7 @@ def main() -> int:
         "recognize-fen-local",
         "evaluate-fen-ensemble",
         "calibrate-fen-confidence",
+        "export-fen-review-corpus",
         "export-fen-corpus-manifest",
     ]:
         stage_parser = chess_study_subparsers.add_parser(command_name, help=f"Run chess-study {command_name}.")
@@ -617,6 +713,9 @@ def main() -> int:
         stage_parser.add_argument("--ai-pgn-limit", type=int, default=30, help="Limit AI-assisted PGN repair rows.")
         stage_parser.add_argument("--model-path", default="", help="Optional local FEN model path for classifier/inference commands.")
         stage_parser.add_argument("--min-confidence", type=float, default=0.92, help="Minimum local/ensemble confidence for review gates.")
+        stage_parser.add_argument("--artifact-id", default="", help="Conversion artifact ID for database-backed FEN review export.")
+        stage_parser.add_argument("--service-base-url", default="", help="Optional service base URL used to read Supabase-backed review rows and assets.")
+        stage_parser.add_argument("--review-dir", default="", help="Optional trusted local review directory containing fen_manual_assets.")
 
     two_crop_performance_parser = chess_study_subparsers.add_parser(
         "two-crop-performance",
@@ -768,6 +867,7 @@ def main() -> int:
             html_path=args.html or None,
             quality_profile=args.quality_profile,
             render_pages=args.render_pages,
+            debug_artifact_policy=args.debug_artifacts,
             with_ai=args.with_ai,
             dry_run_ai=args.dry_run_ai,
             ai_limit=args.ai_limit,
@@ -941,6 +1041,55 @@ def main() -> int:
 
 
 def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | None = None) -> int:
+    if args.chess_command == "auto-label-fen-corpus":
+        from chess_fen_auto_adjudication import auto_label_fen_corpus
+
+        try:
+            payload = auto_label_fen_corpus(
+                intake_manifest=args.manifest,
+                output_dir=args.out,
+                vision_mode=args.vision_mode,
+                replay_path=args.replay or None,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "passed" else 1
+
+    if args.chess_command == "prepare-fen-gold-corpus":
+        from chess_fen_gold_corpus import build_fen_gold_corpus_review
+
+        try:
+            payload = build_fen_gold_corpus_review(
+                source_pdf=args.source_pdf,
+                job_output=args.job_output,
+                marker_labels=args.marker_labels,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                asset_roots=args.asset_root,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "ready_for_human_review" else 1
+
+    if args.chess_command == "import-fen-gold-labels":
+        from chess_fen_gold_corpus import validate_fen_gold_corpus_labels
+
+        try:
+            payload = validate_fen_gold_corpus_labels(
+                source_pdf=args.source_pdf,
+                intake_manifest=args.manifest,
+                filled_labels=args.filled_labels,
+                output_dir=args.out,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
     if args.chess_command == "validate-side-markers":
         from chess_yusupov_acceptance import run_fixed_edition_acceptance
 
@@ -957,6 +1106,76 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
         if payload.get("status") == "passed":
             return 0
         return 2 if payload.get("status") == "corpus_unavailable" else 1
+
+    if args.chess_command == "reconcile-diagram-manifest":
+        from chess_diagram_manifest_reconciliation import reconcile_diagram_manifest_files
+
+        try:
+            payload = reconcile_diagram_manifest_files(
+                detected_manifest=args.detected_manifest,
+                intake_manifest=args.intake_manifest,
+                marker_labels=args.marker_labels or None,
+                source_pdf=args.source_pdf or None,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                bbox_iou_threshold=args.bbox_iou_threshold,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
+    if args.chess_command == "join-chess-evidence":
+        from chess_evidence_coverage_join import join_chess_evidence_files
+
+        try:
+            payload = join_chess_evidence_files(
+                reconciliation_draft=args.reconciliation_draft,
+                fen_labels=args.fen_labels,
+                fen_review_rows=args.fen_review_rows,
+                marker_labels=args.marker_labels,
+                source_pdf=args.source_pdf,
+                output_dir=args.out,
+                source_profile=args.source_profile,
+                bbox_iou_threshold=args.bbox_iou_threshold,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
+    if args.chess_command == "import-evidence-review-queue":
+        from chess_evidence_review_import import import_evidence_review_queue_file
+
+        try:
+            payload = import_evidence_review_queue_file(
+                coverage_path=args.coverage,
+                source_pdf=args.source_pdf,
+                artifact_id=args.artifact_id,
+                source_profile=args.source_profile,
+                owner_user_id=args.owner_user_id,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "imported" else 1
+
+    if args.chess_command == "export-evidence-review-labels":
+        from chess_evidence_review_import import export_evidence_review_labels_file
+
+        try:
+            payload = export_evidence_review_labels_file(
+                artifact_id=args.artifact_id,
+                output_path=args.out,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        return 0 if payload.get("status") == "exported" else 1
 
     if args.chess_command != "export-side-to-move-audit":
         if parser is not None:
@@ -977,6 +1196,7 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
 
 
 def _run_chess_study(args: argparse.Namespace) -> int:
+    from chess_fen_review_corpus import export_fen_review_corpus
     from chess_study_export import (
         ChessStudyConfig,
         audit_current_html,
@@ -989,6 +1209,7 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         build_ai_pgn_candidates,
         build_chess_quality_baseline,
         build_fen_square_dataset,
+        evaluate_fen_square_classifier,
         build_study_exercises,
         build_study_final_test,
         build_study_pgn,
@@ -1162,11 +1383,22 @@ def _run_chess_study(args: argparse.Namespace) -> int:
             fold_count=args.fold_count,
             holdout_fold=args.holdout_fold,
         )
-    elif args.chess_study_command in {"train-fen-classifier", "evaluate-fen-classifier"}:
+    elif args.chess_study_command == "train-fen-classifier":
         payload = train_fen_square_classifier(
             config.out,
             dataset_path=args.labels or None,
-            model_name=Path(args.model_path).stem if str(args.model_path or "").strip() else "chess_fen_square_v1",
+            model_name=(
+                Path(args.model_path).stem
+                if str(args.model_path or "").strip()
+                else "chess_fen_square_rbf_svm_v2"
+            ),
+            profile=args.profile,
+        )
+    elif args.chess_study_command == "evaluate-fen-classifier":
+        payload = evaluate_fen_square_classifier(
+            config.out,
+            dataset_path=args.labels or None,
+            model_path=args.model_path or None,
         )
     elif args.chess_study_command == "recognize-fen-local":
         payload = recognize_fen_local(
@@ -1178,6 +1410,16 @@ def _run_chess_study(args: argparse.Namespace) -> int:
         payload = evaluate_fen_ensemble(config.out, min_confidence=args.min_confidence)
     elif args.chess_study_command == "calibrate-fen-confidence":
         payload = calibrate_fen_confidence(config.out)
+    elif args.chess_study_command == "export-fen-review-corpus":
+        if not str(args.artifact_id or "").strip():
+            _print_json({"status": "failed", "error": "Provide --artifact-id for export-fen-review-corpus."})
+            return 1
+        payload = export_fen_review_corpus(
+            artifact_id=args.artifact_id,
+            out_dir=config.out,
+            review_dir=args.review_dir or None,
+            service_base_url=args.service_base_url,
+        )
     elif args.chess_study_command == "export-fen-corpus-manifest":
         payload = export_fen_corpus_manifest(config.out)
     elif args.chess_study_command == "audit-current":

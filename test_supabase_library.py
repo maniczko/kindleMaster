@@ -63,6 +63,18 @@ class SupabaseLibraryTests(unittest.TestCase):
         self.assertEqual(config.service_role_key, "service-role-secret")
         self.assertEqual(config.bucket, "custom-bucket")
 
+    def test_library_config_strips_utf8_bom_from_environment_values(self) -> None:
+        config = load_supabase_library_config(
+            {
+                "KINDLEMASTER_AUTH_PROVIDER": "supabase",
+                "SUPABASE_URL": "\ufeffhttps://project.supabase.co",
+                "SUPABASE_SERVICE_ROLE_KEY": "\ufeffservice-role-secret",
+            }
+        )
+
+        self.assertEqual(config.url, "https://project.supabase.co")
+        self.assertEqual(config.service_role_key, "service-role-secret")
+
     def test_build_storage_path_is_user_job_scoped_and_sanitized(self) -> None:
         path = build_storage_path(
             user_id="user/../id",

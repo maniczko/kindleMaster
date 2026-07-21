@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import tempfile
 import unittest
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +15,10 @@ from artifact_storage import ArtifactKind
 
 
 class AppConversionArtifactRoutingTests(unittest.TestCase):
+    TEST_PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
     def setUp(self) -> None:
         self.client = app.test_client()
         self.store_temp_dir = tempfile.TemporaryDirectory()
@@ -41,6 +47,10 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         root = Path(app_module.app.root_path) / "output" / "artifacts" / job_id
         self.cleanup_dirs.append(root)
         return root
+
+    def _write_test_png(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.TEST_PNG)
 
     def _register_chess_html_job(
         self,
@@ -82,6 +92,212 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
                 "artifacts": {"chess_pgn_html": artifact},
             }
         return html_path
+
+    def test_semantic_reader_rewrites_all_safe_local_asset_urls(self) -> None:
+        semantic_index = self._artifact_root("rewrite-reader-assets") / "semantic_chess_html" / "index.html"
+        rewritten = app_module._rewrite_semantic_chess_asset_urls(
+            """
+            <link href="styles.css"><script src="app.js"></script>
+            <img src="assets/board.png"><img src="review/chess_fen/marker.png">
+            <a href="qa_report.html">QA</a><a href="#chapter-1">Chapter</a>
+            <img src="https://example.invalid/external.png">
+            """,
+            asset_base="/convert/artifact/job/chess_reader_asset/",
+            semantic_index=semantic_index,
+        )
+
+        self.assertIn('/chess_reader_asset/styles.css', rewritten)
+        self.assertIn('/chess_reader_asset/app.js', rewritten)
+        self.assertIn('/chess_reader_asset/assets/board.png', rewritten)
+        self.assertIn('/chess_reader_asset/review/chess_fen/marker.png', rewritten)
+        self.assertIn('/chess_reader_asset/qa_report.html', rewritten)
+        self.assertIn('href="#chapter-1"', rewritten)
+        self.assertIn('src="https://example.invalid/external.png"', rewritten)
+
+    def test_semantic_reader_rejects_asset_path_escape(self) -> None:
+        semantic_index = self._artifact_root("reader-asset-escape") / "semantic_chess_html" / "index.html"
+
+        self.assertEqual(
+            app_module._semantic_reader_asset_route_path("../../outside.png", semantic_index),
+            "",
+        )
+        self.assertEqual(
+            app_module._semantic_reader_asset_route_path("%2e%2e/%2e%2e/outside.png", semantic_index),
+            "",
+        )
+
+    def test_fen_review_is_built_on_demand_from_conversion_diagnostics(self) -> None:
+        job_id = "fen-review-on-demand"
+        job_root = self._artifact_root(job_id)
+        input_path = job_root / "input" / "study.pdf"
+        report_path = job_root / "report" / "chess_diagrams.json"
+        crop_dir = job_root / "review" / "chess_fen" / "two_crop"
+        input_path.parent.mkdir(parents=True)
+        report_path.parent.mkdir(parents=True)
+        crop_dir.mkdir(parents=True)
+        input_path.write_bytes(b"%PDF-1.4\nsource")
+        for name in ("board.png", "marker.png", "marker-search.png", "overlay.png"):
+            self._write_test_png(crop_dir / name)
+        squares = [{"square": str(index), "piece": "", "confidence": 0.99} for index in range(64)]
+        squares[4]["piece"] = "k"
+        squares[60]["piece"] = "K"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "diagram_count": 1,
+                    "records": [
+                        {
+                            "id": "layout-chess-p010-d01",
+                            "page_number": 10,
+                            "caption": "Strona 10, diagram 1",
+                            "board_crop_path": "review/chess_fen/two_crop/board.png",
+                            "side_marker_crop_path": "review/chess_fen/two_crop/marker.png",
+                            "side_marker_search_crop_path": "review/chess_fen/two_crop/marker-search.png",
+                            "debug_overlay_path": "review/chess_fen/two_crop/overlay.png",
+                            "side_to_move": "b",
+                            "side_marker_status": "trusted_marker",
+                            "model_runtime": {
+                                "validation_fen": "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
+                                "confidence": 0.995,
+                                "squares": squares,
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        input_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.INPUT, input_path)
+        diagrams_artifact = app_module._local_artifact_metadata(job_id, ArtifactKind.REPORT, report_path)
+        with app_module._CONVERSION_JOBS_LOCK:
+            app_module._CONVERSION_JOBS[job_id] = {
+                "job_id": job_id,
+                "status": "ready",
+                "filename": "study.pdf",
+                "source_type": "pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "artifacts": {"input": input_artifact, "chess_diagrams": diagrams_artifact},
+            }
+
+        response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"layout-chess-p010-d01", response.data)
+        draft_path = job_root / "review" / "fen_manual_draft.jsonl"
+        row = json.loads(draft_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(len(row["square_labels"]), 64)
+        self.assertIn("chess_fen_review", app_module._CONVERSION_JOBS[job_id]["artifacts"])
+        asset_response = self.client.get(
+            f"/convert/artifact/{job_id}/{row['board_crop_rel_path']}"
+        )
+        self.assertEqual(asset_response.status_code, 200)
+        self.assertEqual(asset_response.data, self.TEST_PNG)
+        response.close()
+        asset_response.close()
+
+    def test_recovered_fen_review_is_served_with_source_bound_crop_assets(self) -> None:
+        job_id = "fen-review-artifact"
+        job_root = self._artifact_root(job_id)
+        input_dir = job_root / "input"
+        review_dir = job_root / "review"
+        assets_dir = review_dir / "fen_manual_assets"
+        input_dir.mkdir(parents=True)
+        assets_dir.mkdir(parents=True)
+        (input_dir / "study.pdf").write_bytes(b"%PDF-1.4\n")
+        (review_dir / "fen_manual_review.html").write_text(
+            '<!doctype html><html><body><img src="fen_manual_assets/diagram.png"></body></html>',
+            encoding="utf-8",
+        )
+        fingerprint = "1" * 64
+        source_digest = "a" * 64
+        (review_dir / "fen_manual_draft.jsonl").write_text(
+            json.dumps(
+                {
+                    "artifact_id": job_id,
+                    "diagram_id": "p001-d1",
+                    "diagram_fingerprint": fingerprint,
+                    "source_document_sha256": source_digest,
+                    "crop_sha256": "2" * 64,
+                    "square_labels": [""] * 64,
+                    "label_status": "needs_piece_labels",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        asset_bytes = b"\x89PNG\r\n\x1a\nsource-bound-crop"
+        (assets_dir / "diagram.png").write_bytes(asset_bytes)
+
+        job = app_module._rebuild_job_from_local_artifact_dir(job_root)
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertIn("chess_fen_review", job["artifacts"])
+        self.assertEqual(
+            job["artifacts"]["chess_fen_review"]["download_url"],
+            f"/convert/artifact/{job_id}/chess_fen_review",
+        )
+        stale_job = dict(job)
+        stale_job["artifacts"] = {}
+        app_module._CONVERSION_JOB_STORE.create(stale_job)
+        html_response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review")
+        crop_response = self.client.get(f"/convert/artifact/{job_id}/fen_manual_assets/diagram.png")
+        cells = [""] * 64
+        cells[4] = "k"
+        cells[60] = "K"
+        save_response = self.client.put(
+            f"/convert/artifact/{job_id}/chess_fen_review_progress",
+            json={
+                "source_digest": source_digest,
+                "rows": [
+                    {
+                        "diagram_fingerprint": fingerprint,
+                        "square_labels": cells,
+                        "piece_labels_verified": True,
+                        "manual_side_to_move": "w",
+                        "manual_side_evidence": "marker",
+                        "manual_visible_marker": "outline_triangle",
+                        "board_crop_label": "correct",
+                        "marker_crop_label": "clear",
+                        "label_status": "verified",
+                        "verified_by": "PM",
+                    }
+                ],
+            },
+        )
+        progress_response = self.client.get(f"/convert/artifact/{job_id}/chess_fen_review_progress")
+
+        self.assertEqual(html_response.status_code, 200)
+        self.assertIn("text/html", html_response.content_type)
+        self.assertIn(b'id="metric-completed"', html_response.data)
+        self.assertIn(b'id="metric-excluded"', html_response.data)
+        self.assertNotIn(b'id="metric-closed"', html_response.data)
+        self.assertEqual(crop_response.status_code, 200)
+        self.assertEqual(crop_response.data, asset_bytes)
+        self.assertEqual(crop_response.headers.get("X-KindleMaster-Artifact-Source"), "fen-manual-review-asset")
+        self.assertEqual(save_response.status_code, 200)
+        self.assertEqual(save_response.get_json()["summary"]["verified"], 1)
+        self.assertEqual(progress_response.status_code, 200)
+        self.assertEqual(progress_response.get_json()["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        html_response.close()
+        crop_response.close()
+        save_response.close()
+        progress_response.close()
+
+    def test_fen_review_only_artifact_is_restored_without_epub_or_input(self) -> None:
+        job_id = "fen-review-only"
+        review_dir = self._artifact_root(job_id) / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "fen_manual_review.html").write_text("<!doctype html><title>Review</title>", encoding="utf-8")
+
+        job = app_module._rebuild_job_from_local_artifact_dir(review_dir.parent)
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job["status"], "ready")
+        self.assertIn("chess_fen_review", job["artifacts"])
 
     def _register_chess_pgn_artifact(self, job_id: str, pgn_text: str) -> Path:
         job_root = self._artifact_root(job_id)
@@ -192,6 +408,8 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             """,
             encoding="utf-8",
         )
+        self._write_test_png(semantic_dir / "assets" / "board-one.png")
+        self._write_test_png(semantic_dir / "assets" / "board-two.png")
         return index_path
 
     def _register_pdf_layout_preview_artifact(self, job_id: str, html_text: str) -> Path:
@@ -601,7 +819,6 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             """,
             encoding="utf-8",
         )
-
         response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
         status_response = self.client.get(f"/convert/status/{job_id}")
 
@@ -783,6 +1000,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
             """,
             encoding="utf-8",
         )
+        self._write_test_png(semantic_dir / "assets" / "board.png")
 
         response = self.client.get(f"/convert/artifact/{job_id}/chess_pgn_html")
         status_response = self.client.get(f"/convert/status/{job_id}")
@@ -861,6 +1079,149 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertIn('[Event "Study"]', pgn_response.get_data(as_text=True))
         self.assertIn("attachment", pgn_response.headers.get("Content-Disposition", ""))
         pgn_response.close()
+
+    def test_yusupov_reader_serves_job_root_crops_and_reports_missing_assets(self) -> None:
+        job_id = "routing-yusupov-reader-assets"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body>Source evidence.</body></html>",
+        )
+        semantic_index = self._write_final_reader_sidecar(source_html, diagrams_total=1)
+        job_root = source_html.parents[1]
+        board_path = job_root / "review" / "chess_fen" / "two_crop" / "notation_layout_p010_01_board.png"
+        marker_path = job_root / "review" / "chess_fen" / "two_crop" / "notation_layout_p010_01_marker.png"
+        self._write_test_png(board_path)
+        self._write_test_png(marker_path)
+        semantic_index.write_text(
+            """
+            <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+              <article class="card" data-position-status="needs_review"
+                       data-side-marker-status="trusted_marker"
+                       data-has-board-crop="true" data-has-side-marker-crop="true">
+                <img src="review/chess_fen/two_crop/notation_layout_p010_01_board.png" alt="source crop">
+                <img src="review/chess_fen/two_crop/notation_layout_p010_01_marker.png" alt="side marker crop">
+                <img src="review/chess_fen/two_crop/notation_layout_p010_01_overlay.png" alt="debug overlay">
+              </article>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+
+        reader_response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        board_response = self.client.get(
+            f"/convert/artifact/{job_id}/chess_reader_asset/review/chess_fen/two_crop/{board_path.name}"
+        )
+        marker_response = self.client.get(
+            f"/convert/artifact/{job_id}/chess_reader_asset/review/chess_fen/two_crop/{marker_path.name}"
+        )
+
+        self.assertEqual(reader_response.status_code, 200)
+        reader_html = reader_response.get_data(as_text=True)
+        self.assertIn(
+            f'/convert/artifact/{job_id}/chess_reader_asset/review/chess_fen/two_crop/{board_path.name}',
+            reader_html,
+        )
+        self.assertEqual(board_response.status_code, 200)
+        self.assertEqual(marker_response.status_code, 200)
+        self.assertEqual(board_response.data, self.TEST_PNG)
+        health = status_response.get_json()["final_reader_health"]
+        self.assertEqual(health["referenced_image_asset_count"], 3)
+        self.assertEqual(health["missing_required_asset_count"], 0)
+        self.assertEqual(health["missing_optional_asset_count"], 1)
+        self.assertEqual(health["status"], "PASS_WITH_WARNINGS")
+
+        board_response.close()
+        marker_response.close()
+        board_path.unlink()
+        failed_health = self.client.get(f"/convert/status/{job_id}").get_json()["final_reader_health"]
+        self.assertEqual(failed_health["status"], "FAIL")
+        self.assertEqual(failed_health["missing_required_asset_count"], 1)
+        self.assertIn("missing_reader_assets", failed_health["blockers"])
+
+        reader_response.close()
+        status_response.close()
+
+    def test_yusupov_reader_recovers_two_crop_assets_from_retained_zip(self) -> None:
+        job_id = "routing-yusupov-reader-zip-recovery"
+        source_html = self._register_chess_html_job(
+            job_id,
+            "<!doctype html><html><body>Source evidence.</body></html>",
+        )
+        semantic_index = self._write_final_reader_sidecar(source_html, diagrams_total=1)
+        job_root = source_html.parents[1]
+        report_dir = job_root / "report"
+        (report_dir / "recovery.quality.json").write_text(
+            json.dumps({"job": {"job_id": job_id, "status": "ready", "filename": "Yusupov.pdf"}}),
+            encoding="utf-8",
+        )
+        (report_dir / "chess_diagrams.json").write_text(
+            json.dumps({"schema": "kindlemaster.yusupov_style_chess_diagrams.v1", "diagrams": []}),
+            encoding="utf-8",
+        )
+        crop_root = "review/chess_fen/two_crop"
+        board_name = "notation_layout_p010_01_board.png"
+        marker_name = "notation_layout_p010_01_marker.png"
+        overlay_name = "notation_layout_p010_01_overlay.png"
+        archive_path = report_dir / "chess_fen_two_crop_review_artifacts.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(f"{crop_root}/{board_name}", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/{marker_name}", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/{overlay_name}", self.TEST_PNG)
+            archive.writestr("../../outside.png", self.TEST_PNG)
+            archive.writestr(f"{crop_root}/unexpected.txt", b"not an image")
+            for index in range(3_127):
+                archive.writestr(f"reports/support-{index:04d}.json", b"{}")
+        semantic_index.write_text(
+            f"""
+            <!doctype html><html><body data-artifact-type="final_pdf_two_crop_reader">
+              <article class="card">
+                <img src="{crop_root}/{board_name}" alt="source crop">
+                <img src="{crop_root}/{marker_name}" alt="side marker crop">
+                <img src="{crop_root}/{overlay_name}" alt="debug overlay">
+              </article>
+            </body></html>
+            """,
+            encoding="utf-8",
+        )
+
+        target_dir = job_root / "review" / "chess_fen" / "two_crop"
+        self.assertFalse(target_dir.exists())
+        rebuilt = app_module._rebuild_job_from_local_artifact_dir(job_root)
+        self.assertIsNotNone(rebuilt)
+        assert rebuilt is not None
+        self.assertIn("chess_diagrams", rebuilt["artifacts"])
+        self.assertIn("chess_fen_two_crop_review_artifacts", rebuilt["artifacts"])
+
+        self.assertTrue(target_dir.exists())
+        reader_response = self.client.get(f"/convert/artifact/{job_id}/chess_reader")
+        status_response = self.client.get(f"/convert/status/{job_id}")
+        asset_responses = [
+            self.client.get(f"/convert/artifact/{job_id}/chess_reader_asset/{crop_root}/{name}")
+            for name in (board_name, marker_name, overlay_name)
+        ]
+
+        self.assertEqual(reader_response.status_code, 200)
+        self.assertEqual([response.status_code for response in asset_responses], [200, 200, 200])
+        self.assertTrue(all(response.data == self.TEST_PNG for response in asset_responses))
+        health = status_response.get_json()["final_reader_health"]
+        self.assertEqual(health["status"], "PASS")
+        self.assertEqual(health["missing_required_asset_count"], 0)
+        self.assertEqual(health["missing_optional_asset_count"], 0)
+        self.assertEqual(health["asset_recovery"]["status"], "recovered")
+        self.assertEqual(health["asset_recovery"]["recovered_count"], 3)
+        self.assertEqual(health["asset_recovery"]["ignored_count"], 3_129)
+        self.assertFalse((job_root / "outside.png").exists())
+        mtimes = {path.name: path.stat().st_mtime_ns for path in target_dir.glob("*.png")}
+
+        repeated_health = self.client.get(f"/convert/status/{job_id}").get_json()["final_reader_health"]
+        self.assertTrue(repeated_health["asset_recovery"]["cached"])
+        self.assertEqual(mtimes, {path.name: path.stat().st_mtime_ns for path in target_dir.glob("*.png")})
+
+        reader_response.close()
+        status_response.close()
+        for response in asset_responses:
+            response.close()
 
     def test_status_exposes_engine_analysis_gate_summary(self) -> None:
         job_id = "routing-engine-analysis-gate"

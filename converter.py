@@ -30,7 +30,7 @@ import time
 import html as html_module
 import zipfile
 from pathlib import Path
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import fitz  # PyMuPDF
@@ -827,9 +827,28 @@ class ConversionConfig:
     chess_fen_scan_candidates_per_page: int = 6
     chess_fen_piece_template_dir: str = ""
     chess_fen_template_profile: str = "fundamenty_merida_like"
+    chess_fen_model_mode: str = field(
+        default_factory=lambda: str(
+            os.environ.get("KINDLEMASTER_CHESS_FEN_MODEL_MODE", "off")
+        ).strip().lower()
+        or "off"
+    )
+    chess_fen_model_path: str = field(
+        default_factory=lambda: str(
+            os.environ.get(
+                "KINDLEMASTER_CHESS_FEN_MODEL_PATH",
+                "models/chess/chess_fen_square_rbf_svm_v2.npz",
+            )
+        ).strip()
+    )
+    chess_marker_source_profile: str = "yusupov-fundamentals"
+    chess_marker_calibration_path: str = (
+        "models/chess/chess_marker_calibration_yusupov_v1.json"
+    )
     chess_fen_verified_crop_labels_path: str = "reference_inputs/chess_fen/labels/fundamenty_verified_crop_labels.jsonl"
     chess_fen_emit_review_notes: bool = False
     chess_fen_apply_side_marker: bool = True
+    chess_debug_artifact_policy: str = "all"
     chess_fen_review_provider_enabled: bool = False
     chess_fen_scan_enable_sliding_probe: bool = False
     chess_notation_chapter_pages: int = 40

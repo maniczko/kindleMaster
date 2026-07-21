@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 CHECKPOINT_SCHEMA = "kindlemaster.chess_fen.two_crop_progress.v1"
 TWO_CROP_ALGORITHM_VERSION = "two_crop_single_pass.v1"
-TWO_CROP_CROP_VERSION = "two_crop_review_artifacts.v1"
+TWO_CROP_CROP_VERSION = "two_crop_review_artifacts.v2"
 IDENTITY_KEYS = (
     "source_pdf_sha256",
     "fingerprint_version",
@@ -21,6 +21,7 @@ IDENTITY_KEYS = (
     "crop_version",
     "dpi",
     "quality_profile",
+    "debug_artifact_policy",
 )
 
 
@@ -41,6 +42,7 @@ def build_checkpoint_identity(
     fingerprint_schema: str,
     dpi: int,
     quality_profile: str,
+    debug_artifact_policy: str = "all",
 ) -> dict[str, Any]:
     return {
         "source_pdf_sha256": str(source_pdf_sha256 or "").strip().lower(),
@@ -50,6 +52,7 @@ def build_checkpoint_identity(
         "crop_version": TWO_CROP_CROP_VERSION,
         "dpi": int(dpi),
         "quality_profile": str(quality_profile or "").strip().lower(),
+        "debug_artifact_policy": str(debug_artifact_policy or "all").strip().lower(),
     }
 
 

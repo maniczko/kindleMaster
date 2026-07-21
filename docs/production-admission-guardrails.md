@@ -1,6 +1,6 @@
 # Production admission guardrails
 
-Public conversion endpoints are protected by process-safe admission controls installed by `production_server.py`. Counters, queue state and concurrency decisions use the same SQLite database on the persistent `/data` volume.
+Public conversion endpoints are protected by process-safe admission controls installed only inside the `production_api.py` child. The supervisor and conversion workers do not register HTTP hooks. Counters, queue state and concurrency decisions use the same SQLite database on the persistent `/data` volume.
 
 These controls limit accidental overload and automated abuse. They are not a replacement for job ownership authorization from #341.
 
@@ -17,7 +17,8 @@ These controls limit accidental overload and automated abuse. They are not a rep
 Global defaults:
 
 - 4 active queued/running/retrying jobs;
-- 75 MiB upload body, also enforced as Flask `MAX_CONTENT_LENGTH` before multipart parsing;
+- 75 MiB maximum file bytes;
+- 2 MiB bounded multipart-envelope allowance at the Flask parser layer;
 - 1,200 PDF pages;
 - 250,000 PDF xref objects;
 - 5,000 DOCX archive members;
@@ -63,13 +64,28 @@ When no rate-limit secret is configured, production startup creates a 0600 capab
 
 ## Capacity admission
 
-New conversions are rejected before file parsing or queue creation when:
+New conversions are rejected before file persistence or queue creation when:
 
 - global or owner concurrency is exhausted;
 - persistent storage is below either the byte or ratio threshold;
 - container memory is below either the byte or ratio threshold.
 
 Memory measurement prefers cgroup v2 (`memory.max` and `memory.current`), then cgroup v1, then `/proc/meminfo`. This keeps the decision aligned with a container limit rather than host-wide free memory. Missing memory telemetry is reported as unavailable but does not make local development unusable.
+
+## Upload parser boundary
+
+Flask `MAX_CONTENT_LENGTH` is configured to the file limit plus a bounded 2 MiB multipart allowance. This prevents an extreme body from being parsed in full while avoiding rejection of a valid 75 MiB file solely because of multipart headers. The stream validator still reads no more than `max_upload_bytes + 1` and enforces the actual file-byte limit.
+
+A parser-level `RequestEntityTooLarge` is converted into the same JSON contract as a stream-level rejection:
+
+```json
+{
+  "error_code": "upload_size_limit",
+  "phase": "upload",
+  "retryable": false,
+  "max_upload_bytes": 78643200
+}
+```
 
 ## Input validation
 
@@ -118,10 +134,10 @@ Until then, unauthenticated requests share a pseudonymous HMAC key derived from 
 ## Validation
 
 ```powershell
-python -m unittest -v production_tests.test_production_capacity production_tests.test_production_guardrails
-python -m py_compile production_capacity_guard.py production_guardrails.py production_server.py
+python -m unittest -v production_tests.test_production_api_configuration production_tests.test_production_capacity production_tests.test_production_guardrails production_tests.test_production_security_events production_tests.test_production_upload_limits
+python -m py_compile production_capacity_guard.py production_guardrails.py production_security_events.py production_upload_limits.py production_api.py
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, low memory, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.
+Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, low memory, oversized multipart bodies, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.

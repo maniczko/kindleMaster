@@ -10,6 +10,7 @@ from pathlib import Path
 
 import app as app_module
 from production_api_policy import install_migrated_production_runtime
+from production_capacity_guard import MemoryAdmissionPolicy, install_memory_admission_guard
 from production_guardrails import ProductionGuardrailPolicy, install_production_guardrails
 from production_runtime import durable_runtime_enabled
 
@@ -71,7 +72,9 @@ def main() -> int:
     if durable_runtime_enabled():
         queue, migration = install_migrated_production_runtime(app_module)
         guardrail_policy = ProductionGuardrailPolicy.from_env()
+        memory_policy = MemoryAdmissionPolicy.from_env()
         app_module.app.config["MAX_CONTENT_LENGTH"] = guardrail_policy.max_upload_bytes
+        install_memory_admission_guard(app_module, policy=memory_policy)
         install_production_guardrails(
             app_module,
             database=app_module._DURABLE_JOB_DATABASE,

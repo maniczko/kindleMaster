@@ -23,7 +23,7 @@ jobs:
       - name: Compile production runtime
         run: python -m py_compile durable_job_queue.py production_runtime.py production_worker.py production_server.py
       - name: Run durable queue tests
-        run: python -m unittest -v test_durable_job_queue.py test_production_runtime.py
+        run: python -m unittest -v production_tests.test_durable_job_queue production_tests.test_production_runtime
       - name: Verify production entrypoint imports
         env:
           KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3

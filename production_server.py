@@ -10,7 +10,10 @@ from pathlib import Path
 
 import app as app_module
 from production_api_policy import install_migrated_production_runtime
+from production_capacity_guard import MemoryAdmissionPolicy, install_memory_admission_guard
+from production_guardrails import ProductionGuardrailPolicy, install_production_guardrails
 from production_runtime import durable_runtime_enabled
+from production_security_events import install_admission_security_logging
 
 
 def _worker_count() -> int:
@@ -68,7 +71,18 @@ class WorkerSupervisor:
 def main() -> int:
     supervisor: WorkerSupervisor | None = None
     if durable_runtime_enabled():
-        _queue, migration = install_migrated_production_runtime(app_module)
+        queue, migration = install_migrated_production_runtime(app_module)
+        guardrail_policy = ProductionGuardrailPolicy.from_env()
+        memory_policy = MemoryAdmissionPolicy.from_env()
+        app_module.app.config["MAX_CONTENT_LENGTH"] = guardrail_policy.max_upload_bytes
+        install_memory_admission_guard(app_module, policy=memory_policy)
+        install_production_guardrails(
+            app_module,
+            database=app_module._DURABLE_JOB_DATABASE,
+            queue=queue,
+            policy=guardrail_policy,
+        )
+        install_admission_security_logging(app_module)
         app_module.app.logger.info(
             "Durable runtime initialized: migrated=%s preserved=%s failed=%s",
             migration["migrated"],

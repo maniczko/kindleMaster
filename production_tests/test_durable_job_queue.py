@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -49,6 +50,36 @@ class DurableJobQueueTests(unittest.TestCase):
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered.lease_owner, "worker-b")
         self.assertEqual(recovered.attempt, 2)
+
+    def test_two_workers_racing_claim_exactly_one_job(self) -> None:
+        self.queue.enqueue(job_id="job-a", payload={})
+        barrier = threading.Barrier(3)
+        results: list[object] = []
+        errors: list[Exception] = []
+
+        def claim(worker_id: str) -> None:
+            queue = DurableJobQueue(self.database)
+            barrier.wait()
+            try:
+                results.append(queue.claim(worker_id=worker_id, lease_seconds=30))
+            except Exception as error:
+                errors.append(error)
+
+        workers = [
+            threading.Thread(target=claim, args=("worker-a",)),
+            threading.Thread(target=claim, args=("worker-b",)),
+        ]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        self.assertEqual(errors, [])
+        claimed = [record for record in results if record is not None]
+        self.assertEqual(len(claimed), 1)
+        self.assertIn(claimed[0].lease_owner, {"worker-a", "worker-b"})
+        self.assertEqual(self.queue.get("job-a").attempt, 1)
 
     def test_retry_backoff_and_dead_letter(self) -> None:
         self.queue.enqueue(job_id="job-a", payload={}, max_attempts=2)

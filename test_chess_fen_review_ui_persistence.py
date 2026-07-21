@@ -19,12 +19,16 @@ class ChessFenReviewUiPersistenceTests(unittest.TestCase):
         rendered = render_fen_manual_review_html([row], source_identity=row, artifact_id="artifact-1")
 
         self.assertIn('id="toggle-session"', rendered)
+        self.assertIn('id="publish-fen" disabled', rendered)
         self.assertIn("expected_revision:serverRevision", rendered)
         self.assertIn("change_source:", rendered)
         self.assertIn("Authorization:`Bearer ${token}`", rendered)
         self.assertIn("sessionStatus === 'complete' ? 'reopen' : 'close'", rendered)
         self.assertIn("revisionConflict", rendered)
         self.assertIn("Konflikt wersji", rendered)
+        self.assertIn("/chess_fen_publish", rendered)
+        self.assertIn("publishFen.addEventListener('click',publishVerifiedFenToServer)", rendered)
+        self.assertIn("summary.fen_human_verified", rendered)
 
     def test_review_ui_distinguishes_login_from_server_failure(self) -> None:
         row = {

@@ -75,6 +75,51 @@ def install_async_only_conversion_policy(app_module: ModuleType) -> None:
     app.view_functions[endpoint] = async_only_conversion
 
 
+def install_idempotent_retry_response_policy(app_module: ModuleType) -> None:
+    """Return the canonical queued job when a retry request is replayed."""
+
+    from flask import g, has_request_context, jsonify
+
+    app = app_module.app
+    endpoints: list[str] = []
+    for rule in app.url_map.iter_rules():
+        if rule.rule.startswith("/convert/retry/") and "POST" in rule.methods:
+            endpoints.append(str(rule.endpoint))
+
+    for endpoint in endpoints:
+        original = app.view_functions.get(endpoint)
+        if original is None or getattr(original, "_kindlemaster_retry_idempotent", False):
+            continue
+
+        def wrapped_retry(*args: Any, __original=original, **kwargs: Any):
+            response = __original(*args, **kwargs)
+            canonical_job_id = (
+                str(getattr(g, "kindlemaster_canonical_job_id", "") or "")
+                if has_request_context()
+                else ""
+            )
+            if not canonical_job_id:
+                return response
+            job = app_module._CONVERSION_JOB_STORE.get(canonical_job_id) or {}
+            replay = jsonify(
+                {
+                    "success": True,
+                    "job_id": canonical_job_id,
+                    "status": str(job.get("status") or "queued"),
+                    "message": str(job.get("message") or "Ponowienie zostało już przyjęte."),
+                    "retry_of": str(job.get("retry_of") or ""),
+                    "idempotent_replay": True,
+                    "poll_after_ms": app_module.DEFAULT_CONVERSION_POLL_INTERVAL_MS,
+                }
+            )
+            replay.status_code = 202
+            app_module.apply_no_store_headers(replay.headers)
+            return replay
+
+        wrapped_retry._kindlemaster_retry_idempotent = True
+        app.view_functions[endpoint] = wrapped_retry
+
+
 def install_worker_cloud_failure_sync(app_module: ModuleType) -> None:
     """Sync terminal/retry worker state without retaining a browser access token."""
 
@@ -107,6 +152,7 @@ def install_migrated_production_runtime(app_module: ModuleType) -> tuple[Durable
     queue = install_production_runtime(app_module)
     migration = migrate_legacy_jobs(app_module, legacy_jobs)
     install_async_only_conversion_policy(app_module)
+    install_idempotent_retry_response_policy(app_module)
     install_worker_cloud_failure_sync(app_module)
     return queue, migration
 

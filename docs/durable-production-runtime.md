@@ -10,7 +10,7 @@ KindleMaster keeps the existing process-local thread runtime for local developme
 - one or more supervised `production_worker.py` processes;
 - a shared SQLite database containing conversion job state, queue commands, leases and rate-limit state.
 
-The API never executes expensive conversion work when `KINDLEMASTER_DURABLE_RUNTIME=1`. It persists the job and enqueues a replayable command. Workers claim commands atomically and call the existing conversion pipeline outside the API process.
+The API never executes expensive conversion work when `KINDLEMASTER_DURABLE_RUNTIME=1`. It persists the job and enqueues a replayable command. Workers claim commands atomically and call the existing conversion pipeline outside the API process. Hosted `POST /convert` is disabled; clients use `/convert/start`.
 
 ## Required Railway configuration
 
@@ -35,12 +35,14 @@ queued -> leased -> running -> succeeded
                          |-> retry_wait -> leased
                          |-> failed
                          |-> dead_letter
-                         |-> cancelled
+queued/retry_wait        |-> cancelled
 ```
 
 A worker owns a time-bounded lease. Heartbeats extend it. Another worker may reclaim an expired `leased` or `running` command. Attempts are audited and retry delay uses exponential backoff. Non-retryable validation/input errors do not retry.
 
 The canonical job payload and the command queue are stored in the same SQLite database. WAL and `BEGIN IMMEDIATE` transactions prevent two local worker processes from claiming the same command.
+
+Existing code paths that read a job from `_CONVERSION_JOBS` and mutate the returned dictionary remain durable through write-through compatibility. Direct updates and nested dictionary/list mutations are persisted atomically to SQLite.
 
 ## Idempotency
 
@@ -50,9 +52,21 @@ Authenticated callers may send:
 Idempotency-Key: <opaque-client-generated-key>
 ```
 
-The key is scoped to the authenticated owner. Repeating the request returns the canonical job rather than scheduling duplicate work. Raw bearer tokens and cloud access tokens are never persisted in queue payloads.
+The key is scoped to the authenticated owner. Repeating a start or retry request returns the canonical job rather than scheduling duplicate work. Raw bearer tokens and cloud access tokens are never persisted in queue payloads.
 
 Anonymous ownership and cross-browser isolation are finalized by #341. Until that change is merged, queue owner metadata for guests is job-scoped and is not an authorization mechanism.
+
+## Cancellation
+
+Hosted runtime exposes:
+
+```http
+POST /convert/cancel/<job_id>
+```
+
+Cancellation is supported only while the queue record is `queued` or `retry_wait`, when no conversion thread owns the job. The queue and public job record become `cancelled` and cloud metadata is synchronized.
+
+A `leased` or `running` job returns HTTP 409 with `active_cancellation_unsupported`. The system deliberately fails closed rather than marking a job cancelled while its conversion thread continues writing. True active-stage cancellation requires explicit cancellation hooks inside extraction, OCR, assembly, validation and packaging and is tracked separately from this safe pre-execution contract.
 
 ## Recovery behavior
 
@@ -62,6 +76,8 @@ Anonymous ownership and cross-browser isolation are finalized by #341. Until tha
 - Source path missing: the worker restores the input from the retained input artifact before retry.
 - Duplicate completion: only the lease owner may complete the queue record.
 - Exhausted retry: the command enters `dead_letter` and stays visible for operator review.
+- Worker failure: cloud status is synchronized through the server-side path without retaining a browser token.
+- Legacy JSON history: records are migrated once without overwriting newer SQLite state.
 
 ## Local development
 
@@ -81,9 +97,9 @@ python production_server.py
 ## Validation
 
 ```powershell
-python -m unittest test_durable_job_queue.py test_production_runtime.py
+python -m unittest -v production_tests.test_durable_job_queue production_tests.test_production_runtime
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Hosted acceptance must additionally kill the API and worker during active jobs and confirm one canonical artifact, one terminal state and no duplicate execution.
+Hosted acceptance must additionally execute `docs/qa/scenarios/durable-runtime-restart-recovery.md`, kill the API and worker during active jobs, and confirm one canonical artifact, one terminal state and no duplicate execution.

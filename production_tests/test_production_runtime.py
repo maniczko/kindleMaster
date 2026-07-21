@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 
-from flask import Flask, g, jsonify
+from flask import Flask, g
 
 from durable_job_queue import DurableJobDatabase, DurableJobQueue, SQLiteConversionJobStore
 from production_api_policy import (
@@ -145,6 +145,36 @@ class ProductionRuntimeTests(unittest.TestCase):
             self.assertEqual(persisted["status"], "timed_out")
             self.assertEqual(persisted["progress"]["stage"], "timed_out")
             self.assertEqual(persisted["progress"]["messages"], ["worker lease expired"])
+
+    def test_legacy_mutation_preserves_fresh_worker_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = DurableJobDatabase(Path(temp_dir) / "runtime.sqlite3")
+            module = FakeAppModule(_CONVERSION_JOB_STORE=LegacyStore())
+            install_migrated_sqlite_store(module, database=database)
+            module._CONVERSION_JOB_STORE.create(
+                {
+                    "job_id": "job-a",
+                    "status": "queued",
+                    "progress": {"stage": "queued", "messages": []},
+                }
+            )
+
+            stale_legacy_view = module._CONVERSION_JOBS["job-a"]
+            SQLiteConversionJobStore(database).update(
+                "job-a",
+                {
+                    "status": "running",
+                    "worker_id": "fresh-worker",
+                    "heartbeat_at": "fresh-heartbeat",
+                },
+            )
+            stale_legacy_view["progress"]["stage"] = "review"
+
+            persisted = SQLiteConversionJobStore(database).get("job-a")
+            self.assertEqual(persisted["status"], "running")
+            self.assertEqual(persisted["worker_id"], "fresh-worker")
+            self.assertEqual(persisted["heartbeat_at"], "fresh-heartbeat")
+            self.assertEqual(persisted["progress"]["stage"], "review")
 
     def test_production_disables_synchronous_conversion_endpoint(self) -> None:
         flask_app = Flask("production-policy-test")

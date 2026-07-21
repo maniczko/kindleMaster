@@ -99,6 +99,26 @@ class FenConflictAuditTests(unittest.TestCase):
         self.assertEqual(report["counts"]["unadjudicated_conflicts"], 1)
         self.assertEqual(result["conflicts"][0]["verdict"], "unadjudicated_no_trusted_label")
 
+    def test_placement_verified_label_is_ground_truth_for_piece_conflicts(self) -> None:
+        gold = EMPTY.copy()
+        gold[4] = "k"
+        gold[60] = "K"
+        template = gold.copy()
+        template[60] = "Q"
+        label = _label("diagram-1", gold)
+        label["label_status"] = "placement_verified"
+        label["fen_human_verified"] = False
+        label["placement_human_verified"] = True
+
+        result = audit_fen_conflicts_records(
+            current_rows=[_current("diagram-1", gold, template)],
+            label_rows=[label],
+            source_document_sha256=SOURCE_SHA,
+        )
+
+        self.assertEqual(result["report"]["counts"]["trusted_linked_boards"], 1)
+        self.assertEqual(result["report"]["conflict_adjudication"], {"model_correct_template_wrong": 1})
+
     def test_geometry_fallback_requires_one_to_one_match(self) -> None:
         result = audit_fen_conflicts_records(
             current_rows=[_current("new-id", EMPTY, EMPTY, comparison="exact")],

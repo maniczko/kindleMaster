@@ -222,7 +222,7 @@ def audit_fen_conflicts_records(
         "conflict_adjudication": dict(sorted(adjudication_counts.items())),
         "king_conflict_adjudication": dict(sorted(king_adjudication.items())),
         "limitations": [
-            "Only label_status=verified, human_verified=true, piece_labels_verified=true rows are ground truth.",
+            "Only verified or placement_verified rows with human_verified=true and piece_labels_verified=true are ground truth.",
             "Linked draft or rejected rows are excluded from accuracy and conflict adjudication.",
             "Conflicts without trusted labels remain unresolved rather than being inferred from either recognizer.",
         ],
@@ -333,7 +333,7 @@ def _conflict_verdict(model_correct: int, template_correct: int) -> str:
 
 def _is_trusted_label(row: Mapping[str, Any]) -> bool:
     return bool(
-        str(row.get("label_status") or "").strip().lower() == "verified"
+        str(row.get("label_status") or "").strip().lower() in {"verified", "placement_verified"}
         and row.get("human_verified") is True
         and row.get("piece_labels_verified") is True
         and len(row.get("square_labels") or []) == 64

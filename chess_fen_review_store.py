@@ -17,7 +17,9 @@ FEN_REVIEW_PROGRESS_BACKUP_FILENAME = "fen_piece_grid_progress.previous.jsonl"
 FEN_REVIEW_PROGRESS_META_FILENAME = "fen_piece_grid_progress.meta.json"
 
 _PIECES = frozenset({"", "K", "Q", "R", "B", "N", "P", "k", "q", "r", "b", "n", "p"})
-_LABEL_STATUSES = frozenset({"needs_piece_labels", "verified", "rejected", "unreadable"})
+_LABEL_STATUSES = frozenset(
+    {"needs_piece_labels", "verified", "placement_verified", "rejected", "unreadable"}
+)
 _BOARD_CROP_LABELS = frozenset({"", "correct", "cropped", "wrong", "unreadable"})
 _MARKER_CROP_LABELS = frozenset({"", "clear", "complete_no_marker", "cropped", "wrong", "unreadable"})
 _VISIBLE_MARKERS = frozenset(
@@ -208,6 +210,7 @@ def save_fen_review_progress(
 
 def summarize_fen_review_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     verified = 0
+    placement_verified = 0
     excluded = 0
     pending = 0
     invalid = 0
@@ -216,16 +219,19 @@ def summarize_fen_review_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, in
         errors = validate_fen_review_row(row)
         if status == "verified" and not errors:
             verified += 1
+        elif status == "placement_verified" and not errors:
+            placement_verified += 1
         elif status in {"rejected", "unreadable"} and not errors:
             excluded += 1
-        elif status in {"verified", "rejected", "unreadable"}:
+        elif status in {"verified", "placement_verified", "rejected", "unreadable"}:
             invalid += 1
         else:
             pending += 1
     return {
         "total": len(rows),
-        "completed": verified + excluded,
+        "completed": verified + placement_verified + excluded,
         "verified": verified,
+        "placement_verified": placement_verified,
         "excluded": excluded,
         # Backward-compatible alias used by older review pages.
         "closed": excluded,
@@ -239,7 +245,7 @@ def validate_fen_review_row(row: Mapping[str, Any]) -> list[str]:
     status = str(row.get("label_status") or "needs_piece_labels")
     if status not in _LABEL_STATUSES:
         return ["Nieznany status etykiety."]
-    if status == "verified":
+    if status in {"verified", "placement_verified"}:
         cells = row.get("square_labels")
         if not isinstance(cells, list) or len(cells) != 64 or any(str(piece) not in _PIECES for piece in cells):
             errors.append("Siatka musi zawierać 64 poprawne klasy pól.")
@@ -252,12 +258,13 @@ def validate_fen_review_row(row: Mapping[str, Any]) -> list[str]:
             errors.append("Brak potwierdzenia 64 pól.")
         if str(row.get("board_crop_label") or "") not in {"correct", "cropped"}:
             errors.append("Crop planszy nie jest oznaczony jako czytelny.")
-        if str(row.get("marker_crop_label") or "") not in {"clear", "complete_no_marker"}:
-            errors.append("Dowód markera nie jest oznaczony jako czytelny.")
-        if str(row.get("manual_side_to_move") or "") not in {"w", "b"}:
-            errors.append("Brak potwierdzonej strony ruchu.")
-        if str(row.get("manual_side_evidence") or "") not in {"marker", "caption", "verified_source"}:
-            errors.append("Brak rozstrzygającego dowodu strony ruchu.")
+        if status == "verified":
+            if str(row.get("marker_crop_label") or "") not in {"clear", "complete_no_marker"}:
+                errors.append("Dowód markera nie jest oznaczony jako czytelny.")
+            if str(row.get("manual_side_to_move") or "") not in {"w", "b"}:
+                errors.append("Brak potwierdzonej strony ruchu.")
+            if str(row.get("manual_side_evidence") or "") not in {"marker", "caption", "verified_source"}:
+                errors.append("Brak rozstrzygającego dowodu strony ruchu.")
         if not str(row.get("verified_by") or "").strip():
             errors.append("Brak identyfikatora osoby oznaczającej.")
     elif status in {"rejected", "unreadable"} and not str(row.get("verified_by") or "").strip():
@@ -276,30 +283,45 @@ def _normalize_progress_row(base_row: Mapping[str, Any], submitted: Mapping[str,
 
     status = _enum_value(submitted, "label_status", _LABEL_STATUSES, "needs_piece_labels")
     side = _enum_value(submitted, "manual_side_to_move", _SIDES, "")
+    piece_labels_verified = submitted.get("piece_labels_verified") is True
+    board_crop_label = _enum_value(submitted, "board_crop_label", _BOARD_CROP_LABELS, "")
+    marker_crop_label = _enum_value(submitted, "marker_crop_label", _MARKER_CROP_LABELS, "")
+    side_evidence = _enum_value(submitted, "manual_side_evidence", _SIDE_EVIDENCE, "")
+    status_migration = _bounded_text(submitted.get("status_migration"), 120)
+    if status == "verified" and piece_labels_verified and board_crop_label in {"correct", "cropped"}:
+        has_full_fen_evidence = (
+            side in {"w", "b"}
+            and side_evidence in {"marker", "caption", "verified_source"}
+            and marker_crop_label in {"clear", "complete_no_marker"}
+        )
+        if not has_full_fen_evidence:
+            status = "placement_verified"
+            status_migration = "verified_without_full_fen_to_placement_verified_v1"
     row.update(
         {
             "schema": "kindlemaster.fen_manual_review.row.v4",
             "review_contract": "source_bound_piece_grid_v2",
             "square_labels": normalized_cells,
-            "piece_labels_verified": submitted.get("piece_labels_verified") is True,
+            "piece_labels_verified": piece_labels_verified,
             "manual_side_to_move": side,
-            "manual_side_evidence": _enum_value(submitted, "manual_side_evidence", _SIDE_EVIDENCE, ""),
+            "manual_side_evidence": side_evidence,
             "manual_visible_marker": _enum_value(submitted, "manual_visible_marker", _VISIBLE_MARKERS, ""),
-            "board_crop_label": _enum_value(submitted, "board_crop_label", _BOARD_CROP_LABELS, ""),
-            "marker_crop_label": _enum_value(submitted, "marker_crop_label", _MARKER_CROP_LABELS, ""),
+            "board_crop_label": board_crop_label,
+            "marker_crop_label": marker_crop_label,
             "label_status": status,
+            "status_migration": status_migration,
             "verified_by": _bounded_text(submitted.get("verified_by"), _MAX_REVIEWER_LENGTH),
             "notes": _bounded_text(submitted.get("notes"), _MAX_NOTES_LENGTH),
         }
     )
     placement = _cells_to_placement(normalized_cells)
-    terminal = status in {"verified", "rejected", "unreadable"}
-    piece_labels_verified = row["piece_labels_verified"]
+    terminal = status in {"verified", "placement_verified", "rejected", "unreadable"}
     row.update(
         {
             "manual_placement": placement,
-            "manual_fen": f"{placement} {side} - - 0 1" if side in {"w", "b"} else "",
+            "manual_fen": f"{placement} {side} - - 0 1" if status == "verified" and side in {"w", "b"} else "",
             "fen_human_verified": status == "verified" and piece_labels_verified,
+            "placement_human_verified": status in {"verified", "placement_verified"} and piece_labels_verified,
             "piece_labels_source": (
                 "human_visual_64_square_grid" if piece_labels_verified else "model_candidate_draft"
             ),
@@ -312,7 +334,13 @@ def _normalize_progress_row(base_row: Mapping[str, Any], submitted: Mapping[str,
                 if terminal
                 else ""
             ),
-            "verification_source": "human_visual_piece_grid_and_marker" if terminal else "",
+            "verification_source": (
+                "human_visual_64_square_grid"
+                if status == "placement_verified"
+                else "human_visual_piece_grid_and_marker"
+                if terminal
+                else ""
+            ),
             "label_provenance": "human_visual_source_bound_piece_grid_review" if terminal else "",
         }
     )
@@ -359,6 +387,7 @@ def _merge_rows(seed_rows: Sequence[Mapping[str, Any]], progress_rows: Sequence[
                 "board_crop_label",
                 "marker_crop_label",
                 "label_status",
+                "status_migration",
                 "verified_by",
                 "verified_at",
                 "notes",
@@ -373,7 +402,7 @@ def _manual_label(status: str, board_crop_label: str) -> str:
         return "false_positive"
     if status == "unreadable":
         return "uncertain"
-    if status != "verified":
+    if status not in {"verified", "placement_verified"}:
         return "needs_piece_labels"
     return "cropped_diagram" if board_crop_label == "cropped" else "correct_diagram"
 

@@ -15,6 +15,7 @@ from supabase_library import (
 
 
 SAVE_REVIEW_RPC = "save_chess_fen_review"
+CLOSE_REVIEW_RPC = "close_chess_fen_review"
 DATABASE_ROW_FIELDS = frozenset(
     {
         "id",
@@ -53,12 +54,14 @@ DATABASE_ROW_FIELDS = frozenset(
         "policy",
         "square_labels",
         "piece_labels_verified",
+        "placement_human_verified",
         "manual_side_to_move",
         "manual_side_evidence",
         "manual_visible_marker",
         "board_crop_label",
         "marker_crop_label",
         "label_status",
+        "status_migration",
         "verified_by",
         "verified_at",
         "notes",
@@ -246,20 +249,23 @@ class SupabaseFenReviewClient:
         self._ensure_available()
         saved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
+            rpc_name = CLOSE_REVIEW_RPC if action == "close" else SAVE_REVIEW_RPC
+            rpc_payload = {
+                "p_artifact_id": artifact_id,
+                "p_owner_user_id": owner_user_id or None,
+                "p_source_document_sha256": source_document_sha256,
+                "p_rows": [_database_row(row) for row in rows],
+                "p_summary": dict(summary),
+                "p_saved_at": saved_at,
+                "p_expected_revision": int(expected_revision),
+                "p_change_source": change_source,
+            }
+            if action != "close":
+                rpc_payload["p_action"] = action
             result = self._request(
-                f"/rest/v1/rpc/{SAVE_REVIEW_RPC}",
+                f"/rest/v1/rpc/{rpc_name}",
                 method="POST",
-                payload={
-                    "p_artifact_id": artifact_id,
-                    "p_owner_user_id": owner_user_id or None,
-                    "p_source_document_sha256": source_document_sha256,
-                    "p_rows": [_database_row(row) for row in rows],
-                    "p_summary": dict(summary),
-                    "p_saved_at": saved_at,
-                    "p_expected_revision": int(expected_revision),
-                    "p_action": action,
-                    "p_change_source": change_source,
-                },
+                payload=rpc_payload,
             )
         except Exception as error:
             message = str(error)

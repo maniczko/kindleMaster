@@ -87,6 +87,20 @@ class SupabaseMigrationTests(unittest.TestCase):
         self.assertIn("closed_by_user_id", sql)
         self.assertIn("chess_fen_dataset_versions_owner_created_idx", sql)
 
+    def test_fen_review_placement_status_closes_without_claiming_full_fen(self) -> None:
+        migration = Path("supabase/migrations/20260721154000_fen_review_placement_verified.sql")
+        self.assertTrue(migration.exists(), "Supabase placement-only FEN migration is missing.")
+        sql = migration.read_text(encoding="utf-8").lower()
+
+        self.assertIn("'placement_verified'", sql)
+        self.assertIn("create or replace function public.close_chess_fen_review", sql)
+        self.assertIn("item ->> 'label_status' = 'verified'", sql)
+        self.assertIn("item ->> 'label_status' in ('verified', 'placement_verified')", sql)
+        self.assertIn("public.save_chess_fen_review", sql)
+        self.assertIn("insert into public.chess_fen_dataset_versions", sql)
+        self.assertIn("security invoker", sql)
+        self.assertNotIn("security definer", sql)
+
     def test_evidence_review_queue_is_backend_only_and_revision_guarded(self) -> None:
         migration = Path("supabase/migrations/20260717150334_chess_evidence_review_queue.sql")
         self.assertTrue(migration.exists(), "Supabase evidence review migration is missing.")

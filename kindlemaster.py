@@ -78,6 +78,7 @@ QUICK_TESTS = [
     "test_chess_yusupov_acceptance_manifest.py",
     "test_chess_fen_gold_corpus.py",
     "test_chess_fen_auto_adjudication.py",
+    "test_chess_fen_conflict_audit.py",
     "test_chess_glyph_diagnostics.py",
     "test_chess_fen_square_diff.py",
     "test_chess_fen_hard_cases.py",
@@ -620,6 +621,15 @@ def main() -> int:
     evidence_join_parser.add_argument("--out", required=True)
     evidence_join_parser.add_argument("--source-profile", required=True)
     evidence_join_parser.add_argument("--bbox-iou-threshold", type=float, default=0.90)
+    fen_conflict_audit_parser = chess_subparsers.add_parser(
+        "audit-fen-conflicts",
+        help="Link source-bound piece labels to a current run and adjudicate model-template conflicts.",
+    )
+    fen_conflict_audit_parser.add_argument("--current-manifest", required=True)
+    fen_conflict_audit_parser.add_argument("--piece-labels", required=True)
+    fen_conflict_audit_parser.add_argument("--source-pdf", required=True)
+    fen_conflict_audit_parser.add_argument("--out", required=True)
+    fen_conflict_audit_parser.add_argument("--bbox-iou-threshold", type=float, default=0.99)
     evidence_import_parser = chess_subparsers.add_parser(
         "import-evidence-review-queue",
         help="Import a source-bound chess evidence queue into Supabase.",
@@ -1139,6 +1149,24 @@ def _run_chess(args: argparse.Namespace, *, parser: argparse.ArgumentParser | No
                 source_pdf=args.source_pdf,
                 output_dir=args.out,
                 source_profile=args.source_profile,
+                bbox_iou_threshold=args.bbox_iou_threshold,
+            )
+        except Exception as error:
+            payload = {"status": "failed", "error": type(error).__name__, "message": str(error)}
+        _print_json(payload)
+        if payload.get("status") == "passed":
+            return 0
+        return 2 if payload.get("status") == "needs_review" else 1
+
+    if args.chess_command == "audit-fen-conflicts":
+        from chess_fen_conflict_audit import audit_fen_conflicts_files
+
+        try:
+            payload = audit_fen_conflicts_files(
+                current_manifest=args.current_manifest,
+                piece_labels=args.piece_labels,
+                source_pdf=args.source_pdf,
+                output_dir=args.out,
                 bbox_iou_threshold=args.bbox_iou_threshold,
             )
         except Exception as error:

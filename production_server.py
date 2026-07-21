@@ -10,7 +10,7 @@ from pathlib import Path
 
 import app as app_module
 from production_api_policy import install_migrated_production_runtime
-from production_guardrails import install_production_guardrails
+from production_guardrails import ProductionGuardrailPolicy, install_production_guardrails
 from production_runtime import durable_runtime_enabled
 
 
@@ -70,10 +70,13 @@ def main() -> int:
     supervisor: WorkerSupervisor | None = None
     if durable_runtime_enabled():
         queue, migration = install_migrated_production_runtime(app_module)
+        guardrail_policy = ProductionGuardrailPolicy.from_env()
+        app_module.app.config["MAX_CONTENT_LENGTH"] = guardrail_policy.max_upload_bytes
         install_production_guardrails(
             app_module,
             database=app_module._DURABLE_JOB_DATABASE,
             queue=queue,
+            policy=guardrail_policy,
         )
         app_module.app.logger.info(
             "Durable runtime initialized: migrated=%s preserved=%s failed=%s",

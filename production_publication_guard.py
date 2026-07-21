@@ -9,6 +9,11 @@ from types import ModuleType
 from typing import Any, BinaryIO
 
 _TERMINAL_NON_READY = frozenset({"failed", "timed_out", "cancelled"})
+_REQUIRED_QUALITY_ARTIFACTS = frozenset({"report_json", "report_markdown", "log"})
+
+
+class QualityArtifactPublicationError(RuntimeError):
+    error_code = "quality_artifact_storage_failed"
 
 
 class AtomicBinaryPublisher:
@@ -105,13 +110,14 @@ def install_atomic_epub_writer(app_module: ModuleType) -> None:
 
 
 def install_ready_after_quality_gate(app_module: ModuleType) -> None:
-    """Keep a job active until quality-report persistence succeeds."""
+    """Keep a job active until every required quality artifact is durable."""
 
     current_setter = app_module._set_conversion_job
     if getattr(current_setter, "_kindlemaster_ready_after_quality", False):
         return
 
     original_setter = current_setter
+    original_getter = app_module._get_conversion_job
     original_quality_writer = app_module._store_quality_report_artifacts
     pending_ready: dict[str, dict[str, Any]] = {}
     lock = threading.RLock()
@@ -149,13 +155,43 @@ def install_ready_after_quality_gate(app_module: ModuleType) -> None:
         return original_setter(job_id, **fields)
 
     def gated_quality_writer(job_id: str, *args: Any, **kwargs: Any):
-        result = original_quality_writer(job_id, *args, **kwargs)
         normalized_job_id = str(job_id or "").strip()
         with lock:
+            final_fields = pending_ready.get(normalized_job_id)
+        if final_fields is None:
+            return original_quality_writer(job_id, *args, **kwargs)
+
+        def quality_view_getter(requested_job_id: str):
+            current = original_getter(requested_job_id)
+            if str(requested_job_id or "").strip() != normalized_job_id or not current:
+                return current
+            synthetic = dict(current)
+            synthetic.update(final_fields)
+            synthetic["status"] = "ready"
+            return synthetic
+
+        with lock:
+            previous_getter = app_module._get_conversion_job
+            app_module._get_conversion_job = quality_view_getter
+            try:
+                result = original_quality_writer(job_id, *args, **kwargs)
+            finally:
+                app_module._get_conversion_job = previous_getter
+
+            persisted = original_getter(job_id) or {}
+            artifacts = dict(persisted.get("artifacts") or {})
+            missing = sorted(_REQUIRED_QUALITY_ARTIFACTS - set(artifacts))
+            report_error = artifacts.get("report_error")
+            if missing or report_error:
+                details = ", ".join(missing) if missing else "report_error"
+                raise QualityArtifactPublicationError(
+                    f"Required quality artifacts are not durable: {details}."
+                )
+
             final_fields = pending_ready.pop(normalized_job_id, None)
-        if final_fields is not None:
-            original_setter(job_id, **final_fields)
-        return result
+            if final_fields is not None:
+                original_setter(job_id, **final_fields)
+            return result
 
     gated_setter._kindlemaster_ready_after_quality = True
     gated_setter._kindlemaster_original_setter = original_setter

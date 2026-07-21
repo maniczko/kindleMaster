@@ -6,98 +6,145 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Mapping, Sequence
 
-import app as app_module
-from production_api_policy import install_migrated_production_runtime
 from production_runtime import durable_runtime_enabled
+
+
+@dataclass(frozen=True)
+class ProcessSpec:
+    name: str
+    argv: tuple[str, ...]
+    environment: Mapping[str, str]
+
+
+@dataclass
+class ManagedProcess:
+    spec: ProcessSpec
+    process: subprocess.Popen[bytes]
+    restart_count: int = 0
+
+
+PopenFactory = Callable[..., subprocess.Popen[bytes]]
 
 
 def _worker_count() -> int:
     return max(1, min(8, int(os.environ.get("KINDLEMASTER_WORKER_PROCESSES", "1") or 1)))
 
 
-class WorkerSupervisor:
-    def __init__(self, count: int) -> None:
-        self.count = count
-        self.processes: list[subprocess.Popen[bytes]] = []
+def process_specs(worker_count: int | None = None) -> tuple[ProcessSpec, ...]:
+    count = _worker_count() if worker_count is None else max(1, min(8, int(worker_count)))
+    root = Path(__file__).resolve().parent
+    specs: list[ProcessSpec] = [
+        ProcessSpec(
+            name="api",
+            argv=(sys.executable, str(root / "production_api.py")),
+            environment={"KINDLEMASTER_PROCESS_ROLE": "api"},
+        )
+    ]
+    for index in range(count):
+        worker_name = f"worker-{index + 1}"
+        specs.append(
+            ProcessSpec(
+                name=worker_name,
+                argv=(sys.executable, str(root / "production_worker.py")),
+                environment={
+                    "KINDLEMASTER_PROCESS_ROLE": "worker",
+                    "KINDLEMASTER_WORKER_ID": worker_name,
+                },
+            )
+        )
+    return tuple(specs)
+
+
+class ProcessSupervisor:
+    def __init__(
+        self,
+        specs: Sequence[ProcessSpec],
+        *,
+        popen_factory: PopenFactory = subprocess.Popen,
+        monitor_seconds: float = 2.0,
+        shutdown_seconds: float = 15.0,
+    ) -> None:
+        if not specs:
+            raise ValueError("At least one managed process is required.")
+        names = [spec.name for spec in specs]
+        if len(names) != len(set(names)):
+            raise ValueError("Managed process names must be unique.")
+        self.specs = tuple(specs)
+        self.popen_factory = popen_factory
+        self.monitor_seconds = max(0.1, float(monitor_seconds))
+        self.shutdown_seconds = max(1.0, float(shutdown_seconds))
+        self.children: dict[str, ManagedProcess] = {}
         self.stop_event = threading.Event()
-        self.monitor_thread: threading.Thread | None = None
+
+    def _spawn(self, spec: ProcessSpec, *, restart_count: int = 0) -> ManagedProcess:
+        environment = os.environ.copy()
+        environment.update({str(key): str(value) for key, value in spec.environment.items()})
+        process = self.popen_factory(list(spec.argv), env=environment)
+        return ManagedProcess(spec=spec, process=process, restart_count=restart_count)
 
     def start(self) -> None:
-        for index in range(self.count):
-            self.processes.append(self._spawn(index))
-        self.monitor_thread = threading.Thread(
-            target=self._monitor,
-            daemon=True,
-            name="kindlemaster-worker-supervisor",
-        )
-        self.monitor_thread.start()
+        for spec in self.specs:
+            self.children[spec.name] = self._spawn(spec)
+
+    def check_children(self) -> list[str]:
+        restarted: list[str] = []
+        if self.stop_event.is_set():
+            return restarted
+        for name, managed in list(self.children.items()):
+            if managed.process.poll() is None:
+                continue
+            replacement = self._spawn(
+                managed.spec,
+                restart_count=managed.restart_count + 1,
+            )
+            self.children[name] = replacement
+            restarted.append(name)
+        return restarted
+
+    def request_stop(self) -> None:
+        self.stop_event.set()
 
     def stop(self) -> None:
         self.stop_event.set()
-        for process in self.processes:
-            if process.poll() is None:
-                process.terminate()
-        deadline = time.monotonic() + 15
-        for process in self.processes:
+        active = [managed.process for managed in self.children.values() if managed.process.poll() is None]
+        for process in active:
+            process.terminate()
+        deadline = time.monotonic() + self.shutdown_seconds
+        for process in active:
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait(timeout=5)
 
-    def _spawn(self, index: int) -> subprocess.Popen[bytes]:
-        environment = os.environ.copy()
-        environment["KINDLEMASTER_WORKER_ID"] = f"worker-{index + 1}"
-        return subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("production_worker.py"))],
-            env=environment,
-        )
-
-    def _monitor(self) -> None:
-        while not self.stop_event.wait(2):
-            for index, process in enumerate(list(self.processes)):
-                if process.poll() is None:
-                    continue
-                if self.stop_event.is_set():
-                    return
-                self.processes[index] = self._spawn(index)
+    def run_forever(self) -> None:
+        self.start()
+        try:
+            while not self.stop_event.wait(self.monitor_seconds):
+                self.check_children()
+        finally:
+            self.stop()
 
 
 def main() -> int:
-    supervisor: WorkerSupervisor | None = None
-    if durable_runtime_enabled():
-        _queue, migration = install_migrated_production_runtime(app_module)
-        app_module.app.logger.info(
-            "Durable runtime initialized: migrated=%s preserved=%s failed=%s",
-            migration["migrated"],
-            migration["preserved"],
-            migration["failed"],
+    if not durable_runtime_enabled():
+        raise RuntimeError(
+            "production_server.py requires KINDLEMASTER_DURABLE_RUNTIME=1; "
+            "use `python kindlemaster.py serve` for local thread mode."
         )
-        supervisor = WorkerSupervisor(_worker_count())
-        supervisor.start()
+    supervisor = ProcessSupervisor(process_specs())
 
     def shutdown(_signum: int, _frame: object) -> None:
-        if supervisor is not None:
-            supervisor.stop()
-        raise SystemExit(0)
+        supervisor.request_stop()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
-
-    try:
-        from waitress import serve
-
-        serve(
-            app_module.app,
-            host=os.environ.get("KINDLEMASTER_BIND_HOST", "0.0.0.0"),
-            port=int(os.environ.get("PORT", os.environ.get("KINDLEMASTER_PORT", "5001")) or 5001),
-            threads=max(4, int(os.environ.get("KINDLEMASTER_API_THREADS", "8") or 8)),
-        )
-    finally:
-        if supervisor is not None:
-            supervisor.stop()
+    supervisor.run_forever()
     return 0
 
 

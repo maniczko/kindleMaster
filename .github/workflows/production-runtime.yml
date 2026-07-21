@@ -23,7 +23,25 @@ jobs:
       - name: Compile production runtime
         run: python -m py_compile artifact_storage.py durable_job_queue.py production_store_compat.py production_runtime.py production_api_policy.py production_attempt_audit.py production_attempt_api.py production_publication_guard.py production_api.py production_worker.py production_server.py
       - name: Run durable queue, process, attempt and publication tests
-        run: python -m unittest -v production_tests.test_durable_job_queue production_tests.test_production_runtime production_tests.test_production_process_supervisor production_tests.test_production_attempt_audit production_tests.test_production_publication_guard production_tests.test_production_artifact_atomicity
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest -v \
+            production_tests.test_durable_job_queue \
+            production_tests.test_production_runtime \
+            production_tests.test_production_process_supervisor \
+            production_tests.test_production_attempt_audit \
+            production_tests.test_production_publication_guard \
+            production_tests.test_production_artifact_atomicity \
+            2>&1 | tee production-runtime-tests.log
+      - name: Upload production runtime test log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-runtime-test-log
+          path: production-runtime-tests.log
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify production entrypoint imports
         env:
           KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3

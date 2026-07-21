@@ -60,6 +60,12 @@ class OCRModuleCacheTests(unittest.TestCase):
         self.assertEqual(first.engine_used, "tesseract")
         self.assertEqual(second.engine_used, "tesseract")
         self.assertEqual([page.text for page in second.pages], ["page-0", "page-1"])
+        self.assertEqual(first.cache_status, "miss")
+        self.assertGreaterEqual(first.backend_seconds, 0.0)
+        self.assertEqual(second.cache_status, "hit")
+        self.assertEqual(second.backend_seconds, 0.0)
+        self.assertGreaterEqual(second.cache_lookup_seconds, 0.0)
+        self.assertGreaterEqual(second.total_seconds, second.cache_lookup_seconds)
 
     def test_run_ocr_on_pdf_invalidates_cache_when_source_mtime_changes(self) -> None:
         class FakePage:

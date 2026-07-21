@@ -837,6 +837,10 @@ def _build_ocr_benchmark_payload(*, case: CorpusCase, quality: dict[str, Any], i
         "status": status,
         "capability_status": capability_status,
         "engine": str(ocr_quality.get("engine") or ocr_quality.get("engine_used") or ""),
+        "cache_status": str(ocr_quality.get("cache_status") or "unreported"),
+        "cache_lookup_seconds": _safe_float(ocr_quality.get("cache_lookup_seconds")),
+        "backend_seconds": _safe_float(ocr_quality.get("backend_seconds")),
+        "total_seconds": _safe_float(ocr_quality.get("total_seconds")),
         "success_rate": _safe_float(ocr_quality.get("success_rate")),
         "reason_codes": reason_codes,
         "fallback_reason": str(ocr_quality.get("fallback_reason") or (reason_codes[0] if reason_codes else "")),
@@ -849,6 +853,17 @@ def _build_ocr_benchmark_payload(*, case: CorpusCase, quality: dict[str, Any], i
         "text_chapter_count": inspect.get("xhtml_count", 0),
         "image_count": inspect.get("image_count", 0),
         "release_strict": case.release_strict,
+    }
+
+
+def _build_ocr_timing_payload(ocr_benchmark: dict[str, Any]) -> dict[str, Any]:
+    if not ocr_benchmark:
+        return {}
+    return {
+        "cache_status": str(ocr_benchmark.get("cache_status") or "unreported"),
+        "cache_lookup_seconds": _safe_float(ocr_benchmark.get("cache_lookup_seconds")),
+        "backend_seconds": _safe_float(ocr_benchmark.get("backend_seconds")),
+        "total_seconds": _safe_float(ocr_benchmark.get("total_seconds")),
     }
 
 
@@ -1287,6 +1302,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         validation_status=effective_validation_status,
     )
     ocr_benchmark = _build_ocr_benchmark_payload(case=case, quality=quality, inspect=repaired_inspect)
+    ocr_timing = _build_ocr_timing_payload(ocr_benchmark)
     ocr_blockers, ocr_warnings = _ocr_benchmark_findings(case, ocr_benchmark)
     blockers.extend(ocr_blockers)
     warnings.extend(ocr_warnings)
@@ -1336,6 +1352,7 @@ def _run_conversion_case(case: CorpusCase, *, run_heading_repair: bool) -> dict[
         "output_assertions": output_assertions,
         "output_assertion_counts": _assertion_status_counts(output_assertions),
         "ocr_benchmark": ocr_benchmark,
+        "ocr_timing": ocr_timing,
         "size_gate": size_gate,
         "release_fallback": release_fallback,
         "grade": grade,

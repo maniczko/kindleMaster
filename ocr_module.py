@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -55,6 +56,10 @@ class OCRResult:
     engine_used: str  # "tesseract", "easyocr", "pymupdf_fallback"
     total_pages: int
     success_rate: float  # 0.0 to 1.0
+    cache_status: str = "unreported"
+    cache_lookup_seconds: float = 0.0
+    backend_seconds: float = 0.0
+    total_seconds: float = 0.0
 
 
 OCR_CACHE_VERSION = 1
@@ -550,17 +555,29 @@ def run_ocr_on_pdf(pdf_path: str, language: str = "pol", dpi: int = 300) -> OCRR
     Returns:
         OCRResult with all pages processed
     """
+    started = time.perf_counter()
+    cache_started = time.perf_counter()
     cached_result = _read_ocr_cache(pdf_path, language=language, dpi=dpi)
+    cache_lookup_seconds = time.perf_counter() - cache_started
     if cached_result is not None:
+        cached_result.cache_status = "hit"
+        cached_result.cache_lookup_seconds = round(cache_lookup_seconds, 6)
+        cached_result.backend_seconds = 0.0
+        cached_result.total_seconds = round(time.perf_counter() - started, 6)
         return cached_result
 
+    backend_started = time.perf_counter()
     ocrmypdf_output = ocr_pdf_with_ocrmypdf(pdf_path, language=language)
     if ocrmypdf_output is not None:
         try:
             result = _ocr_result_from_pdf_text(str(ocrmypdf_output), engine_used="ocrmypdf", dpi=dpi)
         finally:
             _cleanup_ocrmypdf_temp_output(ocrmypdf_output)
+        result.cache_status = "miss"
+        result.cache_lookup_seconds = round(cache_lookup_seconds, 6)
+        result.backend_seconds = round(time.perf_counter() - backend_started, 6)
         _write_ocr_cache(pdf_path, language=language, dpi=dpi, result=result)
+        result.total_seconds = round(time.perf_counter() - started, 6)
         return result
 
     doc = fitz.open(pdf_path)
@@ -591,8 +608,12 @@ def run_ocr_on_pdf(pdf_path: str, language: str = "pol", dpi: int = 300) -> OCRR
         engine_used=engine,
         total_pages=len(pages_results),
         success_rate=avg_success,
+        cache_status="miss",
+        cache_lookup_seconds=round(cache_lookup_seconds, 6),
+        backend_seconds=round(time.perf_counter() - backend_started, 6),
     )
     _write_ocr_cache(pdf_path, language=language, dpi=dpi, result=result)
+    result.total_seconds = round(time.perf_counter() - started, 6)
     return result
 
 

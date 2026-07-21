@@ -7,6 +7,7 @@ from premium_corpus_smoke import (
     CorpusCase,
     _apply_release_strictness,
     _build_ocr_benchmark_payload,
+    _build_ocr_timing_payload,
     _build_overall_summary,
     _build_case_blockers,
     _build_case_warnings,
@@ -497,6 +498,10 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
                 "reason_codes": ["ocr_unavailable", "pymupdf_fallback"],
                 "fallback_reason": "ocr_unavailable",
                 "manual_review_count": 2,
+                "cache_status": "miss",
+                "cache_lookup_seconds": 0.01,
+                "backend_seconds": 12.5,
+                "total_seconds": 12.6,
                 "low_confidence_page_count": 1,
                 "empty_ocr_page_count": 1,
             },
@@ -519,7 +524,23 @@ class PremiumCorpusSmokeTests(unittest.TestCase):
         self.assertIn("ocr_unavailable", payload["reason_codes"])
         self.assertEqual(payload["artifact_rate_per_1000_words"], 4.5)
         self.assertEqual([item["code"] for item in blockers], ["ocr_capability_degraded", "ocr_quality_review"])
+        self.assertEqual(payload["cache_status"], "miss")
+        self.assertEqual(payload["cache_lookup_seconds"], 0.01)
+        self.assertEqual(payload["backend_seconds"], 12.5)
+        self.assertEqual(payload["total_seconds"], 12.6)
+        self.assertEqual(
+            _build_ocr_timing_payload(payload),
+            {
+                "cache_status": "miss",
+                "cache_lookup_seconds": 0.01,
+                "backend_seconds": 12.5,
+                "total_seconds": 12.6,
+            },
+        )
         self.assertEqual(warnings, [])
+
+    def test_ocr_timing_payload_is_empty_for_non_ocr_case(self) -> None:
+        self.assertEqual(_build_ocr_timing_payload({}), {})
 
     def test_ocr_benchmark_overall_summary_counts_scan_cases(self) -> None:
         rows = [

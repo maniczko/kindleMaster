@@ -1091,6 +1091,57 @@ def _glyph_audit_sample(text: str, *, limit: int = 120) -> str:
     return "".join(escaped)
 
 
+def _summarize_notation_chess_fen(
+    diagram_records: list[Mapping[str, Any]],
+    pgn_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    accepted_diagrams = [
+        record
+        for record in diagram_records
+        if str(record.get("status") or "").strip().lower() == "accepted"
+        and str(record.get("fen") or record.get("fen_candidate") or "").strip()
+    ]
+    diagram_review_count = sum(
+        1
+        for record in diagram_records
+        if bool(record.get("manual_review_required")) or str(record.get("status") or "") == "needs_review"
+    )
+    pgn_fen_count = int(pgn_summary.get("fen_count", 0) or 0)
+    pgn_review_count = int(pgn_summary.get("manual_review_count", 0) or 0)
+    fen_count = len(accepted_diagrams) + pgn_fen_count
+    manual_review_count = diagram_review_count + pgn_review_count
+    if fen_count and manual_review_count:
+        status = "passed_with_warnings"
+    elif fen_count:
+        status = "passed"
+    else:
+        status = "requires_review"
+    return {
+        "status": status,
+        "source": "html_diagram_preview_and_pgn_replay",
+        "diagram_count": len(diagram_records) or int(pgn_summary.get("candidate_game_count", 0) or 0),
+        "fen_count": fen_count,
+        "accepted_diagram_fen_count": len(accepted_diagrams),
+        "placement_candidate_count": sum(
+            1 for record in diagram_records if str(record.get("placement") or record.get("placement_fen") or "").strip()
+        ),
+        "manual_review_count": manual_review_count,
+        "diagram_manual_review_count": diagram_review_count,
+        "caption_match_count": sum(1 for record in diagram_records if int(record.get("caption_match_score") or 0) > 0),
+        "caption_number_count": sum(1 for record in diagram_records if str(record.get("diagram_number") or "").strip()),
+        "caption_guided_candidate_count": sum(
+            1
+            for record in diagram_records
+            if "caption_guided" in str(record.get("method") or "")
+            or "caption_guided_board_candidate" in {str(warning) for warning in (record.get("warnings") or [])}
+        ),
+        "board_found_near_caption_count": sum(1 for record in diagram_records if bool(record.get("board_found_near_caption"))),
+        "global_candidate_without_caption_count": sum(
+            1 for record in diagram_records if record.get("board_detection_reason") == "global_candidate_without_caption"
+        ),
+    }
+
+
 def extract_chess_notation_pdf_reflow(
     pdf_path: str,
     config: ConversionConfig,
@@ -1267,27 +1318,7 @@ def extract_chess_notation_pdf_reflow(
             "skipped_embedded_image_count": skipped_image_count,
             "chess_pgn": chess_pgn_summary,
             "audit": audit_metadata,
-            "chess_fen": {
-                "status": "passed" if chess_pgn_summary.get("derived_final_fen_count") or chess_diagram_records else "requires_review",
-                "source": "html_diagram_preview_and_pgn_replay",
-                "diagram_count": len(chess_diagram_records) or int(chess_pgn_summary.get("candidate_game_count", 0) or 0),
-                "fen_count": len([record for record in chess_diagram_records if record.get("fen")]) + int(chess_pgn_summary.get("fen_count", 0) or 0),
-                "manual_review_count": int(chess_pgn_summary.get("manual_review_count", 0) or 0),
-                "caption_match_count": len([record for record in chess_diagram_records if int(record.get("caption_match_score") or 0) > 0]),
-                "caption_number_count": len([record for record in chess_diagram_records if str(record.get("diagram_number") or "").strip()]),
-                "caption_guided_candidate_count": len(
-                    [
-                        record
-                        for record in chess_diagram_records
-                        if "caption_guided" in str(record.get("method") or "")
-                        or "caption_guided_board_candidate" in {str(warning) for warning in (record.get("warnings") or [])}
-                    ]
-                ),
-                "board_found_near_caption_count": len([record for record in chess_diagram_records if bool(record.get("board_found_near_caption"))]),
-                "global_candidate_without_caption_count": len(
-                    [record for record in chess_diagram_records if record.get("board_detection_reason") == "global_candidate_without_caption"]
-                ),
-            },
+            "chess_fen": _summarize_notation_chess_fen(chess_diagram_records, chess_pgn_summary),
         },
         "images": [],
         "chapters": chapters,
@@ -1910,6 +1941,30 @@ def _notation_layout_diagrams_from_page(
     diagrams: list[dict[str, Any]] = []
     fen_records: list[dict[str, Any]] = []
     seen_bboxes: list[tuple[float, float, float, float]] = []
+    candidate_pixel_bboxes: list[tuple[int, tuple[int, int, int, int]]] = []
+    candidate_page_bboxes: list[tuple[float, float, float, float]] = []
+    for index, candidate in enumerate(candidates, start=1):
+        if not candidate.bbox:
+            continue
+        bbox = _clamp_bbox(candidate.bbox, page_image.size, pad_ratio=0.01, min_pad=2.0)
+        if bbox is None:
+            continue
+        candidate_crop = page_image.crop(bbox)
+        if min(candidate_crop.size) < 80 or _scan_chess_is_partial_separator_crop(candidate_crop):
+            continue
+        candidate_page_bbox = tuple(
+            _scale_bbox(
+                bbox,
+                source_size=page_image.size,
+                target_width=float(page.rect.width or page_image.width),
+                target_height=float(page.rect.height or page_image.height),
+            )
+        )
+        if any(_bbox_overlap_ratio(candidate_page_bbox, existing) > 0.70 for existing in candidate_page_bboxes):
+            continue
+        candidate_pixel_bboxes.append((index, bbox))
+        candidate_page_bboxes.append(candidate_page_bbox)
+    marker_assignment: dict[str, Any] | None = None
     for candidate_index, candidate in enumerate(candidates, start=1):
         if not candidate.bbox:
             continue
@@ -1943,6 +1998,55 @@ def _notation_layout_diagrams_from_page(
             min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835),
             piece_templates=piece_templates,
         )
+        fen_payload = result.to_dict()
+        if bool(getattr(config, "chess_fen_apply_side_marker", False)) and _notation_layout_marker_eligible(
+            fen_payload,
+            min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835),
+        ):
+            if marker_assignment is None:
+                marker_boards = [
+                    {
+                        "diagram_id": f"notation-marker-p{page_num + 1:03d}-c{index:02d}",
+                        "bbox": tuple(float(value) for value in bbox),
+                    }
+                    for index, bbox in candidate_pixel_bboxes
+                ]
+                marker_assignment = _scan_chess_page_marker_pipeline(
+                    page_image,
+                    marker_boards,
+                    page_number=page_num + 1,
+                )
+            assignment_id = f"notation-marker-p{page_num + 1:03d}-c{candidate_index:02d}"
+            assignment = next(
+                (
+                    dict(item)
+                    for item in marker_assignment.get("assignments") or []
+                    if str(item.get("diagram_id") or "") == assignment_id
+                ),
+                {},
+            )
+            fen_payload = _scan_chess_apply_page_marker_assignment(
+                fen_payload,
+                assignment,
+                marker_assignment.get("candidates") or [],
+            )
+            two_crop_fields, _ = _scan_chess_two_crop_review_artifacts(
+                page_image,
+                filename=f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png",
+                board_bbox=tuple(float(value) for value in pixel_bbox),
+                side_marker_bbox=None,
+                marker_assignment=assignment,
+            )
+            fen_payload.update(_without_artifact_paths(two_crop_fields))
+            fen_payload = _apply_scan_chess_two_crop_quality_gate(fen_payload, two_crop_fields)
+            fen_payload = _apply_scan_chess_two_crop_side_marker_if_trusted(
+                fen_payload,
+                two_crop_fields,
+                min_confidence=float(getattr(config, "chess_fen_min_confidence", 0.835) or 0.835),
+            )
+        if fen_payload.get("fen") and not bool(fen_payload.get("requires_review")):
+            fen_payload["manual_review_required"] = False
+            fen_payload["manual_review_reason"] = ""
         chess_img = {
             "filename": f"notation_layout_p{page_num + 1:03d}_{candidate_index:02d}.png",
             "data": png_data,
@@ -1953,12 +2057,13 @@ def _notation_layout_diagrams_from_page(
             "page": page_num,
             "is_chess": True,
             "inline": True,
-            "fen_result": result.to_dict(),
-            "fen_confidence": result.confidence,
-            "fen_method": result.method,
+            "fen_result": fen_payload,
+            "fen_confidence": fen_payload.get("confidence", 0.0),
+            "fen_method": fen_payload.get("method", ""),
         }
-        if result.fen and not result.requires_review and _fen_string_is_parser_valid(result.fen):
-            chess_img["fen"] = result.fen
+        accepted_fen = str(fen_payload.get("fen") or "").strip()
+        if accepted_fen and not bool(fen_payload.get("requires_review")) and _fen_string_is_parser_valid(accepted_fen):
+            chess_img["fen"] = accepted_fen
         diagram_id = f"layout-chess-p{page_num + 1:03d}-d{len(diagrams) + 1:02d}"
         diagrams.append(
             _chess_diagram_record_from_image(
@@ -1970,14 +2075,31 @@ def _notation_layout_diagrams_from_page(
             )
         )
         fen_records.append(
-            _chess_fen_record(
+            _chess_fen_record_from_payload(
                 page_num=page_num,
                 filename=chess_img["filename"],
-                result=result,
+                payload=fen_payload,
                 source="notation-layout-page-render",
             )
         )
     return diagrams, fen_records
+
+
+def _notation_layout_marker_eligible(payload: Mapping[str, Any], *, min_confidence: float) -> bool:
+    if not str(payload.get("placement") or payload.get("placement_fen") or payload.get("full_fen") or "").strip():
+        return False
+    if float(payload.get("confidence") or 0.0) < min_confidence:
+        return False
+    warnings = {str(warning) for warning in payload.get("warnings") or [] if str(warning)}
+    return bool(warnings) and warnings.issubset({"side_to_move_inferred", "recognition_inner_border_trim_used"})
+
+
+def _without_artifact_paths(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).endswith("_path")
+    }
 
 
 def _chess_notation_line_count(line_items: list[TextLineItem]) -> int:
@@ -2116,7 +2238,18 @@ def _attach_fen_to_chess_image(chess_img: dict, result) -> dict:
 
 
 def _chess_fen_record(*, page_num: int, filename: str, result, source: str) -> dict:
-    payload = result.to_dict()
+    return _chess_fen_record_from_payload(
+        page_num=page_num,
+        filename=filename,
+        payload=result.to_dict(),
+        source=source,
+    )
+
+
+def _chess_fen_record_from_payload(
+    *, page_num: int, filename: str, payload: Mapping[str, Any], source: str
+) -> dict:
+    payload = dict(payload)
     payload.update(_basic_two_crop_contract_fields(filename, payload.get("bbox")))
     return {
         **payload,
@@ -4802,6 +4935,7 @@ def _chess_diagram_record_from_image(
         "manual_review_reason": str(fen_result.get("manual_review_reason") or chess_img.get("manual_review_reason") or ""),
         "caption": caption,
         "image_data_uri": image_data_uri,
+        "fen": fen_candidate,
         "fen_candidate": fen_candidate,
         "placement": str(fen_result.get("placement") or fen_result.get("placement_fen") or "").strip(),
         "placement_fen": str(fen_result.get("placement") or fen_result.get("placement_fen") or "").strip(),

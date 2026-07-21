@@ -41,6 +41,7 @@ from kindle_semantic_cleanup import (
     _lexical_zipf,
     _manual_review_from_heading_decisions,
     _normalize_existing_table_html,
+    _normalize_text,
     _normalize_text_light,
     _plan_clean_reading_flow,
     _publication_profile_key,
@@ -2768,6 +2769,16 @@ class SemanticEpubCleanupTests(unittest.TestCase):
 
     def test_normalize_text_repairs_generic_registered_mark_mojibake(self):
         self.assertEqual(_normalize_text_light("ACME\u0139\u02dd Guide"), "ACME\u00ae Guide")
+
+    def test_normalize_text_reuses_cached_result_for_identical_input(self):
+        _normalize_text.cache_clear()
+        first = _normalize_text("Repeated OCR text with scope and 2026 values.")
+        misses_after_first = _normalize_text.cache_info().misses
+        second = _normalize_text("Repeated OCR text with scope and 2026 values.")
+
+        self.assertEqual(second, first)
+        self.assertEqual(_normalize_text.cache_info().misses, misses_after_first)
+        self.assertEqual(_normalize_text.cache_info().hits, 1)
 
     def test_repair_text_node_skips_expensive_repairs_without_signals(self):
         with patch("kindle_semantic_cleanup._ftfy_fix_text", side_effect=AssertionError("ftfy should be skipped")), patch(

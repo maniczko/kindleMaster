@@ -14,13 +14,99 @@ from pymupdf_chess_extractor import (
     _clean_chess_notation_line,
     _is_single_board_coordinate_line,
     _looks_like_board_coordinate_noise,
+    _notation_layout_marker_eligible,
     _scan_chess_pgn_extra_artifacts,
+    _summarize_notation_chess_fen,
     extract_chess_notation_pdf_reflow,
 )
 from chess_pgn_extractor import ChessPgnRecord
 
 
 class ChessNotationReflowTests(unittest.TestCase):
+    def test_notation_marker_gate_only_allows_high_confidence_side_only_review(self) -> None:
+        eligible = {
+            "placement": "8/8/8/8/8/7p/N4K1k/8",
+            "confidence": 0.849,
+            "warnings": ["recognition_inner_border_trim_used", "side_to_move_inferred"],
+        }
+
+        self.assertTrue(_notation_layout_marker_eligible(eligible, min_confidence=0.835))
+        self.assertFalse(
+            _notation_layout_marker_eligible(
+                {**eligible, "warnings": ["black_king_count_invalid", "side_to_move_inferred"]},
+                min_confidence=0.835,
+            )
+        )
+        self.assertFalse(
+            _notation_layout_marker_eligible({**eligible, "confidence": 0.834}, min_confidence=0.835)
+        )
+
+    def test_fen_summary_reports_review_candidates_instead_of_false_pass(self) -> None:
+        summary = _summarize_notation_chess_fen(
+            [
+                {
+                    "status": "needs_review",
+                    "manual_review_required": True,
+                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
+                    "fen": "",
+                },
+                {
+                    "status": "needs_review",
+                    "manual_review_required": True,
+                    "placement": "7k/6p1/7p/4RN1r/5K2/6P1/8/8",
+                    "fen": "",
+                },
+            ],
+            {"fen_count": 0, "manual_review_count": 0},
+        )
+
+        self.assertEqual(summary["status"], "requires_review")
+        self.assertEqual(summary["fen_count"], 0)
+        self.assertEqual(summary["placement_candidate_count"], 2)
+        self.assertEqual(summary["diagram_manual_review_count"], 2)
+        self.assertEqual(summary["manual_review_count"], 2)
+
+    def test_fen_summary_does_not_count_unverified_fen_candidate(self) -> None:
+        summary = _summarize_notation_chess_fen(
+            [
+                {
+                    "status": "needs_review",
+                    "manual_review_required": True,
+                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
+                    "fen_candidate": "8/6K1/7Q/8/8/2p5/1k6/8 b - - 0 1",
+                }
+            ],
+            {"fen_count": 0, "manual_review_count": 0},
+        )
+
+        self.assertEqual(summary["status"], "requires_review")
+        self.assertEqual(summary["fen_count"], 0)
+        self.assertEqual(summary["manual_review_count"], 1)
+
+    def test_fen_summary_distinguishes_accepted_fen_from_remaining_review(self) -> None:
+        summary = _summarize_notation_chess_fen(
+            [
+                {
+                    "status": "accepted",
+                    "manual_review_required": False,
+                    "placement": "8/6K1/7Q/8/8/2p5/1k6/8",
+                    "fen_candidate": "8/6K1/7Q/8/8/2p5/1k6/8 b - - 0 1",
+                },
+                {
+                    "status": "needs_review",
+                    "manual_review_required": True,
+                    "placement": "7k/6p1/7p/4RN1r/5K2/6P1/8/8",
+                    "fen": "",
+                },
+            ],
+            {"fen_count": 0, "manual_review_count": 0},
+        )
+
+        self.assertEqual(summary["status"], "passed_with_warnings")
+        self.assertEqual(summary["fen_count"], 1)
+        self.assertEqual(summary["accepted_diagram_fen_count"], 1)
+        self.assertEqual(summary["manual_review_count"], 1)
+
     def test_large_collection_extractor_preserves_notation_and_skips_raster_boards(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "jobava-sample.pdf"

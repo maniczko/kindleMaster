@@ -303,6 +303,10 @@ class PublicationPipelineTests(unittest.TestCase):
             engine_used = "ocrmypdf"
             total_pages = 2
             success_rate = 0.5
+            cache_status = "hit"
+            cache_lookup_seconds = 0.0123456
+            backend_seconds = 0.0
+            total_seconds = 0.0126789
 
         payload = _ocr_quality_from_result(
             Result(),
@@ -315,6 +319,10 @@ class PublicationPipelineTests(unittest.TestCase):
         self.assertEqual(payload["recognized_page_count"], 1)
         self.assertEqual(payload["page_image_fallback_count"], 1)
         self.assertTrue(payload["scan_chess_image_preservation"])
+        self.assertEqual(payload["cache_status"], "hit")
+        self.assertEqual(payload["cache_lookup_seconds"], 0.012346)
+        self.assertEqual(payload["backend_seconds"], 0.0)
+        self.assertEqual(payload["total_seconds"], 0.012679)
 
     def test_scanned_chess_board_injection_adds_diagram_metric(self) -> None:
         class Board:

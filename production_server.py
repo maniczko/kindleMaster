@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import app as app_module
+from production_guardrails import install_production_guardrails
 from production_runtime import durable_runtime_enabled, install_production_runtime
 
 
@@ -67,7 +68,12 @@ class WorkerSupervisor:
 def main() -> int:
     supervisor: WorkerSupervisor | None = None
     if durable_runtime_enabled():
-        install_production_runtime(app_module)
+        queue = install_production_runtime(app_module)
+        install_production_guardrails(
+            app_module,
+            database=app_module._DURABLE_JOB_DATABASE,
+            queue=queue,
+        )
         supervisor = WorkerSupervisor(_worker_count())
         supervisor.start()
 

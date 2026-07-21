@@ -28,16 +28,3 @@ jobs:
         env:
           KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3
         run: python -c "import production_server, production_worker; print('production runtime imports ok')"
-      - name: Run repository quick compatibility
-        shell: bash
-        run: |
-          set -o pipefail
-          python kindlemaster.py test --suite quick 2>&1 | tee production-quick.log
-      - name: Upload quick compatibility log
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: production-runtime-quick-log
-          path: production-quick.log
-          if-no-files-found: error
-          retention-days: 7

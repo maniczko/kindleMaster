@@ -1,0 +1,30 @@
+name: Production Runtime
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  durable-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Bootstrap runtime
+        run: python kindlemaster.py bootstrap --runtime-only
+      - name: Compile production runtime
+        run: python -m py_compile durable_job_queue.py production_runtime.py production_worker.py production_server.py
+      - name: Run durable queue tests
+        run: python -m unittest -v test_durable_job_queue.py test_production_runtime.py
+      - name: Verify production entrypoint imports
+        env:
+          KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3
+        run: python -c "import production_server, production_worker; print('production runtime imports ok')"

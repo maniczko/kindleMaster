@@ -61,4 +61,7 @@ RUN mkdir -p /data/kindlemaster /data/uploads /data/output/artifacts /data/repor
 
 EXPOSE 5001
 
+# Local compatibility entrypoint remains available through:
+# CMD ["python", "kindlemaster.py", "serve", "--runtime", "waitress"]
+# Railway production uses the API/worker supervisor below.
 CMD ["python", "production_server.py"]

@@ -5,12 +5,26 @@ import types
 import unittest
 from pathlib import Path
 
+from flask import Flask
+
 from durable_job_queue import DurableJobDatabase
+from production_api_policy import install_async_only_conversion_policy, install_migrated_sqlite_store
 from production_runtime import install_durable_submission, install_sqlite_job_store
 
 
 class FakeAppModule(types.SimpleNamespace):
     pass
+
+
+class LegacyStore:
+    def snapshot(self) -> dict:
+        return {
+            "legacy-job": {
+                "job_id": "legacy-job",
+                "status": "ready",
+                "filename": "legacy.pdf",
+            }
+        }
 
 
 class ProductionRuntimeTests(unittest.TestCase):
@@ -42,6 +56,38 @@ class ProductionRuntimeTests(unittest.TestCase):
             self.assertEqual(record.payload["cloud_token"], "")
             self.assertNotIn("secret-not-persisted", str(record.payload))
             self.assertEqual(record.owner_key, "user:user-1")
+
+    def test_legacy_json_jobs_are_migrated_into_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = DurableJobDatabase(Path(temp_dir) / "runtime.sqlite3")
+            module = FakeAppModule(_CONVERSION_JOB_STORE=LegacyStore())
+            result = install_migrated_sqlite_store(module, database=database)
+            self.assertEqual(result, {"migrated": 1, "preserved": 0, "failed": 0})
+            migrated = module._CONVERSION_JOB_STORE.get("legacy-job")
+            self.assertEqual(migrated["status"], "ready")
+            self.assertEqual(migrated["filename"], "legacy.pdf")
+
+    def test_production_disables_synchronous_conversion_endpoint(self) -> None:
+        flask_app = Flask("production-policy-test")
+
+        @flask_app.post("/convert")
+        def convert_sync():
+            return {"unexpected": True}
+
+        module = FakeAppModule(app=flask_app)
+        module._json_error = lambda message, **kwargs: (
+            {
+                "error": message,
+                "error_code": kwargs["error_code"],
+                **dict(kwargs.get("extra") or {}),
+            },
+            kwargs["status_code"],
+        )
+        install_async_only_conversion_policy(module)
+        response = flask_app.test_client().post("/convert")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error_code"], "synchronous_conversion_disabled")
+        self.assertEqual(response.get_json()["start_url"], "/convert/start")
 
     def test_railway_uses_supervised_production_entrypoint(self) -> None:
         dockerfile = Path("Dockerfile.railway").read_text(encoding="utf-8")

@@ -190,7 +190,14 @@ def install_ready_after_quality_gate(app_module: ModuleType) -> None:
 
             final_fields = pending_ready.pop(normalized_job_id, None)
             if final_fields is not None:
-                original_setter(job_id, **final_fields)
+                publish_fields = dict(final_fields)
+                publish_fields["artifacts"] = artifacts
+                publish_fields["artifact_storage"] = dict(
+                    persisted.get("artifact_storage")
+                    or publish_fields.get("artifact_storage")
+                    or {}
+                )
+                original_setter(job_id, **publish_fields)
             return result
 
     gated_setter._kindlemaster_ready_after_quality = True

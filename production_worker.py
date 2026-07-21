@@ -6,6 +6,7 @@ import signal
 import app as app_module
 from durable_job_queue import DurableJobDatabase, DurableJobQueue
 from production_api_policy import install_migrated_sqlite_store
+from production_attempt_audit import install_durable_attempt_audit
 from production_publication_guard import install_production_publication_guard
 from production_runtime import DurableConversionWorker, durable_database_path
 
@@ -13,6 +14,7 @@ from production_runtime import DurableConversionWorker, durable_database_path
 def main() -> int:
     database = DurableJobDatabase(durable_database_path())
     install_migrated_sqlite_store(app_module, database=database)
+    install_durable_attempt_audit(database)
     install_production_publication_guard(app_module)
     queue = DurableJobQueue(database)
     worker = DurableConversionWorker(

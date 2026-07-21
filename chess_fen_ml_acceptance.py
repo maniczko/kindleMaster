@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from chess_fen_hardening import crop_sha256, machine_accept_fen, validate_fen_detailed
 
@@ -227,14 +227,21 @@ def build_deterministic_ensemble_fen(
     ctx = dict(context or {})
     candidates: list[dict[str, Any]] = []
     source_crop_hash = str(ctx.get("source_crop_hash") or "").strip() or _source_crop_hash(diagram, model_prediction, template_prediction)
-    if template_prediction:
-        direct = _direct_fen(template_prediction, source_crop_hash=source_crop_hash, source_kind="template")
-        if direct:
-            candidates.append(direct)
+    template_direct = (
+        _direct_fen(template_prediction, source_crop_hash=source_crop_hash, source_kind="template")
+        if template_prediction
+        else None
+    )
+    model_direct = (
+        _direct_fen(model_prediction, source_crop_hash=source_crop_hash, source_kind="model")
+        if model_prediction
+        else None
+    )
+    if template_direct:
+        candidates.append(template_direct)
     if model_prediction:
-        direct = _direct_fen(model_prediction, source_crop_hash=source_crop_hash, source_kind="model")
-        if direct:
-            candidates.append(direct)
+        if model_direct:
+            candidates.append(model_direct)
         if model_prediction.get("squares"):
             candidates.extend(
                 generate_fen_candidates_from_square_alternatives(
@@ -247,10 +254,31 @@ def build_deterministic_ensemble_fen(
     candidates = _dedupe_fen_candidates(candidates)
     selected = select_best_ensemble_fen(candidates, ctx) or {}
     fen = str(selected.get("fen") or "")
+    template_placement = str((template_direct or {}).get("fen") or "").split(" ", 1)[0]
+    model_placement = str((model_direct or {}).get("fen") or "").split(" ", 1)[0]
+    model_template_agreement = (
+        template_placement == model_placement
+        if template_placement and model_placement
+        else None
+    )
+    model_square_alternatives_checked = bool(
+        model_prediction
+        and len(model_prediction.get("squares") or []) == 64
+        and all(
+            isinstance(square, Mapping) and bool(square.get("alternatives"))
+            for square in model_prediction.get("squares") or []
+        )
+    )
     evidence = {
-        "template_candidate": bool(template_prediction and _direct_fen(template_prediction, source_crop_hash=source_crop_hash, source_kind="template")),
-        "local_model_candidate": bool(model_prediction and (_direct_fen(model_prediction, source_crop_hash=source_crop_hash, source_kind="model") or model_prediction.get("squares"))),
-        "square_alternatives_checked": bool(selected.get("evidence", {}).get("square_alternatives_checked")),
+        "template_candidate": bool(template_direct),
+        "local_model_candidate": bool(model_direct or (model_prediction or {}).get("squares")),
+        "template_placement": template_placement,
+        "model_placement": model_placement,
+        "model_template_agreement": model_template_agreement,
+        "square_alternatives_checked": bool(
+            selected.get("evidence", {}).get("square_alternatives_checked")
+            or model_square_alternatives_checked
+        ),
         "square_alternatives_used": int(selected.get("evidence", {}).get("square_alternatives_used") or 0),
         "orientation_checked": selected.get("evidence", {}).get("orientation_checked") or ["normal"],
         "python_chess_valid": _python_chess_valid(fen),
@@ -258,7 +286,20 @@ def build_deterministic_ensemble_fen(
         "source_crop_hash": source_crop_hash,
         "score_margin_to_second_candidate": selected.get("score_margin_to_second_candidate", 0.0),
     }
-    warnings = sorted(set(list(selected.get("warnings") or []) + _validation_warning_codes(fen)))
+    consensus_warnings = []
+    if model_template_agreement is False:
+        consensus_warnings.append("model_template_conflict")
+    elif model_template_agreement is None:
+        consensus_warnings.append("model_template_consensus_missing")
+    warnings = sorted(
+        set(
+            list(selected.get("warnings") or [])
+            + _validation_warning_codes(fen)
+            + consensus_warnings
+        )
+    )
+    if evidence["square_alternatives_checked"]:
+        warnings = [warning for warning in warnings if warning != "no_square_alternatives"]
     row = {
         "schema": "kindlemaster.fen_beam_candidate.v1",
         "diagram_id": str(diagram.get("diagram_id") or diagram.get("id") or (model_prediction or {}).get("diagram_id") or ""),

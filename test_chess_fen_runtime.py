@@ -78,18 +78,27 @@ class ChessFenRuntimeTests(unittest.TestCase):
 
         self.assertEqual(loaded["status"], "ready")
         self.assertEqual(len(loaded["model"]["classes"]), 13)
-        self.assertAlmostEqual(loaded["model"]["acceptance_threshold"], 0.994787, places=6)
+        self.assertAlmostEqual(loaded["model"]["acceptance_threshold"], 0.963637, places=6)
+        self.assertAlmostEqual(
+            loaded["model"]["piece_confidence_threshold"], 0.963604, places=6
+        )
+        self.assertAlmostEqual(
+            loaded["model"]["king_confidence_threshold"], 0.964115, places=6
+        )
+        self.assertAlmostEqual(
+            loaded["model"]["ood_distance_threshold"], 1.412992586716347
+        )
         self.assertEqual(
             loaded["provenance"]["artifact_sha256"],
-            "f159958fd785cc0384d937f281beeb3843f47ad4458c8b691e9419b0914d8eb0",
+            "95d2a653155ec3168a44f2635c9bc4b150dbf5c087cfe725eaab0f116fab813f",
         )
         self.assertEqual(
             loaded["provenance"]["training_data"]["dataset_sha256"],
-            "ce60028fc0054d94422125e4204191b80dab3172db7addbc3d3af28c0b8b1a8f",
+            "78e4385aeb1f595171d8370be84afd2573051ab790458c4d819ab29c00466201",
         )
         comparison = loaded["provenance"]["benchmark_comparison"]
         self.assertEqual(comparison["baseline"]["exact_board_accuracy"], 0.0)
-        self.assertEqual(comparison["candidate"]["exact_board_accuracy"], 0.9)
+        self.assertEqual(comparison["candidate"]["exact_board_accuracy"], 0.703704)
 
     def test_model_hash_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -167,6 +176,10 @@ class ChessFenRuntimeTests(unittest.TestCase):
         self.assertFalse(result["publishable"])
         self.assertGreaterEqual(result["timing"]["total_ms"], 0.0)
         self.assertIn("minimum_runner_up_margin", result)
+        self.assertEqual(result["confidence_policy"], "board_evidence_v2")
+        self.assertIn("minimum_piece_confidence", result["board_evidence"])
+        self.assertIn("minimum_king_confidence", result["board_evidence"])
+        self.assertTrue(result["board_evidence"]["ood"]["available"])
         self.assertEqual(result["orientation"]["value"], "white_bottom")
 
     def test_off_mode_is_exact_runtime_rollback(self) -> None:
@@ -209,7 +222,7 @@ class ChessFenRuntimeTests(unittest.TestCase):
         self.assertEqual(result.model_runtime["template_comparison"], "exact")
         self.assertIn("shadow_mode_not_publishable", result.recognition_blockers)
 
-    def test_assist_promotes_placement_but_not_untrusted_full_fen(self) -> None:
+    def test_assist_without_template_consensus_stays_in_review(self) -> None:
         recognition = ChessFenResult(
             placement="",
             method="template",
@@ -225,6 +238,24 @@ class ChessFenRuntimeTests(unittest.TestCase):
                 _board_bytes(),
                 mode="assist",
             )
+
+        self.assertEqual(result.placement, "")
+        self.assertTrue(result.requires_review)
+        self.assertFalse(result.model_runtime["publishable"])
+        self.assertEqual(result.model_runtime["owning_blocker"], "model_template_consensus_missing")
+
+    def test_assist_exact_template_consensus_can_promote_placement_only(self) -> None:
+        recognition = ChessFenResult(
+            placement=PLACEMENT,
+            method="template",
+            board_detected=True,
+            requires_review=True,
+        )
+        with patch(
+            "chess_fen_runtime.predict_portable_fen_board",
+            return_value=_runtime_payload(mode="assist", publishable=True),
+        ):
+            result = apply_fen_square_runtime(recognition, _board_bytes(), mode="assist")
 
         payload = result.to_dict()
         self.assertEqual(result.placement, PLACEMENT)

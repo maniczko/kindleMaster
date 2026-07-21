@@ -382,6 +382,8 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                 "evidence": {
                     "score_margin_to_second_candidate": 0.50,
                     "local_model_candidate": True,
+                    "template_candidate": True,
+                    "model_template_agreement": True,
                     "square_alternatives_checked": True,
                 },
             },
@@ -391,7 +393,7 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         missing_codes = {blocker["code"] for blocker in missing_evidence["acceptance_blockers"]}
         self.assertIn("source_crop_hash_missing", missing_codes)
         self.assertIn("square_alternatives_not_checked", missing_codes)
-        self.assertIn("no_template_or_model_agreement", missing_codes)
+        self.assertIn("model_template_consensus_missing", missing_codes)
         self.assertEqual(accepted["runtime_status"], "FEN_PLACEMENT_MACHINE_ACCEPTED")
 
     def test_machine_accept_placement_rejects_invalid_missing_king_and_low_confidence(self) -> None:
@@ -425,7 +427,7 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
         self.assertEqual(result["runtime_status"], "FEN_REVIEW_REQUIRED")
         self.assertIn("source_crop_hash_missing", codes)
         self.assertIn("square_alternatives_not_checked", codes)
-        self.assertIn("no_template_or_model_agreement", codes)
+        self.assertIn("model_template_consensus_missing", codes)
 
     def test_machine_accept_fen_accepts_deterministic_ensemble_with_full_evidence_contract(self) -> None:
         result = machine_accept_fen(
@@ -449,7 +451,8 @@ class ChessFenPipelineHardeningTests(unittest.TestCase):
                     "validate_fen_detailed_passed": True,
                     "score_margin_to_second_candidate": 0.50,
                     "local_model_candidate": True,
-                    "template_candidate": False,
+                    "template_candidate": True,
+                    "model_template_agreement": True,
                     "square_alternatives_checked": True,
                 },
             },

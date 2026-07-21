@@ -33,6 +33,15 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
                 patch.object(app_module, "_get_conversion_job_for_auth", return_value={"user_id": auth.user_id}),
                 patch.object(app_module, "_resolve_local_fen_review_dir", return_value=review_dir),
                 patch("chess_fen_review_repository.ChessFenReviewRepository.save", return_value=saved) as save,
+                patch(
+                    "chess_fen_review_repository.ChessFenReviewRepository.load",
+                    return_value={"session_status": "complete", "rows": []},
+                ),
+                patch.object(
+                    app_module,
+                    "_publish_verified_fen_review_artifacts",
+                    return_value={"status": "published"},
+                ) as publish,
             ):
                 response = self.client.put(
                     "/convert/artifact/artifact-1/chess_fen_review_progress",
@@ -51,6 +60,103 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
         self.assertEqual(save.call_args.kwargs["action"], "close")
         self.assertEqual(save.call_args.kwargs["owner_user_id"], auth.user_id)
         self.assertEqual(save.call_args.kwargs["change_source"], "close")
+        publish.assert_called_once()
+
+    def test_post_publish_uses_closed_database_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir)
+            auth = app_module.AuthContext(authenticated=True, user_id="owner-a")
+            review_payload = {
+                "status": "ok",
+                "session_status": "complete",
+                "rows": [],
+            }
+            report = {"status": "published", "summary": {"fen_human_verified": 254}}
+            with (
+                patch.object(app_module, "_resolve_request_auth_context", return_value=auth),
+                patch.object(
+                    app_module,
+                    "_get_conversion_job_for_auth",
+                    return_value={"user_id": auth.user_id, "artifacts": {}},
+                ),
+                patch.object(app_module, "_resolve_local_fen_review_dir", return_value=review_dir),
+                patch(
+                    "chess_fen_review_repository.ChessFenReviewRepository.load",
+                    return_value=review_payload,
+                ),
+                patch.object(
+                    app_module,
+                    "_publish_verified_fen_review_artifacts",
+                    return_value=report,
+                ) as publish,
+            ):
+                response = self.client.post(
+                    "/convert/artifact/artifact-1/chess_fen_publish"
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["publication"]["summary"]["fen_human_verified"], 254)
+        publish.assert_called_once_with(
+            "artifact-1",
+            {"user_id": auth.user_id, "artifacts": {}},
+            review_dir=review_dir,
+            review_payload=review_payload,
+        )
+
+    def test_publish_rejects_noncanonical_artifact_id_before_lookup(self) -> None:
+        with patch.object(app_module, "_get_conversion_job_for_auth") as lookup:
+            response = self.client.post(
+                "/convert/artifact/%3Cinvalid%3E/chess_fen_publish"
+            )
+
+        self.assertEqual(response.status_code, 404)
+        lookup.assert_not_called()
+
+    def test_publish_failure_does_not_expose_exception_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir)
+            auth = app_module.AuthContext(authenticated=True, user_id="owner-a")
+            with (
+                patch.object(app_module, "_resolve_request_auth_context", return_value=auth),
+                patch.object(
+                    app_module,
+                    "_get_conversion_job_for_auth",
+                    return_value={"user_id": auth.user_id, "artifacts": {}},
+                ),
+                patch.object(app_module, "_resolve_local_fen_review_dir", return_value=review_dir),
+                patch(
+                    "chess_fen_review_repository.ChessFenReviewRepository.load",
+                    return_value={"session_status": "complete", "rows": []},
+                ),
+                patch.object(
+                    app_module,
+                    "_publish_verified_fen_review_artifacts",
+                    side_effect=RuntimeError("secret-stack-detail"),
+                ),
+            ):
+                response = self.client.post(
+                    "/convert/artifact/artifact-1/chess_fen_publish"
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("secret-stack-detail", response.get_data(as_text=True))
+        self.assertEqual(
+            response.get_json()["error_code"],
+            "verified_fen_publication_failed",
+        )
+
+    def test_reader_summary_separates_human_machine_and_unrecognized(self) -> None:
+        positions = [
+            {"status": "accepted", "fen": "fen-a", "fen_human_verified": True},
+            {"status": "accepted", "fen": "fen-b", "fen_human_verified": False},
+            {"status": "needs_review", "fen": "", "side_to_move": "unknown"},
+        ]
+
+        summary = app_module._reader_sidecar_summary(positions)
+
+        self.assertEqual(summary["fen_human_verified"], 1)
+        self.assertEqual(summary["fen_automatic"], 1)
+        self.assertEqual(summary["fen_unrecognized"], 1)
 
     def test_stale_revision_returns_http_409_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

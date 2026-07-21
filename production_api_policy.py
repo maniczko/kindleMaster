@@ -6,6 +6,7 @@ from typing import Any
 
 from durable_job_queue import DurableJobDatabase, DurableJobQueue
 from production_runtime import install_production_runtime, install_sqlite_job_store
+from production_store_compat import install_sqlite_mapping_write_through
 
 
 def capture_legacy_jobs(app_module: ModuleType) -> dict[str, dict[str, Any]]:
@@ -102,6 +103,7 @@ def install_worker_cloud_failure_sync(app_module: ModuleType) -> None:
 
 def install_migrated_production_runtime(app_module: ModuleType) -> tuple[DurableJobQueue, dict[str, int]]:
     legacy_jobs = capture_legacy_jobs(app_module)
+    install_sqlite_mapping_write_through()
     queue = install_production_runtime(app_module)
     migration = migrate_legacy_jobs(app_module, legacy_jobs)
     install_async_only_conversion_policy(app_module)
@@ -115,6 +117,7 @@ def install_migrated_sqlite_store(
     database: DurableJobDatabase,
 ) -> dict[str, int]:
     legacy_jobs = capture_legacy_jobs(app_module)
+    install_sqlite_mapping_write_through()
     install_sqlite_job_store(app_module, database=database)
     migration = migrate_legacy_jobs(app_module, legacy_jobs)
     install_worker_cloud_failure_sync(app_module)

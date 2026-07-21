@@ -279,7 +279,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <main class="shell">
     <header class="hero"><div><div class="eyebrow">KindleMaster · etykiety źródłowe</div><h1>Oznacz figury, nie zapis FEN</h1><p>Model wstępnie wypełnia planszę. Popraw błędne pola, potwierdź 64 pola i niezależnie sprawdź marker. Pełny FEN powstanie automatycznie.</p></div><div class="source"><b>Artefakt:</b> __ARTIFACT_ID__<br><b>Powiązanie:</b> __SOURCE_BINDING__<br><b>SHA:</b> __SOURCE_DIGEST__</div></header>
     <section class="guide" aria-label="Instrukcja"><div class="guide-step"><b>1. Crop planszy</b><span>Jeśli brakuje rzędu albo widzisz dwa diagramy, oznacz zły crop. Nie zgaduj.</span></div><div class="guide-step"><b>2. Siatka 8×8</b><span>Wybierz figurę i klikaj tylko pola różniące się od sugestii. Potem potwierdź 64 pola.</span></div><div class="guide-step"><b>3. Marker</b><span>△ = białe, ▼ = czarne. Strona ruchu trafia do wygenerowanego FEN.</span></div></section>
-    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>pełnych FEN</span></div><div class="metric"><strong id="metric-placement">0</strong><span>tylko 64 pola</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Pełny FEN zweryfikowany</option><option value="placement">64 pola; strona ruchu nieznana</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading"><span id="save-state-text">Łączenie z zapisem…</span><a class="auth-link" id="auth-link" href="/" target="_blank" rel="noopener" hidden>Zaloguj się</a></span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
+    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>pełnych FEN</span></div><div class="metric"><strong id="metric-placement">0</strong><span>tylko 64 pola</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Pełny FEN zweryfikowany</option><option value="placement">64 pola; strona ruchu nieznana</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" id="publish-fen" disabled>Opublikuj zweryfikowane FEN</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading"><span id="save-state-text">Łączenie z zapisem…</span><a class="auth-link" id="auth-link" href="/" target="_blank" rel="noopener" hidden>Zaloguj się</a></span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
     <section class="review-grid">__CARDS__</section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -294,6 +294,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const localModifiedKey = stateKey + '.modifiedAt';
     const conflictKey = stateKey + '.revisionConflict';
     const serverProgressUrl = artifactId && artifactId !== 'local' ? `/convert/artifact/${encodeURIComponent(artifactId)}/chess_fen_review_progress` : '';
+    const serverPublishUrl = artifactId && artifactId !== 'local' ? `/convert/artifact/${encodeURIComponent(artifactId)}/chess_fen_publish` : '';
     const pieceGlyphs = {'':'',K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
     const pieceNames = {'':'puste',K:'biały król',Q:'biały hetman',R:'biała wieża',B:'biały goniec',N:'biały skoczek',P:'biały pion',k:'czarny król',q:'czarny hetman',r:'czarna wieża',b:'czarny goniec',n:'czarny skoczek',p:'czarny pion'};
     const cards = [...document.querySelectorAll('.review-card')];
@@ -312,6 +313,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const saveStateText = document.getElementById('save-state-text');
     const authLink = document.getElementById('auth-link');
     const toggleSession = document.getElementById('toggle-session');
+    const publishFen = document.getElementById('publish-fen');
     reviewer.value = localStorage.getItem(reviewerKey) || '';
 
     function storedAccessToken() {
@@ -342,6 +344,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       const closed = sessionStatus === 'complete';
       toggleSession.textContent = closed ? 'Otwórz ponownie' : 'Zamknij zestaw';
       toggleSession.classList.toggle('primary', !closed);
+      publishFen.disabled = !closed;
       for (const card of cards) {
         for (const control of card.querySelectorAll('button,input,select,textarea')) control.disabled = closed;
       }
@@ -755,6 +758,36 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    async function publishVerifiedFenToServer() {
+      if (!serverPublishUrl) { toast('Publikacja jest dostępna tylko dla artefaktu zapisanego w KindleMaster.'); return false; }
+      if (sessionStatus !== 'complete') { toast('Najpierw zamknij kompletny zestaw oznaczeń.'); return false; }
+      if (!storedAccessToken()) { authenticationRequired(true); return false; }
+      publishFen.disabled = true;
+      setSaveState('saving','Publikowanie Reader, PGN i EPUB…');
+      try {
+        const response = await fetch(serverPublishUrl,{
+          method:'POST',
+          headers:serverHeaders({Accept:'application/json'})
+        });
+        const payload = await response.json().catch(()=>({}));
+        if (!response.ok || payload.success !== true) throw responseError(response,payload);
+        const summary = payload.publication?.summary || {};
+        const human = Number(summary.fen_human_verified || 0);
+        const automatic = Number(summary.fen_automatic || 0);
+        const unrecognized = Number(summary.fen_unrecognized || 0);
+        setSaveState('saved',`Opublikowano: ${human} ręcznych, ${automatic} automatycznych, ${unrecognized} nierozpoznanych`);
+        toast(`Publikacja gotowa. FEN: ${human} ręcznie zweryfikowanych, ${automatic} automatycznych, ${unrecognized} nierozpoznanych.`);
+        return true;
+      } catch (error) {
+        if (error.authRequired) { authenticationRequired(true); return false; }
+        setSaveState('error','Publikacja nie powiodła się; oznaczenia pozostają bezpieczne');
+        toast(`Nie udało się opublikować zweryfikowanych FEN: ${error.message}`);
+        return false;
+      } finally {
+        publishFen.disabled = sessionStatus !== 'complete';
+      }
+    }
+
     enableImageRetry();
     for (const card of cards) {
       apply(card,savedRow(card));
@@ -783,6 +816,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const evidenceReviewButton=document.createElement('button');evidenceReviewButton.type='button';evidenceReviewButton.textContent='Markery bbox';evidenceReviewButton.addEventListener('click',()=>{window.location.href='chess_evidence_review';});document.getElementById('import-jsonl').before(evidenceReviewButton);
     document.getElementById('save-server').addEventListener('click',()=>saveAllToServer('save',true));
     toggleSession.addEventListener('click',()=>saveAllToServer(sessionStatus === 'complete' ? 'reopen' : 'close',true));
+    publishFen.addEventListener('click',publishVerifiedFenToServer);
     document.addEventListener('keydown',event=>{if(event.altKey&&event.key.toLowerCase()==='n'){event.preventDefault();nextPending();}});
     document.getElementById('import-jsonl').addEventListener('click',()=>document.getElementById('import-file').click());
     document.getElementById('import-file').addEventListener('change',async event=>{

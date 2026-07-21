@@ -167,7 +167,7 @@ def render_fen_manual_review_card(row: Mapping[str, Any]) -> str:
         </div>
       </section>
       <div class="closing-fields">
-        <div class="field"><label for="status-{index}">Status etykiety</label><select id="status-{index}" name="label_status"><option value="needs_piece_labels">Figury do sprawdzenia</option><option value="verified">Zweryfikowane 64 pola + marker</option><option value="rejected">False positive / odrzucony</option><option value="unreadable">Plansza rzeczywiście nieczytelna</option></select></div>
+        <div class="field"><label for="status-{index}">Status etykiety</label><select id="status-{index}" name="label_status"><option value="needs_piece_labels">Figury do sprawdzenia</option><option value="verified">Pełny FEN zweryfikowany</option><option value="placement_verified">64 pola zweryfikowane; strona ruchu nieznana</option><option value="rejected">False positive / odrzucony</option><option value="unreadable">Plansza rzeczywiście nieczytelna</option></select></div>
         <div class="field"><label for="notes-{index}">Uwagi (opcjonalnie)</label><textarea id="notes-{index}" name="notes" rows="3" placeholder="Np. poprawiono czarnego gońca na f6; górny rząd ucięty..."></textarea></div>
       </div>
       <div class="validation" aria-live="polite" tabindex="-1">Sprawdź siatkę 8×8, następnie marker.</div>
@@ -261,7 +261,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     button,input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:10px}button{min-height:44px;padding:.66rem .9rem;color:var(--ink);background:#fff;font-weight:800;cursor:pointer}button:hover{border-color:var(--forest)}button.primary{color:#fff;border-color:var(--forest);background:var(--forest)}button.primary:hover{background:var(--forest-dark)}button.secondary{background:#f8f5ed}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .shell{width:min(1560px,calc(100% - 32px));margin:0 auto;padding:30px 0 72px}.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,440px);gap:28px;align-items:end;margin-bottom:20px}.eyebrow{color:var(--brick);font-size:.76rem;font-weight:900;letter-spacing:.11em;text-transform:uppercase}h1,h2,h3{margin:0;font-family:Georgia,"Times New Roman",serif}h1{max-width:900px;margin-top:7px;font-size:clamp(2.2rem,4.5vw,4.1rem);line-height:.98;letter-spacing:-.035em}.hero p{max-width:850px;margin:15px 0 0;color:var(--muted);font-size:1.02rem}.source{padding:13px 15px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.78);color:var(--muted);font-family:"Cascadia Mono",Consolas,monospace;font-size:.74rem;overflow-wrap:anywhere}
     .guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}.guide-step{min-height:94px;padding:14px 15px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.82)}.guide-step b{display:block;margin-bottom:4px;font-family:Georgia,serif}.guide-step span{color:var(--muted);font-size:.84rem}
-    .control-deck{position:sticky;top:10px;z-index:10;display:grid;gap:10px;margin-bottom:16px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.95);box-shadow:var(--shadow);backdrop-filter:blur(14px)}.metrics{display:grid;grid-template-columns:repeat(5,minmax(104px,1fr));gap:8px}.metric{min-height:62px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}.metric strong{display:block;font-family:Georgia,serif;font-size:1.35rem;line-height:1.1}.metric span{display:block;margin-top:3px;color:var(--muted);font-size:.74rem}.controls{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(2,minmax(150px,.7fr)) minmax(170px,.8fr) auto;gap:8px;align-items:center}.controls input,.controls select{width:100%;min-height:44px;padding:0 11px;background:#fff}.toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.toolbar-actions button{white-space:nowrap}.save-state{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;min-height:32px;padding:5px 9px;border-radius:9px;background:#f1eee6;color:var(--muted);font-size:.73rem;font-weight:800}.save-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber)}.save-state[data-state="saved"]::before{background:var(--forest)}.save-state[data-state="saving"]::before{background:var(--focus);animation:pulse 1s infinite}.save-state[data-state="auth"]{color:#6d4b1c;background:#fff7e8}.save-state[data-state="error"]{color:var(--red)}.save-state[data-state="error"]::before{background:var(--red)}.auth-link{color:var(--forest-dark);text-decoration:underline;text-underline-offset:2px}.auth-link[hidden]{display:none}@keyframes pulse{50%{opacity:.35}}
+    .control-deck{position:sticky;top:10px;z-index:10;display:grid;gap:10px;margin-bottom:16px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,253,247,.95);box-shadow:var(--shadow);backdrop-filter:blur(14px)}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px}.metric{min-height:62px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff}.metric strong{display:block;font-family:Georgia,serif;font-size:1.35rem;line-height:1.1}.metric span{display:block;margin-top:3px;color:var(--muted);font-size:.74rem}.controls{display:grid;grid-template-columns:minmax(180px,1.5fr) repeat(2,minmax(150px,.7fr)) minmax(170px,.8fr) auto;gap:8px;align-items:center}.controls input,.controls select{width:100%;min-height:44px;padding:0 11px;background:#fff}.toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.toolbar-actions button{white-space:nowrap}.save-state{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;min-height:32px;padding:5px 9px;border-radius:9px;background:#f1eee6;color:var(--muted);font-size:.73rem;font-weight:800}.save-state::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber)}.save-state[data-state="saved"]::before{background:var(--forest)}.save-state[data-state="saving"]::before{background:var(--focus);animation:pulse 1s infinite}.save-state[data-state="auth"]{color:#6d4b1c;background:#fff7e8}.save-state[data-state="error"]{color:var(--red)}.save-state[data-state="error"]::before{background:var(--red)}.auth-link{color:var(--forest-dark);text-decoration:underline;text-underline-offset:2px}.auth-link[hidden]{display:none}@keyframes pulse{50%{opacity:.35}}
     .review-grid{display:grid;gap:18px}.review-card{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper);box-shadow:0 8px 24px rgba(58,48,32,.06)}.review-card[hidden]{display:none}.review-card[data-state="verified"]{border-color:#6c9e83;box-shadow:inset 4px 0 var(--forest),0 8px 24px rgba(58,48,32,.06)}.review-card[data-state="invalid"]{border-color:#d68c84;box-shadow:inset 4px 0 var(--red),0 8px 24px rgba(58,48,32,.06)}.card-head{display:flex;justify-content:space-between;gap:14px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}.card-head h2{font-size:1.08rem;line-height:1.2}.meta{margin-top:4px;color:var(--muted);font-size:.78rem}.badges{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-content:flex-start}.badge{padding:4px 8px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font-size:.7rem;font-weight:900;white-space:nowrap}.badge.conflict{color:var(--red);border-color:#d99a93;background:#fff1ef}
     figure{margin:0}.media-grid{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(360px,.88fr);gap:14px;padding:15px;background:linear-gradient(135deg,#ded7ca,#eee8dc)}.board-panel,.evidence-panel{min-width:0}.evidence-panel{display:grid;gap:11px}.marker-evidence-grid{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.28fr);gap:10px}.crop-figure{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:7px}.crop-figure h3{font-size:.9rem}.crop-figure img{display:block;width:100%;object-fit:contain;border:1px solid var(--line-strong);border-radius:11px;background:#fff}.board-figure img{height:520px}.context-figure img{height:238px}.marker-figure img,.marker-search-figure img{height:170px}.crop-empty{display:grid;min-height:150px;place-items:center;padding:16px;border:1px dashed var(--line-strong);border-radius:11px;background:rgba(255,255,255,.64);color:var(--muted);text-align:center;font-size:.8rem}figcaption{color:var(--muted);font-size:.74rem}.machine-marker{margin:0;padding:8px 10px;border-left:3px solid var(--amber);background:rgba(255,253,247,.76);color:var(--muted);font-size:.76rem}
     .body{display:grid;gap:12px;padding:14px 15px 16px}.machine{padding:10px 11px;border:1px solid #dec49c;border-radius:10px;background:#fff7e8}.machine-head{display:flex;justify-content:space-between;gap:12px;align-items:center}.machine-head>div{display:grid;gap:5px;min-width:0}.machine b{color:var(--amber);font-size:.76rem;text-transform:uppercase;letter-spacing:.05em}.machine code{display:block}code,.fen-output{color:#293930;font-family:"Cascadia Mono",Consolas,monospace;font-size:.77rem;overflow-wrap:anywhere;word-break:break-word}.machine button{flex:0 0 auto;min-height:38px;padding:.42rem .66rem;font-size:.76rem}details{border:1px solid var(--line);border-radius:10px;background:#fff}summary{padding:9px 11px;font-weight:800;cursor:pointer}details p,details div{margin:0;padding:0 11px 10px;color:var(--muted);font-size:.8rem;white-space:pre-wrap}
@@ -269,7 +269,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     .piece-workspace{display:grid;grid-template-columns:minmax(220px,250px) minmax(390px,520px) minmax(260px,1fr);gap:14px;align-items:start;padding:14px;border:1px solid var(--line);border-radius:12px;background:#f5f0e5}.palette-panel,.editor-panel,.fen-panel{min-width:0}.palette-panel h3,.fen-panel h3{margin-bottom:9px;font-size:.94rem}.selected-piece{margin-bottom:9px;padding:7px 9px;border-left:3px solid var(--forest);background:#fff;color:var(--muted);font-size:.72rem}.selected-piece strong{color:var(--forest-dark)}.piece-palette{display:grid;gap:8px}.piece-empty .piece-choice{width:100%}.piece-group{padding:8px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.55)}.piece-group h4{margin:0 0 6px;color:var(--muted);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase}.piece-group-options{display:grid;grid-template-columns:1fr 1fr;gap:5px}.piece-choice{display:grid;grid-template-columns:30px 1fr;gap:5px;align-items:center;min-height:44px;padding:5px 7px;text-align:left;font-size:.67rem;line-height:1.15}.piece-choice[aria-pressed="true"]{color:#fff;border-color:var(--forest);background:var(--forest)}.piece-glyph{font-family:Georgia,"Times New Roman",serif;font-size:1.55rem;line-height:1;text-align:center}.hint{margin:8px 0 0}
     .board-editor{display:grid;grid-template-columns:repeat(8,1fr);width:100%;max-width:520px;aspect-ratio:1;border:2px solid #3e4a3f;border-radius:7px;overflow:hidden;box-shadow:0 8px 18px rgba(38,44,35,.12)}.editor-loading{grid-column:1/-1;display:grid;place-items:center;background:#e9e1cf;color:var(--muted);font-size:.78rem}.board-square{position:relative;display:grid;min-width:0;min-height:0;padding:0;place-items:center;border:0;border-radius:0;font-family:Georgia,"Times New Roman",serif}.board-square.light{background:var(--light-square)}.board-square.dark{background:var(--dark-square)}.board-square:hover{box-shadow:inset 0 0 0 3px rgba(31,91,70,.7)}.board-square[data-changed="true"]{box-shadow:inset 0 0 0 4px #18724f}.board-square[data-changed="true"]::after{content:"";position:absolute;right:4px;top:4px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px #18724f}.board-square:focus-visible{z-index:2;outline:3px solid var(--focus);outline-offset:-3px}.placed-piece{font-size:clamp(1.45rem,3.2vw,2.75rem);line-height:1;text-shadow:0 1px 1px rgba(255,255,255,.65)}.coord{position:absolute;font-family:"Cascadia Mono",Consolas,monospace;font-size:clamp(.48rem,.75vw,.64rem);font-weight:900;opacity:.82}.rank-coordinate{top:2px;left:3px}.file-coordinate{right:3px;bottom:1px}.board-square.dark .coord{color:#fff}.editor-meta{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:var(--muted);font-size:.7rem}.editor-meta strong{color:var(--forest-dark)}.editor-actions{display:flex;gap:8px;margin-top:9px}.editor-actions button{flex:1;min-height:40px;padding:.45rem .55rem;font-size:.72rem}
     .fen-panel{display:grid;gap:10px}.fen-output{min-height:66px;background:#fffdf8!important;resize:none!important}.grid-check{padding:9px 10px;border-left:3px solid var(--amber);background:#fff8e9;color:var(--muted);font-size:.77rem}.grid-check.ok{border-color:var(--forest);background:#edf7f0;color:var(--forest-dark)}.grid-check.error{border-color:var(--red);background:#fff0ee;color:var(--red)}.confirm-grid{display:flex;gap:9px;align-items:flex-start;padding:11px;border:1px solid var(--line-strong);border-radius:10px;background:#fff;font-size:.82rem;font-weight:900;cursor:pointer}.confirm-grid input{flex:0 0 auto;width:20px;height:20px;margin:0;accent-color:var(--forest)}
-    .validation{padding:10px 11px;border-left:4px solid var(--amber);border-radius:4px;background:#fff7e8;color:#6d4b1c;font-size:.8rem}.validation.ok{border-color:var(--forest);background:#edf7f0;color:var(--forest-dark)}.validation.error{border-color:var(--red);background:#fff0ee;color:var(--red)}.empty-state{padding:40px;border:1px dashed var(--line-strong);border-radius:var(--radius);background:var(--paper);text-align:center}.toast{position:fixed;right:20px;bottom:20px;z-index:30;max-width:min(480px,calc(100% - 40px));padding:12px 15px;border-radius:10px;background:#172019;color:#fff;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);pointer-events:none;transition:.18s ease}.toast.show{opacity:1;transform:none}
+    .validation{padding:10px 11px;border-left:4px solid var(--amber);border-radius:4px;background:#fff7e8;color:#6d4b1c;font-size:.8rem}.validation.ok{border-color:var(--forest);background:#edf7f0;color:var(--forest-dark)}.validation.error{border-color:var(--red);background:#fff0ee;color:var(--red)}.crop-figure.asset-error img{border-color:var(--red);background:#fff0ee}.crop-figure.asset-error figcaption{color:var(--red);font-weight:800}.empty-state{padding:40px;border:1px dashed var(--line-strong);border-radius:var(--radius);background:var(--paper);text-align:center}.toast{position:fixed;right:20px;bottom:20px;z-index:30;max-width:min(480px,calc(100% - 40px));padding:12px 15px;border-radius:10px;background:#172019;color:#fff;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);pointer-events:none;transition:.18s ease}.toast.show{opacity:1;transform:none}
     @media(max-width:1180px){.controls{grid-template-columns:1fr 1fr}.toolbar-actions{justify-content:flex-start}.piece-workspace{grid-template-columns:minmax(170px,220px) minmax(360px,1fr)}.fen-panel{grid-column:1/-1;grid-template-columns:1fr 1fr}.fen-panel h3,.fen-panel .grid-check,.fen-panel .confirm-grid{grid-column:1/-1}.field-grid{grid-template-columns:1fr 1fr}}
     @media(max-width:840px){.shell{width:min(100% - 20px,1560px);padding-top:18px}.hero,.media-grid{grid-template-columns:1fr}.guide{grid-template-columns:1fr}.control-deck{position:static}.metrics{grid-template-columns:repeat(2,1fr)}.controls{grid-template-columns:1fr}.toolbar-actions{display:grid;grid-template-columns:1fr 1fr}.toolbar-actions .primary{grid-column:1/-1}.save-state{grid-column:1/-1}.board-figure img{height:min(72vw,520px)}.context-figure img{height:min(58vw,300px)}.piece-workspace{grid-template-columns:1fr}.piece-palette{grid-template-columns:1fr 1fr}.piece-empty{grid-column:1/-1}.fen-panel{grid-column:auto;grid-template-columns:1fr}.fen-panel h3,.fen-panel .grid-check,.fen-panel .confirm-grid{grid-column:auto}.closing-fields,.field-grid{grid-template-columns:1fr}}
     @media(max-width:520px){h1{font-size:2.12rem}.card-head,.machine-head{align-items:flex-start;flex-direction:column}.marker-evidence-grid{grid-template-columns:1fr}.marker-figure img,.marker-search-figure img{height:190px}.piece-workspace{padding:8px}.piece-palette{grid-template-columns:1fr}.piece-empty{grid-column:auto}.placed-piece{font-size:clamp(1.2rem,8vw,2.15rem)}.coord{font-size:.43rem}.editor-meta{align-items:flex-start;flex-direction:column}.editor-actions{display:grid;grid-template-columns:1fr}.toolbar-actions{grid-template-columns:1fr}.toolbar-actions .primary{grid-column:auto}}
@@ -279,7 +279,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <main class="shell">
     <header class="hero"><div><div class="eyebrow">KindleMaster · etykiety źródłowe</div><h1>Oznacz figury, nie zapis FEN</h1><p>Model wstępnie wypełnia planszę. Popraw błędne pola, potwierdź 64 pola i niezależnie sprawdź marker. Pełny FEN powstanie automatycznie.</p></div><div class="source"><b>Artefakt:</b> __ARTIFACT_ID__<br><b>Powiązanie:</b> __SOURCE_BINDING__<br><b>SHA:</b> __SOURCE_DIGEST__</div></header>
     <section class="guide" aria-label="Instrukcja"><div class="guide-step"><b>1. Crop planszy</b><span>Jeśli brakuje rzędu albo widzisz dwa diagramy, oznacz zły crop. Nie zgaduj.</span></div><div class="guide-step"><b>2. Siatka 8×8</b><span>Wybierz figurę i klikaj tylko pola różniące się od sugestii. Potem potwierdź 64 pola.</span></div><div class="guide-step"><b>3. Marker</b><span>△ = białe, ▼ = czarne. Strona ruchu trafia do wygenerowanego FEN.</span></div></section>
-    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>zweryfikowanych</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Zweryfikowane</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading"><span id="save-state-text">Łączenie z zapisem…</span><a class="auth-link" id="auth-link" href="/" target="_blank" rel="noopener" hidden>Zaloguj się</a></span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
+    <section class="control-deck" aria-label="Sterowanie kolejką"><div class="metrics"><div class="metric"><strong>__ROW_COUNT__</strong><span>diagramów</span></div><div class="metric"><strong id="metric-completed">0</strong><span>zakończonych</span></div><div class="metric"><strong id="metric-verified">0</strong><span>pełnych FEN</span></div><div class="metric"><strong id="metric-placement">0</strong><span>tylko 64 pola</span></div><div class="metric"><strong id="metric-excluded">0</strong><span>wykluczonych</span></div><div class="metric"><strong id="metric-pending">0</strong><span>pozostało</span></div><div class="metric"><strong id="metric-invalid">0</strong><span>wymaga poprawy</span></div></div><div class="controls"><input id="search" type="search" placeholder="Szukaj ID, strony lub FEN" aria-label="Szukaj diagramu"><select id="status-filter" aria-label="Filtr statusu"><option value="">Wszystkie statusy</option><option value="pending">Figury do sprawdzenia</option><option value="verified">Pełny FEN zweryfikowany</option><option value="placement">64 pola; strona ruchu nieznana</option><option value="closed">Wykluczone: odrzucone / nieczytelne</option><option value="invalid">Z błędem</option></select><select id="priority-filter" aria-label="Filtr priorytetu"><option value="">Wszystkie priorytety</option><option value="0">Najpierw: konflikt modelu</option><option value="10">Kandydat modelu</option><option value="20">Pozostałe</option></select><input id="reviewer" autocomplete="name" placeholder="Kto oznacza? np. PM" aria-label="Identyfikator osoby oznaczającej"><div class="toolbar-actions"><button type="button" id="next-pending">Następny</button><button type="button" id="import-jsonl">Wczytaj JSONL</button><button type="button" id="save-server">Zapisz na stronie</button><button type="button" id="toggle-session">Zamknij zestaw</button><button type="button" class="primary" id="export-jsonl">Eksportuj JSONL</button><span class="save-state" id="save-state" data-state="loading"><span id="save-state-text">Łączenie z zapisem…</span><a class="auth-link" id="auth-link" href="/" target="_blank" rel="noopener" hidden>Zaloguj się</a></span></div><input id="import-file" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden></div></section>
     <section class="review-grid">__CARDS__</section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -297,7 +297,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const pieceGlyphs = {'':'',K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
     const pieceNames = {'':'puste',K:'biały król',Q:'biały hetman',R:'biała wieża',B:'biały goniec',N:'biały skoczek',P:'biały pion',k:'czarny król',q:'czarny hetman',r:'czarna wieża',b:'czarny goniec',n:'czarny skoczek',p:'czarny pion'};
     const cards = [...document.querySelectorAll('.review-card')];
-    const terminal = status => ['verified','rejected','unreadable'].includes(status);
+    const terminal = status => ['verified','placement_verified','rejected','unreadable'].includes(status);
     const nowIso = () => new Date().toISOString();
     let state = {};
     let saveTimer = 0;
@@ -391,7 +391,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     function manualLabel(row) {
       if (row.label_status === 'rejected') return 'false_positive';
       if (row.label_status === 'unreadable') return 'uncertain';
-      if (row.label_status !== 'verified') return 'needs_piece_labels';
+      if (!['verified','placement_verified'].includes(row.label_status)) return 'needs_piece_labels';
       return row.board_crop_label === 'cropped' ? 'cropped_diagram' : 'correct_diagram';
     }
     function rowFor(card) {
@@ -400,7 +400,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       const cells = [...(card._squareLabels || candidateCells(card))];
       const placement = cellsToPlacement(cells);
       const side = f.manual_side_to_move.value;
-      const manualFen = ['w','b'].includes(side) ? `${placement} ${side} - - 0 1` : '';
+      const manualFen = status === 'verified' && ['w','b'].includes(side) ? `${placement} ${side} - - 0 1` : '';
       const pieceLabelsVerified = Boolean(f.piece_labels_verified.checked);
       const row = {
         ...base,
@@ -409,6 +409,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         square_labels:cells,
         piece_labels_verified:pieceLabelsVerified,
         fen_human_verified:status === 'verified' && pieceLabelsVerified,
+        placement_human_verified:['verified','placement_verified'].includes(status) && pieceLabelsVerified,
         piece_labels_source:pieceLabelsVerified ? 'human_visual_64_square_grid' : 'model_candidate_draft',
         manual_placement:placement,
         manual_fen:manualFen,
@@ -418,10 +419,11 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         board_crop_label:f.board_crop_label.value,
         marker_crop_label:f.marker_crop_label.value,
         label_status:status,
+        status_migration:previous.status_migration || '',
         human_verified:terminal(status),
         verified_by:terminal(status) ? (reviewer.value.trim() || previous.verified_by || '') : '',
         verified_at:terminal(status) ? (previous.verified_at || nowIso()) : '',
-        verification_source:terminal(status) ? 'human_visual_piece_grid_and_marker' : '',
+        verification_source:status === 'placement_verified' ? 'human_visual_64_square_grid' : terminal(status) ? 'human_visual_piece_grid_and_marker' : '',
         label_provenance:terminal(status) ? 'human_visual_source_bound_piece_grid_review' : '',
         notes:f.notes.value.trim()
       };
@@ -429,11 +431,12 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       return row;
     }
     function editable(row) {
-      const fields = ['manual_side_to_move','manual_side_evidence','manual_visible_marker','board_crop_label','marker_crop_label','label_status','verified_by','verified_at','notes','piece_labels_source'];
+      const fields = ['manual_side_to_move','manual_side_evidence','manual_visible_marker','board_crop_label','marker_crop_label','label_status','status_migration','verified_by','verified_at','notes','piece_labels_source'];
       const output = Object.fromEntries(fields.map(key => [key,row[key] ?? '']));
       output.square_labels = Array.isArray(row.square_labels) ? [...row.square_labels] : [];
       output.piece_labels_verified = row.piece_labels_verified === true;
       output.fen_human_verified = row.fen_human_verified === true;
+      output.placement_human_verified = row.placement_human_verified === true;
       return output;
     }
     function placementCheck(cells) {
@@ -457,22 +460,26 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     }
     function validateRow(row) {
       const errors = [];
-      if (row.label_status === 'verified') {
-        const placement = placementCheck(row.square_labels), fen = fenCheck(row.manual_fen), markerSide = sideFromMarker(row.manual_visible_marker);
+      if (['verified','placement_verified'].includes(row.label_status)) {
+        const placement = placementCheck(row.square_labels);
         if (!placement.ok) errors.push(placement.message);
-        if (!row.piece_labels_verified || !row.fen_human_verified) errors.push('Potwierdź wzrokowe sprawdzenie wszystkich 64 pól.');
-        if (!fen.ok) errors.push(fen.message);
+        if (!row.piece_labels_verified || !row.placement_human_verified) errors.push('Potwierdź wzrokowe sprawdzenie wszystkich 64 pól.');
         if (!['correct','cropped'].includes(row.board_crop_label)) errors.push('Crop planszy musi być poprawny albo czytelny mimo ucięcia.');
-        if (!['clear','complete_no_marker'].includes(row.marker_crop_label)) errors.push('Dowód markera musi być czytelny albo potwierdzać jego brak.');
-        if (!row.manual_visible_marker) errors.push('Oznacz symbol na cropie markera.');
-        if (row.marker_crop_label === 'complete_no_marker' && row.manual_visible_marker !== 'none_confirmed') errors.push('Pełny kontekst bez markera wymaga etykiety „Brak markera”.');
-        if (row.manual_visible_marker === 'none_confirmed' && row.marker_crop_label !== 'complete_no_marker') errors.push('Brak markera wolno potwierdzić tylko z pełnego kontekstu.');
-        if (['unclear','multiple','unavailable'].includes(row.manual_visible_marker)) errors.push('Niejednoznacznego markera nie można zweryfikować.');
-        if (!['w','b'].includes(row.manual_side_to_move)) errors.push('Wskaż stronę mającą ruch.');
-        if (!['marker','caption','verified_source'].includes(row.manual_side_evidence)) errors.push('Wskaż rozstrzygające źródło strony ruchu.');
-        if (markerSide && row.manual_side_to_move !== markerSide) errors.push('Marker nie zgadza się ze stroną ruchu.');
-        if (row.manual_side_evidence === 'marker' && !markerSide) errors.push('Dowód „marker” wymaga etykiety △ albo ▼.');
-        if (fen.ok && row.manual_side_to_move !== fen.side) errors.push('Strona ruchu nie zgadza się z FEN.');
+        if (row.label_status === 'verified') {
+          const fen = fenCheck(row.manual_fen), markerSide = sideFromMarker(row.manual_visible_marker);
+          if (!row.fen_human_verified) errors.push('Pełny FEN wymaga potwierdzonych figur i strony ruchu.');
+          if (!fen.ok) errors.push(fen.message);
+          if (!['clear','complete_no_marker'].includes(row.marker_crop_label)) errors.push('Dowód markera musi być czytelny albo potwierdzać jego brak.');
+          if (!row.manual_visible_marker) errors.push('Oznacz symbol na cropie markera.');
+          if (row.marker_crop_label === 'complete_no_marker' && row.manual_visible_marker !== 'none_confirmed') errors.push('Pełny kontekst bez markera wymaga etykiety „Brak markera”.');
+          if (row.manual_visible_marker === 'none_confirmed' && row.marker_crop_label !== 'complete_no_marker') errors.push('Brak markera wolno potwierdzić tylko z pełnego kontekstu.');
+          if (['unclear','multiple','unavailable'].includes(row.manual_visible_marker)) errors.push('Niejednoznacznego markera nie można zweryfikować.');
+          if (!['w','b'].includes(row.manual_side_to_move)) errors.push('Wskaż stronę mającą ruch.');
+          if (!['marker','caption','verified_source'].includes(row.manual_side_evidence)) errors.push('Wskaż rozstrzygające źródło strony ruchu.');
+          if (markerSide && row.manual_side_to_move !== markerSide) errors.push('Marker nie zgadza się ze stroną ruchu.');
+          if (row.manual_side_evidence === 'marker' && !markerSide) errors.push('Dowód „marker” wymaga etykiety △ albo ▼.');
+          if (fen.ok && row.manual_side_to_move !== fen.side) errors.push('Strona ruchu nie zgadza się z FEN.');
+        }
         if (!row.verified_by) errors.push('Podaj identyfikator osoby oznaczającej.');
       } else if (terminal(row.label_status) && !row.verified_by) errors.push('Podaj identyfikator osoby oznaczającej.');
       return {ok:errors.length === 0,errors};
@@ -530,8 +537,19 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         else if (row.board_crop_label === 'unreadable') output.label_status = 'unreadable';
         else output.label_status = 'needs_piece_labels';
       }
-      if (!['needs_piece_labels','verified','rejected','unreadable'].includes(output.label_status)) output.label_status = 'needs_piece_labels';
-      if (output.label_status === 'verified' && (!output.piece_labels_verified || !output.fen_human_verified)) output.label_status = 'needs_piece_labels';
+      if (!['needs_piece_labels','verified','placement_verified','rejected','unreadable'].includes(output.label_status)) output.label_status = 'needs_piece_labels';
+      if (output.label_status === 'verified' && output.piece_labels_verified && ['correct','cropped'].includes(output.board_crop_label)) {
+        const fullFenEvidence = ['w','b'].includes(output.manual_side_to_move)
+          && ['marker','caption','verified_source'].includes(output.manual_side_evidence)
+          && ['clear','complete_no_marker'].includes(output.marker_crop_label);
+        if (!fullFenEvidence) {
+          output.label_status = 'placement_verified';
+          output.status_migration = 'verified_without_full_fen_to_placement_verified_v1';
+          output.fen_human_verified = false;
+          output.placement_human_verified = true;
+        }
+      }
+      if (['verified','placement_verified'].includes(output.label_status) && !output.piece_labels_verified) output.label_status = 'needs_piece_labels';
       return output;
     }
     function apply(card,values) {
@@ -558,22 +576,25 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       const row = rowFor(card), result = validateRow(row), box = card.querySelector('.validation');
       let value = 'pending';
       if (row.label_status === 'verified') value = result.ok ? 'verified' : 'invalid';
+      else if (row.label_status === 'placement_verified') value = result.ok ? 'placement' : 'invalid';
       else if (terminal(row.label_status)) value = result.ok ? 'closed' : 'invalid';
       card.dataset.state = value;
-      box.className = 'validation ' + (result.ok && row.label_status === 'verified' ? 'ok' : result.ok ? '' : 'error');
-      box.textContent = result.errors[0] || (row.label_status === 'verified' ? 'Komplet gotowy do eksportu i walidacji backendu.' : 'Sprawdź siatkę 8×8, następnie marker.');
+      box.className = 'validation ' + (result.ok && ['verified','placement_verified'].includes(row.label_status) ? 'ok' : result.ok ? '' : 'error');
+      box.textContent = result.errors[0] || (row.label_status === 'verified' ? 'Pełny FEN gotowy do eksportu i walidacji backendu.' : row.label_status === 'placement_verified' ? '64 pola gotowe do treningu; pełny FEN pominięty bez pewnej strony ruchu.' : 'Sprawdź siatkę 8×8, następnie marker.');
     }
     function refresh(runFilter=true) {
-      let verified=0,excluded=0,pending=0,invalid=0;
+      let verified=0,placement=0,excluded=0,pending=0,invalid=0;
       for (const card of cards) {
         updateCard(card);
         if (card.dataset.state === 'verified') verified += 1;
+        else if (card.dataset.state === 'placement') placement += 1;
         else if (card.dataset.state === 'closed') excluded += 1;
         else if (card.dataset.state === 'invalid') invalid += 1;
         else pending += 1;
       }
-      document.getElementById('metric-completed').textContent=verified+excluded;
+      document.getElementById('metric-completed').textContent=verified+placement+excluded;
       document.getElementById('metric-verified').textContent=verified;
+      document.getElementById('metric-placement').textContent=placement;
       document.getElementById('metric-excluded').textContent=excluded;
       document.getElementById('metric-pending').textContent=pending;
       document.getElementById('metric-invalid').textContent=invalid;
@@ -587,9 +608,27 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       }
     }
     function toast(message) { const node=document.getElementById('toast');node.textContent=message;node.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>node.classList.remove('show'),3600); }
+    function enableImageRetry() {
+      for (const image of document.querySelectorAll('.crop-figure img')) {
+        image.addEventListener('load',()=>image.closest('.crop-figure')?.classList.remove('asset-error'));
+        image.addEventListener('error',()=>{
+          if (image.dataset.retryAttempted !== 'true') {
+            image.dataset.retryAttempted = 'true';
+            const retryUrl = new URL(image.currentSrc || image.src,window.location.href);
+            retryUrl.searchParams.set('km_retry','1');
+            setTimeout(()=>{image.src=retryUrl.toString();},250);
+            return;
+          }
+          const figure=image.closest('.crop-figure');
+          figure?.classList.add('asset-error');
+          const caption=figure?.querySelector('figcaption');
+          if(caption) caption.textContent='Obraz niedostępny po ponowieniu. Odśwież stronę przed oznaczeniem.';
+        });
+      }
+    }
     function recordWord(count) { if(count===1)return'rekord';const last=count%10,lastTwo=count%100;return last>=2&&last<=4&&!(lastTwo>=12&&lastTwo<=14)?'rekordy':'rekordów'; }
     function nextPending() { const card=cards.find(item=>!item.hidden&&['pending','invalid'].includes(item.dataset.state))||cards.find(item=>['pending','invalid'].includes(item.dataset.state));if(!card){toast('Wszystkie rekordy mają status końcowy.');return}card.hidden=false;hydrateEditor(card);card.scrollIntoView({behavior:'smooth',block:'start'});card.querySelector('.board-square').focus(); }
-    function resetGridVerification(card) { const f=form(card);f.piece_labels_verified.checked=false;if(f.label_status.value==='verified')f.label_status.value='needs_piece_labels'; }
+    function resetGridVerification(card) { const f=form(card);f.piece_labels_verified.checked=false;if(['verified','placement_verified'].includes(f.label_status.value))f.label_status.value='needs_piece_labels'; }
     function loadCandidate(card) { card._squareLabels=candidateCells(card);resetGridVerification(card);save(card);toast('Przywrócono sugestię modelu. Sprawdź wszystkie 64 pola.'); }
     function setSaveState(value,message,showAuthLink=false) {
       saveState.dataset.state=value;
@@ -620,6 +659,17 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     async function saveAllToServer(action='save',showToast=true) {
       if (!serverProgressUrl || serverSaveInFlight) return false;
       if (!storedAccessToken()) { authenticationRequired(showToast); return false; }
+      const submittedRows = cards.map(rowFor);
+      if (action === 'close') {
+        const blockers = submittedRows.map((row,index)=>({row,index,result:validateRow(row)})).filter(item=>!terminal(item.row.label_status)||!item.result.ok);
+        if (blockers.length) {
+          const first=blockers[0],card=cards[first.index],identifiers=blockers.slice(0,4).map(item=>`#${item.row.review_index ?? item.index + 1} ${item.row.diagram_id || ''}`.trim()).join(', ');
+          card.hidden=false;hydrateEditor(card);card.scrollIntoView({behavior:'smooth',block:'center'});card.querySelector('.validation')?.focus();
+          setSaveState('error',`Nie można zamknąć: ${blockers.length} ${recordWord(blockers.length)} wymaga decyzji`);
+          toast(`Uzupełnij przed zamknięciem: ${identifiers}${blockers.length>4?' i kolejne':''}.`);
+          return false;
+        }
+      }
       clearTimeout(saveTimer);
       serverSaveInFlight = true;
       const savingRevision = stateRevision;
@@ -630,7 +680,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
           headers:serverHeaders({'Content-Type':'application/json'}),
           body:JSON.stringify({
             source_digest:sourceDigest,
-            rows:cards.map(rowFor),
+            rows:submittedRows,
             expected_revision:serverRevision,
             action,
             change_source:action === 'save' ? (showToast ? 'manual_save' : 'autosave') : action
@@ -705,6 +755,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    enableImageRetry();
     for (const card of cards) {
       apply(card,savedRow(card));
       const f=form(card);

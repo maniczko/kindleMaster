@@ -135,6 +135,45 @@ class SupabaseFenReviewTests(unittest.TestCase):
         self.assertEqual(result["storage"], "database")
         self.assertEqual(result["submitted_count"], 1)
 
+    def test_close_review_uses_placement_aware_transactional_rpc(self) -> None:
+        transport = FakeTransport()
+        transport.queue(
+            {
+                "artifact_id": "artifact-1",
+                "saved_at": "2026-07-21T15:40:00Z",
+                "row_count": 1,
+                "summary": {"total": 1, "placement_verified": 1, "pending": 0, "invalid": 0},
+                "session_status": "complete",
+                "revision": 91,
+            }
+        )
+        row = {
+            **self._row(),
+            "label_status": "placement_verified",
+            "placement_human_verified": True,
+            "piece_labels_verified": True,
+        }
+        client = SupabaseFenReviewClient(self._config(), transport=transport)
+
+        result = client.save_review(
+            artifact_id="artifact-1",
+            source_document_sha256="a" * 64,
+            rows=[row],
+            summary={"total": 1, "placement_verified": 1, "pending": 0, "invalid": 0},
+            expected_revision=90,
+            action="close",
+            change_source="close",
+        )
+
+        call = transport.calls[0]
+        body = json.loads(call["body"].decode("utf-8"))
+        self.assertIn("/rest/v1/rpc/close_chess_fen_review", call["url"])
+        self.assertNotIn("p_action", body)
+        self.assertEqual(body["p_expected_revision"], 90)
+        self.assertEqual(body["p_rows"][0]["label_status"], "placement_verified")
+        self.assertTrue(body["p_rows"][0]["placement_human_verified"])
+        self.assertEqual(result["session_status"], "complete")
+
     def test_load_review_reuses_latest_owned_source_session(self) -> None:
         transport = FakeTransport()
         transport.queue([])

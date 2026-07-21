@@ -102,6 +102,78 @@ class ChessFenReviewStoreTests(unittest.TestCase):
                     source_digest="a" * 64,
                 )
 
+    def test_save_preserves_verified_placement_without_claiming_full_fen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir) / "review"
+            seed = self._seed_row("1" * 64, diagram_id="p001-d1")
+            self._write_seed(review_dir, [seed])
+            cells = [""] * 64
+            cells[4] = "k"
+            cells[60] = "K"
+
+            payload = save_fen_review_progress(
+                review_dir,
+                [
+                    {
+                        **seed,
+                        "square_labels": cells,
+                        "piece_labels_verified": True,
+                        "manual_side_to_move": "w",
+                        "board_crop_label": "correct",
+                        "marker_crop_label": "unreadable",
+                        "manual_side_evidence": "unknown",
+                        "label_status": "placement_verified",
+                        "verified_by": "PM",
+                    }
+                ],
+                artifact_id="artifact-123",
+                source_digest="a" * 64,
+            )
+
+            row = load_fen_review_progress(review_dir)["rows"][0]
+            self.assertEqual(payload["summary"]["placement_verified"], 1)
+            self.assertEqual(payload["summary"]["completed"], 1)
+            self.assertEqual(payload["summary"]["invalid"], 0)
+            self.assertTrue(row["placement_human_verified"])
+            self.assertFalse(row["fen_human_verified"])
+            self.assertEqual(row["manual_fen"], "")
+            self.assertEqual(row["fen"], "")
+
+    def test_save_migrates_legacy_verified_row_without_side_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir) / "review"
+            seed = self._seed_row("1" * 64, diagram_id="p001-d1")
+            self._write_seed(review_dir, [seed])
+            cells = [""] * 64
+            cells[4] = "k"
+            cells[60] = "K"
+
+            payload = save_fen_review_progress(
+                review_dir,
+                [
+                    {
+                        **seed,
+                        "square_labels": cells,
+                        "piece_labels_verified": True,
+                        "board_crop_label": "correct",
+                        "marker_crop_label": "unreadable",
+                        "manual_side_evidence": "unknown",
+                        "label_status": "verified",
+                        "verified_by": "PM",
+                    }
+                ],
+                artifact_id="artifact-123",
+                source_digest="a" * 64,
+            )
+
+            row = load_fen_review_progress(review_dir)["rows"][0]
+            self.assertEqual(row["label_status"], "placement_verified")
+            self.assertEqual(
+                row["status_migration"],
+                "verified_without_full_fen_to_placement_verified_v1",
+            )
+            self.assertEqual(payload["summary"]["placement_verified"], 1)
+
     def test_save_rejects_source_digest_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             review_dir = Path(temp_dir) / "review"

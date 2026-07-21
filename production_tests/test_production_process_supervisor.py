@@ -33,10 +33,15 @@ class FakeProcess:
 
 
 class FakePopenFactory:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_on_call: int | None = None) -> None:
         self.processes: list[FakeProcess] = []
+        self.fail_on_call = fail_on_call
+        self.calls = 0
 
     def __call__(self, argv: list[str], *, env: dict[str, str]) -> FakeProcess:
+        self.calls += 1
+        if self.fail_on_call == self.calls:
+            raise OSError("simulated spawn failure")
         process = FakeProcess(argv, env)
         self.processes.append(process)
         return process
@@ -109,6 +114,21 @@ class ProductionProcessSupervisorTests(unittest.TestCase):
         self.assertEqual(len(factory.processes), 3)
         self.assertTrue(all(process.terminated for process in factory.processes))
         self.assertTrue(all(process.returncode == 0 for process in factory.processes))
+
+    def test_partial_startup_failure_cleans_already_started_processes(self) -> None:
+        factory = FakePopenFactory(fail_on_call=2)
+        supervisor = ProcessSupervisor(
+            process_specs(worker_count=2),
+            popen_factory=factory,
+            shutdown_seconds=1,
+        )
+
+        with self.assertRaisesRegex(OSError, "simulated spawn failure"):
+            supervisor.run_forever()
+
+        self.assertEqual(len(factory.processes), 1)
+        self.assertTrue(factory.processes[0].terminated)
+        self.assertEqual(factory.processes[0].returncode, 0)
 
 
 if __name__ == "__main__":

@@ -134,6 +134,7 @@ class FenConflictAuditTests(unittest.TestCase):
             labels = root / "labels.jsonl"
             label = _label("diagram-1", EMPTY)
             label["source_document_sha256"] = sha256(b"other").hexdigest()
+            # codeql[py/clear-text-storage-sensitive-data] The fixture contains only a synthetic content hash.
             labels.write_text(json.dumps(label) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "label_source_sha256_mismatch"):

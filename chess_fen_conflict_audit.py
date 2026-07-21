@@ -53,6 +53,7 @@ def audit_fen_conflicts_files(
         json.dumps(result["report"], ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    # codeql[py/clear-text-storage-sensitive-data] Local audit output contains chess labels and content hashes, not credentials.
     artifacts["report_markdown"].write_text(
         _report_markdown(result["report"]),
         encoding="utf-8",
@@ -503,6 +504,7 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+    # codeql[py/clear-text-storage-sensitive-data] Rows are source-bound chess evidence with no authentication secrets.
     path.write_text(
         "".join(json.dumps(dict(row), ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",

@@ -25,6 +25,19 @@ class VerifiedFenPublicationError(ValueError):
     pass
 
 
+class _BoundReviewPayloadClient:
+    available = True
+
+    def __init__(self, *, artifact_id: str, payload: Mapping[str, Any]) -> None:
+        self._artifact_id = artifact_id
+        self._payload = dict(payload)
+
+    def load_review(self, *, artifact_id: str) -> dict[str, Any]:
+        if artifact_id != self._artifact_id:
+            raise VerifiedFenPublicationError("artifact_id_mismatch")
+        return dict(self._payload)
+
+
 def publish_verified_fen_artifacts(
     *,
     artifact_id: str,
@@ -68,7 +81,10 @@ def publish_verified_fen_artifacts(
         artifact_id=artifact,
         out_dir=root,
         review_dir=Path(review_dir).resolve() if review_dir else root / "review",
-        review_payload=review_payload,
+        cloud_client=_BoundReviewPayloadClient(
+            artifact_id=artifact,
+            payload=review_payload,
+        ),
     )
     if corpus_report.get("status") != "passed":
         raise VerifiedFenPublicationError("verified_fen_corpus_validation_failed")

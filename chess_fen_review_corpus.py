@@ -36,7 +36,6 @@ def export_fen_review_corpus(
     service_base_url: str = "",
     cloud_client: SupabaseFenReviewClient | None = None,
     opener: Callable[..., Any] | None = None,
-    review_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifact = str(artifact_id or "").strip()
     if not artifact:
@@ -50,15 +49,11 @@ def export_fen_review_corpus(
     reports_out.mkdir(parents=True, exist_ok=True)
     assets_out.mkdir(parents=True, exist_ok=True)
 
-    payload = (
-        dict(review_payload)
-        if isinstance(review_payload, Mapping)
-        else _load_review_payload(
-            artifact_id=artifact,
-            service_base_url=service_base_url,
-            cloud_client=cloud_client,
-            opener=opener,
-        )
+    payload = _load_review_payload(
+        artifact_id=artifact,
+        service_base_url=service_base_url,
+        cloud_client=cloud_client,
+        opener=opener,
     )
     rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, Mapping)]
     summary = dict(payload.get("summary") or {})

@@ -710,6 +710,11 @@ def _artifact_job_root_for_id(job_id: object) -> Path | None:
     return _named_artifact_child(ARTIFACT_ROOT, safe_job_id, directory_only=True)
 
 
+def _canonical_artifact_route_id(value: object) -> str | None:
+    candidate = str(value or "").strip()
+    return candidate if re.fullmatch(r"[A-Za-z0-9_.-]+", candidate) else None
+
+
 def _semantic_reader_asset_route_path(value: object, semantic_index: Path | None = None) -> str:
     del semantic_index  # Compatibility argument; paths are normalized independently of the filesystem.
     safe_path = _safe_semantic_reader_asset_path(value)
@@ -7001,6 +7006,15 @@ def convert_artifact_download(job_id: str, artifact_key: str):
 
 @app.route("/convert/artifact/<job_id>/chess_fen_review_progress", methods=["GET", "PUT"])
 def convert_fen_manual_review_progress(job_id: str):
+    canonical_job_id = _canonical_artifact_route_id(job_id)
+    if canonical_job_id is None:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_review",
+        )
+    job_id = canonical_job_id
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
         return _json_auth_error(auth_context)
@@ -7130,11 +7144,11 @@ def convert_fen_manual_review_progress(job_id: str):
                 review_dir=review_dir,
                 review_payload=complete_review_payload,
             )
-        except Exception as exc:
-            app.logger.exception("Verified FEN publication failed for %s", job_id)
+        except Exception:
+            app.logger.error("Verified FEN publication failed")
             payload["verified_fen_publication"] = {
                 "status": "failed",
-                "error": str(exc),
+                "error": "verified_fen_publication_failed",
             }
     response = jsonify({"success": True, "job_id": job_id, **payload})
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -7144,6 +7158,15 @@ def convert_fen_manual_review_progress(job_id: str):
 
 @app.route("/convert/artifact/<job_id>/chess_fen_publish", methods=["POST"])
 def convert_publish_verified_fen(job_id: str):
+    canonical_job_id = _canonical_artifact_route_id(job_id)
+    if canonical_job_id is None:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_publish",
+        )
+    job_id = canonical_job_id
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
         return _json_auth_error(auth_context)
@@ -7198,10 +7221,10 @@ def convert_publish_verified_fen(job_id: str):
             review_dir=review_dir,
             review_payload=review_payload,
         )
-    except Exception as exc:
-        app.logger.exception("Verified FEN publication failed for %s", job_id)
+    except Exception:
+        app.logger.error("Verified FEN publication failed")
         return _json_error(
-            f"Nie udało się opublikować zweryfikowanych FEN: {exc}",
+            "Nie udało się opublikować zweryfikowanych FEN.",
             error_code="verified_fen_publication_failed",
             status_code=400,
             phase="fen_publish",

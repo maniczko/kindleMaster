@@ -103,6 +103,48 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
             review_payload=review_payload,
         )
 
+    def test_publish_rejects_noncanonical_artifact_id_before_lookup(self) -> None:
+        with patch.object(app_module, "_get_conversion_job_for_auth") as lookup:
+            response = self.client.post(
+                "/convert/artifact/%3Cinvalid%3E/chess_fen_publish"
+            )
+
+        self.assertEqual(response.status_code, 404)
+        lookup.assert_not_called()
+
+    def test_publish_failure_does_not_expose_exception_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir)
+            auth = app_module.AuthContext(authenticated=True, user_id="owner-a")
+            with (
+                patch.object(app_module, "_resolve_request_auth_context", return_value=auth),
+                patch.object(
+                    app_module,
+                    "_get_conversion_job_for_auth",
+                    return_value={"user_id": auth.user_id, "artifacts": {}},
+                ),
+                patch.object(app_module, "_resolve_local_fen_review_dir", return_value=review_dir),
+                patch(
+                    "chess_fen_review_repository.ChessFenReviewRepository.load",
+                    return_value={"session_status": "complete", "rows": []},
+                ),
+                patch.object(
+                    app_module,
+                    "_publish_verified_fen_review_artifacts",
+                    side_effect=RuntimeError("secret-stack-detail"),
+                ),
+            ):
+                response = self.client.post(
+                    "/convert/artifact/artifact-1/chess_fen_publish"
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("secret-stack-detail", response.get_data(as_text=True))
+        self.assertEqual(
+            response.get_json()["error_code"],
+            "verified_fen_publication_failed",
+        )
+
     def test_reader_summary_separates_human_machine_and_unrecognized(self) -> None:
         positions = [
             {"status": "accepted", "fen": "fen-a", "fen_human_verified": True},

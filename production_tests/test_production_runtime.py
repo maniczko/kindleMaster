@@ -43,6 +43,13 @@ class ProductionRuntimeTests(unittest.TestCase):
             self.assertNotIn("secret-not-persisted", str(record.payload))
             self.assertEqual(record.owner_key, "user:user-1")
 
+    def test_railway_uses_supervised_production_entrypoint(self) -> None:
+        dockerfile = Path("Dockerfile.railway").read_text(encoding="utf-8")
+        active_lines = [line.strip() for line in dockerfile.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(active_lines[-1], 'CMD ["python", "production_server.py"]')
+        railway = Path("railway.json").read_text(encoding="utf-8")
+        self.assertIn('"startCommand": "python production_server.py"', railway)
+
 
 if __name__ == "__main__":
     unittest.main()

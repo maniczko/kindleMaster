@@ -45,14 +45,33 @@ class ProductionGuardrailTests(unittest.TestCase):
             )
         self.assertTrue(limiter.consume("owner:start", limit=1, window_seconds=1).allowed)
 
-    def test_owner_keys_do_not_expose_tokens(self) -> None:
+    def test_unverified_tokens_never_receive_authenticated_limits(self) -> None:
         owner, authenticated = pseudonymous_owner_key(
             secret=b"x" * 32,
             authorization="Bearer very-secret-token",
         )
-        self.assertTrue(authenticated)
+        self.assertFalse(authenticated)
         self.assertNotIn("very-secret-token", owner)
-        self.assertTrue(owner.startswith("auth-token:"))
+        self.assertTrue(owner.startswith("guest-auth:"))
+
+    def test_fallback_identity_cannot_be_rotated_with_user_agent(self) -> None:
+        first, _ = pseudonymous_owner_key(
+            secret=b"x" * 32,
+            remote_address="203.0.113.5",
+            user_agent="agent-a",
+        )
+        second, _ = pseudonymous_owner_key(
+            secret=b"x" * 32,
+            remote_address="203.0.113.5",
+            user_agent="agent-b",
+        )
+        self.assertEqual(first, second)
+
+    def test_guest_capability_is_untrusted_by_default(self) -> None:
+        policy = ProductionGuardrailPolicy.from_env({})
+        self.assertFalse(policy.trust_guest_capability)
+        enabled = ProductionGuardrailPolicy.from_env({"KINDLEMASTER_TRUST_GUEST_CAPABILITY": "1"})
+        self.assertTrue(enabled.trust_guest_capability)
 
     def test_mime_and_magic_mismatch_is_rejected(self) -> None:
         policy = ProductionGuardrailPolicy(min_disk_free_bytes=1, min_disk_free_ratio=0)

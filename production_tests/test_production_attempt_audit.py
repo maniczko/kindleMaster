@@ -8,9 +8,14 @@ from pathlib import Path
 
 from flask import Flask, jsonify
 
-from durable_job_queue import DurableJobDatabase, DurableJobQueue
+from durable_job_queue import (
+    DurableJobDatabase,
+    DurableJobQueue,
+    SQLiteConversionJobStore,
+)
 from production_attempt_api import install_attempt_history_api
 from production_attempt_audit import install_durable_attempt_audit
+from production_queue_projection import install_queue_state_projection
 
 
 class ProductionAttemptAuditTests(unittest.TestCase):
@@ -18,7 +23,9 @@ class ProductionAttemptAuditTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = DurableJobDatabase(Path(self.temp_dir.name) / "runtime.sqlite3")
         install_durable_attempt_audit(self.database)
+        install_queue_state_projection(self.database)
         self.queue = DurableJobQueue(self.database)
+        self.jobs = SQLiteConversionJobStore(self.database)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -92,7 +99,20 @@ class ProductionAttemptAuditTests(unittest.TestCase):
         self.assertEqual(attempts[0]["error"], "worker lease expired")
         self.assertTrue(attempts[0]["finished_at"])
 
-    def test_expired_final_attempt_enters_dead_letter_without_attempt_overflow(self) -> None:
+    def test_expired_final_attempt_updates_queue_and_public_job_atomically(self) -> None:
+        self.jobs.create(
+            {
+                "job_id": "job-a",
+                "status": "running",
+                "message": "Konwersja trwa.",
+                "runtime_queue": {
+                    "provider": "sqlite-worker",
+                    "status": "running",
+                    "attempt": 1,
+                    "max_attempts": 1,
+                },
+            }
+        )
         self.queue.enqueue(job_id="job-a", payload={}, max_attempts=1)
         first = self.queue.claim(worker_id="worker-a", lease_seconds=30)
         self.assertIsNotNone(first)
@@ -101,6 +121,7 @@ class ProductionAttemptAuditTests(unittest.TestCase):
 
         reclaimed = self.queue.claim(worker_id="worker-b", lease_seconds=30)
         record = self.queue.get("job-a")
+        public_job = self.jobs.get("job-a")
         attempts = self.queue.attempts("job-a")
 
         self.assertIsNone(reclaimed)
@@ -110,6 +131,30 @@ class ProductionAttemptAuditTests(unittest.TestCase):
         self.assertEqual(record.last_error, "worker lease expired after final allowed attempt")
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0]["status"], "dead_letter")
+        self.assertEqual(public_job["status"], "failed")
+        self.assertEqual(public_job["error_code"], "durable_worker_dead_letter")
+        self.assertEqual(public_job["runtime_queue"]["status"], "dead_letter")
+        self.assertEqual(public_job["runtime_queue"]["attempt"], 1)
+        self.assertEqual(public_job["runtime_queue"]["max_attempts"], 1)
+
+    def test_retry_exhaustion_projects_dead_letter_to_public_job(self) -> None:
+        self.jobs.create({"job_id": "job-a", "status": "running", "runtime_queue": {}})
+        self.queue.enqueue(job_id="job-a", payload={}, max_attempts=1)
+        self.queue.claim(worker_id="worker-a", lease_seconds=30)
+        self.queue.mark_running("job-a", worker_id="worker-a", lease_seconds=30)
+
+        record = self.queue.fail(
+            "job-a",
+            worker_id="worker-a",
+            error="persistent storage outage",
+            retryable=True,
+        )
+        public_job = self.jobs.get("job-a")
+
+        self.assertEqual(record.status, "dead_letter")
+        self.assertEqual(public_job["status"], "failed")
+        self.assertEqual(public_job["error"], "persistent storage outage")
+        self.assertEqual(public_job["runtime_queue"]["status"], "dead_letter")
 
     def test_invalid_transitions_fail_closed(self) -> None:
         self.queue.enqueue(job_id="job-a", payload={}, max_attempts=1)

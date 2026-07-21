@@ -1,14 +1,16 @@
 # Durable production runtime
 
-KindleMaster keeps the existing process-local thread runtime for local development. Hosted Railway deployments use a separate API/worker process boundary backed by SQLite on the persistent `/data` volume.
+KindleMaster keeps the existing process-local thread runtime for local development. Hosted Railway deployments use independent supervisor, API and worker processes backed by SQLite on the persistent `/data` volume.
 
 ## Runtime processes
 
-`python production_server.py` starts:
+`python production_server.py` is the container's supervisor process. It starts and independently monitors:
 
-- the Waitress API process;
-- one or more supervised `production_worker.py` processes;
-- a shared SQLite database containing conversion job state, queue commands, leases and rate-limit state.
+- one `production_api.py` child running Waitress and the HTTP application;
+- one or more `production_worker.py` conversion children;
+- a shared SQLite database containing conversion job state, queue commands and leases.
+
+If the API child exits, the supervisor restarts only the API; running workers continue. If one worker exits, only that worker is restarted while the API and other workers continue. A supervisor/container restart stops all child processes, but durable state and retained input on `/data` allow lease-based recovery after startup.
 
 The API never executes expensive conversion work when `KINDLEMASTER_DURABLE_RUNTIME=1`. It persists the job and enqueues a replayable command. Workers claim commands atomically and call the existing conversion pipeline outside the API process. Hosted `POST /convert` is disabled; clients use `/convert/start`.
 
@@ -40,9 +42,9 @@ queued/retry_wait        |-> cancelled
 
 A worker owns a time-bounded lease. Heartbeats extend it. Another worker may reclaim an expired `leased` or `running` command. Attempts are audited and retry delay uses exponential backoff. Non-retryable validation/input errors do not retry.
 
-The canonical job payload and the command queue are stored in the same SQLite database. WAL and `BEGIN IMMEDIATE` transactions prevent two local worker processes from claiming the same command.
+The canonical job payload and the command queue are stored in the same SQLite database. WAL and `BEGIN IMMEDIATE` transactions prevent two worker processes from claiming the same command.
 
-Existing code paths that read a job from `_CONVERSION_JOBS` and mutate the returned dictionary remain durable through write-through compatibility. Direct updates and nested dictionary/list mutations are persisted atomically to SQLite.
+Existing code paths that read a job from `_CONVERSION_JOBS` and mutate the returned dictionary remain durable through write-through compatibility. The compatibility layer performs a three-way merge onto the freshest SQLite record so a stale API view cannot overwrite a newer worker status, heartbeat or artifact.
 
 ## Idempotency
 
@@ -64,17 +66,17 @@ Hosted runtime exposes:
 POST /convert/cancel/<job_id>
 ```
 
-Cancellation is supported only while the queue record is `queued` or `retry_wait`, when no conversion thread owns the job. The queue and public job record become `cancelled` and cloud metadata is synchronized.
+Cancellation is supported only while the queue record is `queued` or `retry_wait`, when no conversion process owns the job. The queue and public job record become `cancelled` and cloud metadata is synchronized.
 
 A `leased` or `running` job returns HTTP 409 with `active_cancellation_unsupported`. The system deliberately fails closed rather than marking a job cancelled while its conversion thread continues writing. True active-stage cancellation requires explicit cancellation hooks inside extraction, OCR, assembly, validation and packaging and is tracked separately from this safe pre-execution contract.
 
 ## Recovery behavior
 
-- API restart: workers continue because they are separate processes; job state remains in SQLite.
-- Container restart: the database and retained input artifact survive on `/data`; a new worker reclaims the job after lease expiry.
-- Worker crash: the supervisor restarts the worker; the expired lease is reclaimed.
+- API child restart: workers continue and the supervisor restarts only `production_api.py`.
+- Worker crash: the supervisor restarts only the failed worker; the expired lease is reclaimed.
+- Supervisor/container restart: all processes restart, while the database and retained input survive on `/data`; a worker reclaims the job after lease expiry.
 - Source path missing: the worker restores the input from the retained input artifact before retry.
-- Duplicate completion: only the lease owner may complete the queue record.
+- Duplicate completion: only the current lease owner may complete the queue record.
 - Exhausted retry: the command enters `dead_letter` and stays visible for operator review.
 - Worker failure: cloud status is synchronized through the server-side path without retaining a browser token.
 - Legacy JSON history: records are migrated once without overwriting newer SQLite state.
@@ -90,6 +92,7 @@ python kindlemaster.py serve
 This keeps the current local thread behavior. To exercise the hosted runtime locally, configure a writable database path and run:
 
 ```powershell
+$env:KINDLEMASTER_DURABLE_RUNTIME="1"
 $env:KINDLEMASTER_DURABLE_DB_PATH="output/runtime.sqlite3"
 python production_server.py
 ```
@@ -97,9 +100,9 @@ python production_server.py
 ## Validation
 
 ```powershell
-python -m unittest -v production_tests.test_durable_job_queue production_tests.test_production_runtime
+python -m unittest -v production_tests.test_durable_job_queue production_tests.test_production_runtime production_tests.test_production_process_supervisor
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Hosted acceptance must additionally execute `docs/qa/scenarios/durable-runtime-restart-recovery.md`, kill the API and worker during active jobs, and confirm one canonical artifact, one terminal state and no duplicate execution.
+Hosted acceptance must additionally execute `docs/qa/scenarios/durable-runtime-restart-recovery.md`, kill the API and worker children during active jobs, and confirm one canonical artifact, one terminal state and no duplicate execution.

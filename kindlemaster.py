@@ -113,6 +113,7 @@ QUICK_TESTS = [
     "test_chess_fen_review_repository.py",
     "test_chess_fen_review_ui_persistence.py",
     "test_chess_fen_review_corpus.py",
+    "test_chess_verified_fen_publication.py",
     "test_chess_study_data_contracts.py",
     "test_pdf_layout_preview.py",
     "test_deepseek_quality_provider.py",

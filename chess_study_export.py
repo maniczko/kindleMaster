@@ -9303,7 +9303,9 @@ def _study_reader_scorebar_html(qa_report: dict[str, Any]) -> str:
     values = [
         ("Pages", summary.get("pages")),
         ("Diagrams", f"{summary.get('diagrams_total', 0)} / review {summary.get('low_confidence_review_candidates', 0)}"),
-        ("FEN", f"{summary.get('fen_accepted', summary.get('fens_accepted', 0))} accepted"),
+        ("FEN human", summary.get("fen_human_verified", 0)),
+        ("FEN automatic", summary.get("fen_automatic", 0)),
+        ("FEN unrecognized", summary.get("fen_unrecognized", summary.get("needs_review_count", 0))),
         ("PGN", f"{summary.get('accepted_pgn', summary.get('pgn_accepted', 0))} accepted"),
     ]
     items = "".join(

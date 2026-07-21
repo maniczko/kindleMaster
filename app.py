@@ -878,7 +878,8 @@ def _app_trusted_marker_status(value: object) -> bool:
 
 
 def _side_to_move_from_diagram_record(record: Mapping[str, object], *, trusted_marker: bool) -> str:
-    if not trusted_marker:
+    human_verified = record.get("fen_human_verified") is True
+    if not trusted_marker and not human_verified:
         return "unknown"
     raw = str(record.get("side_to_move") or record.get("side_to_move_code") or "").strip().lower()
     if raw in {"w", "white"}:
@@ -901,10 +902,12 @@ def _full_fen_status_accepted(value: object) -> bool:
         "trusted_marker",
         "fen_machine_accepted",
         "fen_corpus_verified",
+        "fen_human_verified",
     }
 
 
 def _diagram_record_to_reader_position(record: Mapping[str, object], index: int) -> dict[str, object]:
+    human_verified = record.get("fen_human_verified") is True
     marker_semantic_status = str(record.get("marker_semantic_status") or "").strip().lower()
     raw_marker_status = str(record.get("side_marker_status") or "").strip().lower()
     trusted_marker = (
@@ -926,9 +929,9 @@ def _diagram_record_to_reader_position(record: Mapping[str, object], index: int)
     requires_review = bool(record.get("requires_review"))
     status_text = str(record.get("status") or "").strip().lower()
     accepted_full_fen = (
-        record.get("full_fen_allowed") is True
+        human_verified or record.get("full_fen_allowed") is True
         if "full_fen_allowed" in record
-        else _full_fen_status_accepted(record.get("full_fen_status"))
+        else human_verified or _full_fen_status_accepted(record.get("full_fen_status"))
     )
     accepted = bool(fen_value and not requires_review and accepted_full_fen and status_text not in {"review", "requires_review"})
     source_crop = str(
@@ -976,6 +979,12 @@ def _diagram_record_to_reader_position(record: Mapping[str, object], index: int)
         "board_placement_status": str(record.get("board_placement_status") or "review"),
         "full_fen_allowed": bool(accepted_full_fen),
         "full_fen_blockers": list(record.get("full_fen_blockers") or []),
+        "fen_source": "human_verified" if human_verified else str(record.get("fen_source") or "automatic"),
+        "human_verified": bool(record.get("human_verified")),
+        "fen_human_verified": human_verified,
+        "verification_source": str(record.get("verification_source") or ""),
+        "verified_by": str(record.get("verified_by") or ""),
+        "verified_at": str(record.get("verified_at") or ""),
         "warnings": list(warnings),
         "review_reason": review_reason,
     }
@@ -992,10 +1001,16 @@ def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, obj
     side_unknown_count = len(
         [item for item in positions if str(item.get("side_to_move") or "unknown").lower() not in {"w", "b", "white", "black"}]
     )
+    accepted = [item for item in positions if item.get("status") == "accepted" and item.get("fen")]
+    human_verified = [item for item in accepted if item.get("fen_human_verified") is True]
+    automatic = [item for item in accepted if item.get("fen_human_verified") is not True]
     return {
         "pages": max([int(item.get("diagram_page") or 0) for item in positions] or [0]),
         "diagrams_total": len(positions),
-        "fen_accepted": len([item for item in positions if item.get("status") == "accepted" and item.get("fen")]),
+        "fen_accepted": len(accepted),
+        "fen_human_verified": len(human_verified),
+        "fen_automatic": len(automatic),
+        "fen_unrecognized": len(positions) - len(accepted),
         "needs_review_count": len([item for item in positions if item.get("status") != "accepted"]),
         "side_unknown_count": side_unknown_count,
         "trusted_marker_count": len([item for item in positions if _app_trusted_marker_status(item.get("side_marker_status"))]),
@@ -1004,6 +1019,118 @@ def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, obj
         "empty_img_src_count": 0,
         "accepted_pgn": 0,
     }
+
+
+def _publish_verified_fen_review_artifacts(
+    job_id: str,
+    job: Mapping[str, object],
+    *,
+    review_dir: Path,
+    review_payload: Mapping[str, object],
+) -> dict[str, object]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    diagrams_artifact = artifacts.get("chess_diagrams")
+    diagrams_path = _resolve_local_artifact_path(
+        diagrams_artifact if isinstance(diagrams_artifact, dict) else None
+    )
+    job_root = _artifact_job_dir_from_path(diagrams_path) if diagrams_path else None
+    if job_root is None:
+        raise ValueError("chess_artifact_root_missing")
+
+    from chess_verified_fen_publication import publish_verified_fen_artifacts
+
+    report = publish_verified_fen_artifacts(
+        artifact_id=job_id,
+        artifact_root=job_root,
+        review_payload=review_payload,
+        review_dir=review_dir,
+    )
+    report_artifacts = dict(report.get("artifacts") or {})
+    artifact_specs = {
+        "chess_diagrams_verified": (
+            report_artifacts.get("verified_diagrams"),
+            ArtifactKind.REPORT,
+            "Zweryfikowane diagramy",
+        ),
+        "chess_verified_positions_pgn": (
+            report_artifacts.get("verified_positions_pgn"),
+            ArtifactKind.REPORT,
+            "PGN zweryfikowanych pozycji",
+        ),
+        "chess_verified_positions_epub": (
+            report_artifacts.get("verified_positions_epub"),
+            ArtifactKind.OUTPUT,
+            "EPUB zweryfikowanych pozycji",
+        ),
+        "chess_verified_fen_publication": (
+            report_artifacts.get("publication_report"),
+            ArtifactKind.REPORT,
+            "Raport publikacji FEN",
+        ),
+    }
+    for key, (raw_path, kind, label) in artifact_specs.items():
+        path = Path(str(raw_path or ""))
+        if not path.is_file() or not _is_path_under(path, job_root):
+            raise ValueError(f"verified_fen_artifact_missing:{key}")
+        metadata = _local_artifact_metadata(job_id, kind, path)
+        metadata["download_url"] = f"/convert/artifact/{job_id}/{key}"
+        metadata["label"] = label
+        metadata["available"] = True
+        metadata["status"] = "available"
+        artifacts[key] = metadata
+
+    verified_payload = _read_json_file(Path(str(report_artifacts.get("verified_diagrams") or "")))
+    diagram_records = [
+        dict(record)
+        for record in verified_payload.get("records") or []
+        if isinstance(record, Mapping)
+    ]
+    positions = [
+        _diagram_record_to_reader_position(record, index)
+        for index, record in enumerate(diagram_records, start=1)
+    ]
+    summary = _reader_sidecar_summary(positions)
+    publication_summary = dict(report.get("summary") or {})
+    summary.update(publication_summary)
+    qa_report = {
+        "status": "PASS" if not summary["needs_review_count"] else "PASS_WITH_REVIEW_ITEMS",
+        "summary": summary,
+        "problems": [],
+        "status_policy": "human_verified_or_deterministic_machine_acceptance",
+    }
+    html_artifact = artifacts.get("chess_pgn_html")
+    html_path = _resolve_local_artifact_path(html_artifact if isinstance(html_artifact, dict) else None)
+    if html_path is None:
+        raise ValueError("chess_reader_artifact_missing")
+    from chess_study_export import render_study_html
+
+    render_study_html(
+        job_root / "semantic_chess_html",
+        structure={"chapters": [{"chapter_no": 1, "title": "Chess diagrams"}]},
+        positions={"positions": positions},
+        qa_report=qa_report,
+        source_pdf=_job_input_path(dict(job)),
+        source_html=html_path,
+        source_gate={
+            "decision": "use_source_bound_verified_positions_as_final_reader",
+            "source_html_evidence_only": False,
+            "used_as_final_reader": True,
+            "reasons": [],
+        },
+    )
+    artifacts["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(
+        job_id,
+        dict(html_artifact),
+        html_path,
+    )
+    updated = _set_conversion_job(
+        job_id,
+        artifacts=artifacts,
+        verified_fen_publication=report,
+    )
+    if updated is None:
+        raise ValueError("conversion_job_update_failed")
+    return report
 
 
 def _create_semantic_chess_reader_sidecar(
@@ -6927,6 +7054,7 @@ def convert_fen_manual_review_progress(job_id: str):
         owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
     )
 
+    action = ""
     try:
         if request.method == "GET":
             payload = repository.load()
@@ -6993,7 +7121,93 @@ def convert_fen_manual_review_progress(job_id: str):
             phase="fen_review",
             job_id=job_id,
         )
+    if request.method == "PUT" and action == "close" and str(payload.get("session_status") or "").lower() == "complete":
+        try:
+            complete_review_payload = repository.load()
+            payload["verified_fen_publication"] = _publish_verified_fen_review_artifacts(
+                job_id,
+                job,
+                review_dir=review_dir,
+                review_payload=complete_review_payload,
+            )
+        except Exception as exc:
+            app.logger.exception("Verified FEN publication failed for %s", job_id)
+            payload["verified_fen_publication"] = {
+                "status": "failed",
+                "error": str(exc),
+            }
     response = jsonify({"success": True, "job_id": job_id, **payload})
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.route("/convert/artifact/<job_id>/chess_fen_publish", methods=["POST"])
+def convert_publish_verified_fen(job_id: str):
+    auth_context = _resolve_request_auth_context()
+    if auth_context.error:
+        return _json_auth_error(auth_context)
+    auth_config = load_supabase_auth_config()
+    if auth_config.enabled and auth_config.configured and not auth_context.authenticated:
+        return _json_auth_error(
+            AuthContext(
+                error="Logowanie jest wymagane do publikacji zweryfikowanych FEN.",
+                error_code="auth_required",
+                status_code=401,
+            )
+        )
+    _mark_timed_out_conversion_jobs()
+    _cleanup_expired_conversion_jobs()
+    job = _get_conversion_job_for_auth(job_id, auth_context)
+    if not job:
+        _ensure_local_artifact_history_loaded()
+        job = _get_conversion_job_for_auth(job_id, auth_context)
+    if not job:
+        restored = _restore_local_artifact_job_by_id(job_id)
+        job = _get_conversion_job_for_auth(job_id, auth_context) if restored else None
+    if not job:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_publish",
+            job_id=job_id,
+        )
+    review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
+        return _json_error(
+            "Nie znaleziono zestawu do oznaczania FEN.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="fen_publish",
+            job_id=job_id,
+        )
+
+    from chess_fen_review_repository import ChessFenReviewRepository
+
+    repository = ChessFenReviewRepository(
+        review_dir,
+        artifact_id=job_id,
+        owner_user_id=(auth_context.user_id if auth_context.authenticated else str(job.get("user_id") or "")),
+    )
+    try:
+        review_payload = repository.load()
+        report = _publish_verified_fen_review_artifacts(
+            job_id,
+            job,
+            review_dir=review_dir,
+            review_payload=review_payload,
+        )
+    except Exception as exc:
+        app.logger.exception("Verified FEN publication failed for %s", job_id)
+        return _json_error(
+            f"Nie udało się opublikować zweryfikowanych FEN: {exc}",
+            error_code="verified_fen_publication_failed",
+            status_code=400,
+            phase="fen_publish",
+            job_id=job_id,
+        )
+    response = jsonify({"success": True, "job_id": job_id, "publication": report})
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response

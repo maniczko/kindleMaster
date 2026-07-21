@@ -356,7 +356,12 @@ class AutoChessFlowTests(unittest.TestCase):
         ensemble = build_deterministic_ensemble_fen(
             {"diagram_id": "p001_d001", "image_path": "assets/diagrams/p001_d001.png"},
             model_prediction,
-            None,
+            {
+                "diagram_id": "p001_d001",
+                "fen": VALID_KINGS_FEN,
+                "confidence": 0.98,
+                "source_crop_hash": "abc123",
+            },
             {"source_crop_hash": "abc123"},
         )
 

@@ -102,6 +102,26 @@ def publish_verified_fen_artifacts(
     if "" in by_id or len(by_id) != len(records):
         raise VerifiedFenPublicationError("diagram_ids_invalid_or_duplicate")
 
+    terminal_review_rows: dict[str, Mapping[str, Any]] = {}
+    for row in payload_rows:
+        status = str(row.get("label_status") or "").strip().lower()
+        if status not in {"verified", "placement_verified", "rejected", "unreadable"}:
+            continue
+        diagram_id = str(row.get("diagram_id") or "").strip()
+        if not diagram_id or diagram_id in terminal_review_rows:
+            raise VerifiedFenPublicationError("review_diagram_ids_invalid_or_duplicate")
+        record = by_id.get(diagram_id)
+        if record is None:
+            raise VerifiedFenPublicationError(f"diagram_record_missing:{diagram_id}")
+        _verify_review_row_binding(
+            row,
+            record=record,
+            artifact_id=artifact,
+            source_digest=source_digest,
+            artifact_root=root,
+        )
+        terminal_review_rows[diagram_id] = row
+
     applied_ids: set[str] = set()
     for label in labels:
         diagram_id = str(label.get("diagram_id") or "").strip()
@@ -118,20 +138,46 @@ def publish_verified_fen_artifacts(
         _apply_human_verified_fen(record, label)
         applied_ids.add(diagram_id)
 
+    for diagram_id, row in terminal_review_rows.items():
+        status = str(row.get("label_status") or "").strip().lower()
+        if status == "verified":
+            if diagram_id not in applied_ids:
+                raise VerifiedFenPublicationError(f"verified_label_missing_from_corpus:{diagram_id}")
+            continue
+        _apply_human_non_fen_review(by_id[diagram_id], row)
+
     automatic_before = sum(1 for row in records if _machine_fen_was_accepted(row))
     automatic_after = sum(
         1
         for row in records
-        if _machine_fen_was_accepted(row) and _diagram_id(row) not in applied_ids
+        if _machine_fen_was_accepted(row) and _diagram_id(row) not in terminal_review_rows
     )
-    unrecognized = len(records) - len(applied_ids) - automatic_after
+    status_counts = _terminal_review_status_counts(terminal_review_rows.values())
+    publication_records = [
+        row for row in records if row.get("publication_included") is not False
+    ]
+    accepted = len(applied_ids) + automatic_after
+    candidate_without_full_fen = len(records) - accepted
+    confirmed_without_full_fen = len(publication_records) - accepted
+    placement_or_fen = accepted + status_counts["placement_verified"]
     summary = {
-        "diagrams_total": len(records),
+        "diagram_candidates_total": len(records),
+        "diagrams_total": len(publication_records),
+        "confirmed_diagrams_total": len(publication_records),
+        "false_positive_candidates": status_counts["rejected"],
         "fen_human_verified": len(applied_ids),
         "fen_automatic": automatic_after,
-        "fen_unrecognized": unrecognized,
+        "fen_placement_verified": status_counts["placement_verified"],
+        "fen_unreadable": status_counts["unreadable"],
+        "fen_unrecognized": confirmed_without_full_fen,
+        "candidate_without_full_fen": candidate_without_full_fen,
         "fen_automatic_before_override": automatic_before,
-        "fen_accepted": len(applied_ids) + automatic_after,
+        "fen_accepted": accepted,
+        "full_fen_coverage": _safe_ratio(accepted, len(publication_records)),
+        "placement_or_fen_coverage": _safe_ratio(
+            placement_or_fen,
+            len(publication_records),
+        ),
     }
 
     verified_payload = {
@@ -146,11 +192,11 @@ def publish_verified_fen_artifacts(
     _atomic_write_json(verified_diagrams_path, verified_payload)
 
     pgn_path = root / "report" / "chess_verified_positions.pgn"
-    _atomic_write_text(pgn_path, _verified_positions_pgn(records))
+    _atomic_write_text(pgn_path, _verified_positions_pgn(publication_records))
     epub_path = root / "output" / "chess_verified_positions.epub"
     _build_verified_positions_epub(
         epub_path,
-        records=records,
+        records=publication_records,
         artifact_root=root,
         source_digest=source_digest,
         title=f"{source_file.stem} - verified chess positions",
@@ -188,6 +234,14 @@ def _verify_label_binding(
     source_digest: str,
     artifact_root: Path,
 ) -> None:
+    _verify_review_row_binding(
+        label,
+        record=record,
+        artifact_id=artifact_id,
+        source_digest=source_digest,
+        artifact_root=artifact_root,
+    )
+    diagram_id = _diagram_id(record)
     if str(label.get("artifact_id") or "").strip() != artifact_id:
         raise VerifiedFenPublicationError("artifact_id_mismatch")
     if str(label.get("source_document_sha256") or "").strip().lower() != source_digest:
@@ -197,18 +251,33 @@ def _verify_label_binding(
     if str(label.get("label_status") or "").strip().lower() != "verified":
         raise VerifiedFenPublicationError("verified_label_status_required")
 
+
+
+def _verify_review_row_binding(
+    row: Mapping[str, Any],
+    *,
+    record: Mapping[str, Any],
+    artifact_id: str,
+    source_digest: str,
+    artifact_root: Path,
+) -> None:
+    if str(row.get("artifact_id") or "").strip() != artifact_id:
+        raise VerifiedFenPublicationError("artifact_id_mismatch")
+    if str(row.get("source_document_sha256") or "").strip().lower() != source_digest:
+        raise VerifiedFenPublicationError("source_document_sha256_mismatch")
+
     diagram_id = _diagram_id(record)
-    if str(label.get("diagram_id") or "").strip() != diagram_id:
+    if str(row.get("diagram_id") or "").strip() != diagram_id:
         raise VerifiedFenPublicationError(f"diagram_id_mismatch:{diagram_id}")
     page = _diagram_page(record)
     expected_fingerprint = _stable_fingerprint(source_digest, diagram_id, page)
-    if str(label.get("diagram_fingerprint") or "").strip().lower() != expected_fingerprint:
+    if str(row.get("diagram_fingerprint") or "").strip().lower() != expected_fingerprint:
         raise VerifiedFenPublicationError(f"diagram_fingerprint_mismatch:{diagram_id}")
 
     source_crop = _resolve_artifact_path(artifact_root, record.get("board_crop_path"))
     if source_crop is None or not source_crop.is_file():
         raise VerifiedFenPublicationError(f"board_crop_missing:{diagram_id}")
-    declared_hash = str(label.get("crop_sha256") or "").strip().lower()
+    declared_hash = str(row.get("crop_sha256") or "").strip().lower()
     if len(declared_hash) != _SHA256_LENGTH or _sha256_file(source_crop) != declared_hash:
         raise VerifiedFenPublicationError(f"board_crop_sha256_mismatch:{diagram_id}")
 
@@ -240,6 +309,10 @@ def _apply_human_verified_fen(record: dict[str, Any], label: Mapping[str, Any]) 
             "manual_review_required": False,
             "human_verified": True,
             "fen_human_verified": True,
+            "placement_human_verified": True,
+            "human_review_status": "verified",
+            "confirmed_diagram": True,
+            "publication_included": True,
             "fen_source": "human_verified_override",
             "verification_source": str(label.get("verification_source") or "human_visual"),
             "verified_by": str(label.get("verified_by") or ""),
@@ -256,6 +329,97 @@ def _apply_human_verified_fen(record: dict[str, Any], label: Mapping[str, Any]) 
             "review_reason": "",
         }
     )
+
+
+def _apply_human_non_fen_review(record: dict[str, Any], row: Mapping[str, Any]) -> None:
+    status = str(row.get("label_status") or "").strip().lower()
+    if status not in {"placement_verified", "rejected", "unreadable"}:
+        raise VerifiedFenPublicationError("unsupported_non_fen_review_status")
+    record["machine_fen_evidence"] = {
+        "full_fen": str(record.get("full_fen") or ""),
+        "fen_candidate": str(record.get("fen_candidate") or ""),
+        "full_fen_status": str(record.get("full_fen_status") or ""),
+        "full_fen_allowed": bool(record.get("full_fen_allowed")),
+        "confidence": record.get("fen_confidence"),
+    }
+    placement = ""
+    if status == "placement_verified":
+        placement = str(row.get("manual_placement") or "").strip()
+        if not placement:
+            placement = _placement_from_square_labels(row.get("square_labels"))
+    reason = {
+        "placement_verified": "side_to_move_unknown_after_human_review",
+        "rejected": "human_confirmed_false_positive",
+        "unreadable": "human_confirmed_unreadable_diagram",
+    }[status]
+    record.update(
+        {
+            "full_fen": "",
+            "fen": "",
+            "fen_candidate": "",
+            "placement": placement,
+            "placement_fen": placement,
+            "side_to_move": "unknown",
+            "side_to_move_status": "unknown",
+            "side_to_move_evidence": "human_review_no_decision",
+            "full_fen_allowed": False,
+            "full_fen_status": f"FEN_HUMAN_{status.upper()}",
+            "board_placement_status": (
+                "human_verified" if status == "placement_verified" else status
+            ),
+            "status": status,
+            "requires_review": False,
+            "manual_review_required": False,
+            "human_verified": True,
+            "fen_human_verified": False,
+            "placement_human_verified": status == "placement_verified",
+            "human_review_status": status,
+            "confirmed_diagram": status != "rejected",
+            "publication_included": status != "rejected",
+            "fen_source": "human_review_no_full_fen",
+            "verification_source": str(row.get("verification_source") or "human_visual"),
+            "verified_by": str(row.get("verified_by") or ""),
+            "verified_at": str(row.get("verified_at") or ""),
+            "full_fen_blockers": [reason],
+            "fen_suppressed_reason": reason,
+            "review_reason": reason,
+        }
+    )
+
+
+def _placement_from_square_labels(value: object) -> str:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 64:
+        return ""
+    ranks: list[str] = []
+    for start in range(0, 64, 8):
+        rank = ""
+        empty = 0
+        for raw_piece in value[start : start + 8]:
+            piece = str(raw_piece or "")
+            if not piece:
+                empty += 1
+                continue
+            if empty:
+                rank += str(empty)
+                empty = 0
+            rank += piece
+        if empty:
+            rank += str(empty)
+        ranks.append(rank)
+    return "/".join(ranks)
+
+
+def _terminal_review_status_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {"verified": 0, "placement_verified": 0, "rejected": 0, "unreadable": 0}
+    for row in rows:
+        status = str(row.get("label_status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 6) if denominator else 0.0
 
 
 def _machine_fen_was_accepted(record: Mapping[str, Any]) -> bool:

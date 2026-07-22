@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import types
 import unittest
+from io import BytesIO
 from unittest.mock import patch
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_file
 
 from production_security_events import install_admission_security_logging
 
@@ -95,6 +96,30 @@ class ProductionSecurityEventTests(unittest.TestCase):
             response = app.test_client().get("/health")
 
         self.assertEqual(response.status_code, 503)
+        warning.assert_not_called()
+
+    def test_streamed_json_artifact_is_not_parsed_as_api_response(self) -> None:
+        app = Flask("security-event-json-download-test")
+        module = types.SimpleNamespace(
+            app=app,
+            _resolve_request_auth_context=lambda: types.SimpleNamespace(authenticated=False),
+        )
+        install_admission_security_logging(module)
+
+        @app.get("/convert/artifact/report")
+        def report():
+            return send_file(
+                BytesIO(b'{"status":"ready"}'),
+                mimetype="application/json",
+                as_attachment=True,
+                download_name="report.json",
+            )
+
+        with patch.object(app.logger, "warning") as warning:
+            response = app.test_client().get("/convert/artifact/report")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "ready"})
         warning.assert_not_called()
 
 

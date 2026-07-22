@@ -75,7 +75,11 @@ def install_admission_security_logging(app_module: Any) -> None:
 
     @app_module.app.after_request
     def log_admission_security_event(response):
-        payload = response.get_json(silent=True) if response.is_json else None
+        payload = (
+            response.get_json(silent=True)
+            if response.is_json and not response.direct_passthrough
+            else None
+        )
         if not isinstance(payload, dict):
             return response
         error_code = str(payload.get("error_code") or "").strip()

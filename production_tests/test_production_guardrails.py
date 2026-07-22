@@ -312,6 +312,32 @@ class ProductionGuardrailTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.get_json()["error_code"], "global_capacity_exceeded")
         self.assertEqual(response.headers["Retry-After"], "30")
+        self.assertEqual(self.route_calls, 0)
+
+    def test_flask_low_disk_rejects_before_endpoint(self) -> None:
+        app = self._guarded_app(
+            policy=ProductionGuardrailPolicy(
+                guest_start_per_minute=10,
+                global_active_jobs=10,
+                guest_active_jobs=10,
+                min_disk_free_bytes=1,
+                min_disk_free_ratio=0,
+            )
+        )
+        with patch(
+            "production_guardrails.disk_headroom",
+            return_value={"allowed": False, "free_bytes": 0, "total_bytes": 1, "free_ratio": 0.0},
+        ):
+            response = app.test_client().post(
+                "/convert/start",
+                data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error_code"], "storage_capacity_exceeded")
+        self.assertEqual(response.headers["Retry-After"], "60")
+        self.assertEqual(self.route_calls, 0)
 
 
 if __name__ == "__main__":

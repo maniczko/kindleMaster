@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import tempfile
 import threading
 import time
@@ -9,10 +10,44 @@ from pathlib import Path
 from durable_job_queue import DurableJobDatabase, DurableJobQueue, SQLiteConversionJobStore
 
 
+def _claim_job_in_process(
+    database_path: str,
+    worker_id: str,
+    lease_seconds: int,
+    start_event,
+    result_queue,
+) -> None:
+    database = DurableJobDatabase(Path(database_path))
+    queue = DurableJobQueue(database)
+    if not start_event.wait(timeout=10):
+        result_queue.put({"worker_id": worker_id, "error": "start_timeout"})
+        return
+    try:
+        record = queue.claim(worker_id=worker_id, lease_seconds=lease_seconds)
+    except Exception as error:
+        result_queue.put(
+            {
+                "worker_id": worker_id,
+                "error": f"{error.__class__.__name__}: {error}",
+            }
+        )
+        return
+    result_queue.put(
+        {
+            "worker_id": worker_id,
+            "claimed": record is not None,
+            "job_id": record.job_id if record is not None else "",
+            "lease_owner": record.lease_owner if record is not None else "",
+            "attempt": record.attempt if record is not None else 0,
+        }
+    )
+
+
 class DurableJobQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.database = DurableJobDatabase(Path(self.temp_dir.name) / "runtime.sqlite3")
+        self.database_path = Path(self.temp_dir.name) / "runtime.sqlite3"
+        self.database = DurableJobDatabase(self.database_path)
         self.queue = DurableJobQueue(self.database)
 
     def tearDown(self) -> None:
@@ -80,6 +115,79 @@ class DurableJobQueueTests(unittest.TestCase):
         self.assertEqual(len(claimed), 1)
         self.assertIn(claimed[0].lease_owner, {"worker-a", "worker-b"})
         self.assertEqual(self.queue.get("job-a").attempt, 1)
+
+    def test_two_processes_racing_claim_exactly_one_job(self) -> None:
+        self.queue.enqueue(job_id="job-a", payload={})
+        context = multiprocessing.get_context("spawn")
+        start_event = context.Event()
+        result_queue = context.Queue()
+        processes = [
+            context.Process(
+                target=_claim_job_in_process,
+                args=(str(self.database_path), worker_id, 30, start_event, result_queue),
+            )
+            for worker_id in ("process-worker-a", "process-worker-b")
+        ]
+        for process in processes:
+            process.start()
+        start_event.set()
+        results = [result_queue.get(timeout=20) for _ in processes]
+        for process in processes:
+            process.join(timeout=20)
+
+        self.assertTrue(all(process.exitcode == 0 for process in processes))
+        self.assertEqual([result.get("error") for result in results if result.get("error")], [])
+        claimed = [result for result in results if result.get("claimed")]
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0]["job_id"], "job-a")
+        self.assertIn(claimed[0]["lease_owner"], {"process-worker-a", "process-worker-b"})
+        self.assertEqual(claimed[0]["attempt"], 1)
+        self.assertEqual(self.queue.get("job-a").attempt, 1)
+
+    def test_expired_lease_owned_by_exited_process_is_recovered(self) -> None:
+        self.queue.enqueue(job_id="job-a", payload={}, max_attempts=3)
+        context = multiprocessing.get_context("spawn")
+
+        first_event = context.Event()
+        first_results = context.Queue()
+        first_process = context.Process(
+            target=_claim_job_in_process,
+            args=(str(self.database_path), "process-worker-a", 30, first_event, first_results),
+        )
+        first_process.start()
+        first_event.set()
+        first = first_results.get(timeout=20)
+        first_process.join(timeout=20)
+        self.assertEqual(first_process.exitcode, 0)
+        self.assertTrue(first["claimed"])
+        self.assertEqual(first["attempt"], 1)
+
+        # The production queue intentionally enforces a minimum 30-second lease.
+        # Advance only the persisted lease timestamp so this test remains fast and
+        # deterministic while both claims are still performed by separate processes.
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE durable_queue SET lease_expires_at = ? WHERE job_id = ?",
+                (time.time() - 1, "job-a"),
+            )
+
+        second_event = context.Event()
+        second_results = context.Queue()
+        second_process = context.Process(
+            target=_claim_job_in_process,
+            args=(str(self.database_path), "process-worker-b", 30, second_event, second_results),
+        )
+        second_process.start()
+        second_event.set()
+        second = second_results.get(timeout=20)
+        second_process.join(timeout=20)
+
+        self.assertEqual(second_process.exitcode, 0)
+        self.assertTrue(second["claimed"])
+        self.assertEqual(second["job_id"], "job-a")
+        self.assertEqual(second["lease_owner"], "process-worker-b")
+        self.assertEqual(second["attempt"], 2)
+        self.assertEqual(self.queue.get("job-a").attempt, 2)
 
     def test_retry_backoff_and_dead_letter(self) -> None:
         self.queue.enqueue(job_id="job-a", payload={}, max_attempts=2)

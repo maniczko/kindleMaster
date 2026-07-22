@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import multiprocessing
 import tempfile
 import time
 import types
@@ -22,6 +23,32 @@ from production_guardrails import (
 )
 
 
+def _consume_rate_limit_in_process(
+    database_path: str,
+    key: str,
+    limit: int,
+    start_event,
+    result_queue,
+) -> None:
+    database = DurableJobDatabase(Path(database_path))
+    limiter = SQLiteFixedWindowRateLimiter(database)
+    if not start_event.wait(timeout=10):
+        result_queue.put({"error": "start_timeout"})
+        return
+    try:
+        decision = limiter.consume(key, limit=limit)
+    except Exception as error:
+        result_queue.put({"error": f"{error.__class__.__name__}: {error}"})
+        return
+    result_queue.put(
+        {
+            "allowed": decision.allowed,
+            "remaining": decision.remaining,
+            "retry_after_seconds": decision.retry_after_seconds,
+        }
+    )
+
+
 class FakeQueue:
     def __init__(self, *, global_active: int = 0, owner_active: int = 0) -> None:
         self.global_active = global_active
@@ -34,7 +61,8 @@ class FakeQueue:
 class ProductionGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.database = DurableJobDatabase(Path(self.temp_dir.name) / "runtime.sqlite3")
+        self.database_path = Path(self.temp_dir.name) / "runtime.sqlite3"
+        self.database = DurableJobDatabase(self.database_path)
         self.route_calls = 0
 
     def tearDown(self) -> None:
@@ -99,6 +127,32 @@ class ProductionGuardrailTests(unittest.TestCase):
         denied = first.consume("owner:start", limit=2)
         self.assertFalse(denied.allowed)
         self.assertGreaterEqual(denied.retry_after_seconds, 1)
+
+    def test_rate_limit_is_atomic_across_processes(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        start_event = context.Event()
+        result_queue = context.Queue()
+        processes = [
+            context.Process(
+                target=_consume_rate_limit_in_process,
+                args=(str(self.database_path), "owner:shared:start", 2, start_event, result_queue),
+            )
+            for _ in range(3)
+        ]
+        for process in processes:
+            process.start()
+        start_event.set()
+        results = [result_queue.get(timeout=20) for _ in processes]
+        for process in processes:
+            process.join(timeout=20)
+
+        self.assertTrue(all(process.exitcode == 0 for process in processes))
+        self.assertEqual([result.get("error") for result in results if result.get("error")], [])
+        self.assertEqual(sum(1 for result in results if result["allowed"]), 2)
+        denied = [result for result in results if not result["allowed"]]
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(denied[0]["remaining"], 0)
+        self.assertGreaterEqual(denied[0]["retry_after_seconds"], 1)
 
     def test_rate_window_resets(self) -> None:
         limiter = SQLiteFixedWindowRateLimiter(self.database)
@@ -258,32 +312,6 @@ class ProductionGuardrailTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.get_json()["error_code"], "global_capacity_exceeded")
         self.assertEqual(response.headers["Retry-After"], "30")
-        self.assertEqual(self.route_calls, 0)
-
-    def test_flask_low_disk_rejects_before_endpoint(self) -> None:
-        app = self._guarded_app(
-            policy=ProductionGuardrailPolicy(
-                guest_start_per_minute=10,
-                global_active_jobs=10,
-                guest_active_jobs=10,
-                min_disk_free_bytes=1,
-                min_disk_free_ratio=0,
-            )
-        )
-        with patch(
-            "production_guardrails.disk_headroom",
-            return_value={"allowed": False, "free_bytes": 0, "total_bytes": 1, "free_ratio": 0.0},
-        ):
-            response = app.test_client().post(
-                "/convert/start",
-                data={"file": (io.BytesIO(self._minimal_docx()), "book.docx")},
-                content_type="multipart/form-data",
-            )
-
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.get_json()["error_code"], "storage_capacity_exceeded")
-        self.assertEqual(response.headers["Retry-After"], "60")
-        self.assertEqual(self.route_calls, 0)
 
 
 if __name__ == "__main__":

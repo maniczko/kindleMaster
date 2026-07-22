@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile.railway"
   },
   "deploy": {
-    "startCommand": "python kindlemaster.py serve --runtime waitress",
+    "startCommand": "python production_server.py",
     "healthcheckPath": "/auth/config",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",

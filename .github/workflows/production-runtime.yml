@@ -20,9 +20,27 @@ jobs:
           python-version: "3.14"
       - name: Bootstrap runtime
         run: python kindlemaster.py bootstrap --runtime-only
-      - name: Compile production runtime
-        run: python -m py_compile artifact_storage.py durable_job_queue.py production_sqlite_connections.py production_store_compat.py production_runtime.py production_api_policy.py production_attempt_audit.py production_attempt_api.py production_queue_projection.py production_publication_guard.py production_api.py production_worker.py production_server.py
-      - name: Run durable queue, process, attempt and publication tests
+      - name: Compile production runtime and guardrails
+        run: >-
+          python -m py_compile
+          artifact_storage.py
+          durable_job_queue.py
+          production_sqlite_connections.py
+          production_store_compat.py
+          production_runtime.py
+          production_api_policy.py
+          production_attempt_audit.py
+          production_attempt_api.py
+          production_queue_projection.py
+          production_publication_guard.py
+          production_capacity_guard.py
+          production_guardrails.py
+          production_security_events.py
+          production_upload_limits.py
+          production_api.py
+          production_worker.py
+          production_server.py
+      - name: Run durable queue, process, security and admission tests
         shell: bash
         run: |
           set -o pipefail
@@ -34,6 +52,11 @@ jobs:
             production_tests.test_production_attempt_audit \
             production_tests.test_production_publication_guard \
             production_tests.test_production_artifact_atomicity \
+            production_tests.test_production_api_configuration \
+            production_tests.test_production_capacity \
+            production_tests.test_production_guardrails \
+            production_tests.test_production_security_events \
+            production_tests.test_production_upload_limits \
             2>&1 | tee production-runtime-tests.log
       - name: Upload production runtime test log
         if: ${{ always() }}
@@ -42,7 +65,7 @@ jobs:
           name: production-runtime-test-log
           path: production-runtime-tests.log
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
       - name: Verify production entrypoint imports
         env:
           KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3

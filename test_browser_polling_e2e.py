@@ -120,18 +120,14 @@ class BrowserPollingE2ETests(unittest.TestCase):
             self.context.close()
 
     def _enter_local_app(self) -> None:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
         self.page.goto(f"{self.base_url}/")
-        self.page.wait_for_function(
-            """() => {
-              const text = document.body ? document.body.innerText || "" : "";
-              return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
-            }""",
-            timeout=15000,
-        )
-        local_button = self.page.locator('[data-testid="continue-locally-button"]')
-        if local_button.count():
-            local_button.click()
-        self._wait_for_body_text("Nowa konwersja")
+        try:
+            self._wait_for_body_text("Nowa konwersja", timeout_ms=15000)
+        except PlaywrightTimeoutError:
+            self.page.locator('[data-testid="continue-locally-button"]').click()
+            self._wait_for_body_text("Nowa konwersja")
 
     def _load_pdf(self) -> None:
         self._enter_local_app()

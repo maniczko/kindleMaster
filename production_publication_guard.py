@@ -74,6 +74,7 @@ class AtomicBinaryPublisher:
         try:
             os.fsync(descriptor)
         except OSError:
+            # Some filesystems do not support directory fsync.
             pass
         finally:
             os.close(descriptor)

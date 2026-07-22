@@ -42,10 +42,13 @@ class ProductionPublicationGuardTests(unittest.TestCase):
             module = _atomic_only_module(temp_dir)
             install_production_publication_guard(module)
 
-            with self.assertRaisesRegex(RuntimeError, "simulated packaging failure"):
+            def write_then_fail() -> None:
                 with module.open(target, "wb") as handle:
                     handle.write(b"partial-new-artifact")
                     raise RuntimeError("simulated packaging failure")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated packaging failure"):
+                write_then_fail()
 
             self.assertEqual(target.read_bytes(), b"old-complete-artifact")
             self.assertEqual(list(Path(temp_dir).glob(".job.epub.*.tmp")), [])

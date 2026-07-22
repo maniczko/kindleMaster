@@ -123,6 +123,7 @@ def install_durable_submission(
                 try:
                     Path(source_path).unlink(missing_ok=True)
                 except OSError:
+                    # Duplicate cleanup must not fail the canonical enqueue.
                     pass
             app_module._CONVERSION_JOB_STORE.delete(job_id)
             try:
@@ -131,6 +132,7 @@ def install_durable_submission(
                 if has_request_context():
                     g.kindlemaster_canonical_job_id = canonical_job_id
             except Exception:
+                # Flask request context is optional in worker-side calls.
                 pass
 
     app_module._spawn_conversion_job = enqueue_conversion_job

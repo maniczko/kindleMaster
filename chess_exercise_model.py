@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from chess_exercise_navigation import NavigationReport, build_navigation_report
+from chess_exercise_navigation import build_navigation_report
 from chess_exercise_reconciliation import reconcile_exercise_solution_pairs
 from chess_solution_integrity import SolutionIntegrityReport, analyze_solution_integrity
 

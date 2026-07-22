@@ -58,12 +58,14 @@ def _verified_owner_class(app_module: Any) -> str:
         if authenticated is not None:
             return "authenticated" if bool(authenticated) else "guest"
     except Exception:
+        # Security logging falls back to guest when request context is unavailable.
         pass
     try:
         auth_context = app_module._resolve_request_auth_context()
         if getattr(auth_context, "authenticated", False):
             return "authenticated"
     except Exception:
+        # Authentication lookup is fail-closed to the guest quota class.
         pass
     return "guest"
 

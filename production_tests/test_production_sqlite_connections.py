@@ -33,12 +33,18 @@ class ProductionSQLiteConnectionTests(unittest.TestCase):
         with self.database.connect() as setup:
             setup.execute("CREATE TABLE probe(value TEXT)")
 
-        with self.assertRaisesRegex(RuntimeError, "rollback"):
+        def write_then_fail() -> None:
+            nonlocal connection
             with self.database.connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute("INSERT INTO probe(value) VALUES ('not-stored')")
                 raise RuntimeError("rollback")
 
+        connection = None
+        with self.assertRaisesRegex(RuntimeError, "rollback"):
+            write_then_fail()
+
+        self.assertIsNotNone(connection)
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
         with self.database.connect() as verification:

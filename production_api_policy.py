@@ -225,6 +225,7 @@ def install_queued_cancellation_policy(app_module: ModuleType, queue: DurableJob
         try:
             app_module._sync_job_to_cloud(job_id)
         except Exception:
+            # Local cancellation remains authoritative when cloud sync is unavailable.
             pass
         response = jsonify(
             {

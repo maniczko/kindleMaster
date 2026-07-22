@@ -147,9 +147,13 @@ class LocalArtifactStorage:
         safe_job_id = _safe_path_part(job_id, fallback="job")
         safe_filename = _safe_filename(filename)
         policy = retention or RetentionPolicy.for_kind(normalized_kind)
-        artifact_path = self.root / safe_job_id / normalized_kind.value / safe_filename
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_bytes(artifact_path, data)
+        artifact_path = _resolve_local_artifact_path(
+            self.root,
+            safe_job_id,
+            normalized_kind,
+            safe_filename,
+        )
+        _atomic_write_bytes(self.root, artifact_path, data)
 
         return ArtifactRecord(
             provider=self.provider,
@@ -292,12 +296,34 @@ def build_artifact_storage(
     return LocalArtifactStorage(configured_local_root or local_root)
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _resolve_local_artifact_path(
+    root: str | Path,
+    safe_job_id: str,
+    kind: ArtifactKind,
+    safe_filename: str,
+) -> Path:
+    resolved_root = Path(root).resolve()
+    candidate = (resolved_root / safe_job_id / kind.value / safe_filename).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as error:
+        raise ValueError("Artifact path must remain inside the configured storage root.") from error
+    return candidate
+
+
+def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
+    resolved_root = Path(root).resolve()
+    resolved_path = path.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as error:
+        raise ValueError("Artifact path must remain inside the configured storage root.") from error
+
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, raw_temp_path = tempfile.mkstemp(
-        prefix=f".{path.name}.",
+        prefix=f".{resolved_path.name}.",
         suffix=".tmp",
-        dir=path.parent,
+        dir=resolved_path.parent,
     )
     temp_path = Path(raw_temp_path)
     try:
@@ -305,12 +331,13 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-        _fsync_directory(path.parent)
+        os.replace(temp_path, resolved_path)
+        _fsync_directory(resolved_path.parent)
     except Exception:
         try:
             os.close(descriptor)
         except OSError:
+            # The descriptor may already be owned and closed by fdopen.
             pass
         temp_path.unlink(missing_ok=True)
         raise
@@ -325,6 +352,7 @@ def _fsync_directory(directory: Path) -> None:
     try:
         os.fsync(descriptor)
     except OSError:
+        # Some filesystems do not support directory fsync.
         pass
     finally:
         os.close(descriptor)

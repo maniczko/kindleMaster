@@ -115,6 +115,7 @@ class ProcessSupervisor:
             try:
                 process.terminate()
             except OSError:
+                # A child can exit between poll and terminate.
                 pass
         deadline = time.monotonic() + self.shutdown_seconds
         for process in active:
@@ -123,6 +124,7 @@ class ProcessSupervisor:
                 process.wait(timeout=remaining)
                 continue
             except subprocess.TimeoutExpired:
+                # Escalate to kill below after the graceful deadline.
                 pass
             except OSError:
                 continue
@@ -130,6 +132,7 @@ class ProcessSupervisor:
                 process.kill()
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
+                # Shutdown is best-effort after the final kill attempt.
                 pass
 
     def run_forever(self) -> None:

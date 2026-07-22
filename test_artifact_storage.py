@@ -65,6 +65,23 @@ class ArtifactStorageTests(unittest.TestCase):
         self.assertIsInstance(storage, LocalArtifactStorage)
         self.assertEqual(storage.root, configured_root)
 
+    def test_local_storage_keeps_untrusted_names_inside_artifact_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            storage = LocalArtifactStorage(root)
+
+            result = storage.put_bytes(
+                job_id="../../outside-job",
+                kind=ArtifactKind.OUTPUT,
+                filename="../../outside.epub",
+                data=b"epub",
+            )
+
+            stored_path = Path(result.location).resolve()
+            self.assertTrue(stored_path.is_relative_to(root.resolve()))
+            self.assertEqual(stored_path.read_bytes(), b"epub")
+            self.assertFalse((Path(temp_dir) / "outside.epub").exists())
+
     def test_configured_r2_reports_unavailable_without_boto3(self) -> None:
         config = ArtifactStorageConfig.from_env(
             {

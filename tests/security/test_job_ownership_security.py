@@ -5,9 +5,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import app as app_module
-from app import app
 from conversion_job_access import create_job_access_token, guest_owner_id
 from supabase_auth import AuthContext
+
+
+app = app_module.app
 
 
 class JobOwnershipRouteTests(unittest.TestCase):

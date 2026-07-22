@@ -61,6 +61,7 @@ Keep these repo conventions synchronized between `.codex/config.toml`, `README.m
 
 Preferred browser URL for this repo: `http://kindlemaster.localhost:5001/`.
 Loopback bind remains `127.0.0.1:5001` for runtime safety and tool fallback.
+The semantic publication gate is available through `python kindlemaster.py chess-release-gate --help`.
 
 ## Plugin Auto-Routing Mirror
 

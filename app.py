@@ -76,6 +76,7 @@ from conversion_jobs import (
     recommended_poll_interval_ms as lifecycle_recommended_poll_interval_ms,
     should_timeout_job,
 )
+from conversion_job_access import is_local_request_host, legacy_local_guest_allowed
 from conversion_library import (
     LibraryFilters,
     build_library_index,
@@ -5877,10 +5878,14 @@ def convert_jobs():
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
         return response
-    jobs = _visible_conversion_jobs_snapshot()
     limit = _resolve_conversion_job_history_limit()
-    cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=limit)
-    import_result = _ensure_local_artifact_history_loaded()
+    local_recovery_allowed = is_local_request_host(request.host) and legacy_local_guest_allowed(request.host)
+    if local_recovery_allowed:
+        cloud_sync = _merge_cloud_jobs_into_store_for_request(limit=limit)
+        import_result = _ensure_local_artifact_history_loaded()
+    else:
+        cloud_sync = {"status": "skipped", "reason": "public_guest_isolated"}
+        import_result = {"imported": 0, "skipped": 0, "failed": 0, "source": "disabled_for_public_guest"}
     jobs = _visible_conversion_jobs_snapshot()
     recent_jobs = sorted(
         jobs.items(),
@@ -5900,6 +5905,8 @@ def convert_jobs():
             ],
             "count": len(recent_jobs),
             "total": len(jobs),
+            "library_scope": "local" if local_recovery_allowed else "guest",
+            "authenticated": False,
             "import": import_result,
             "cloud_sync": cloud_sync,
         }

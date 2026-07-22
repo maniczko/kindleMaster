@@ -184,6 +184,33 @@ class JobOwnershipRouteTests(unittest.TestCase):
         self.assertIn("access=", payload["jobs"][0]["quality_state_url"])
         self.assertEqual(response.headers.get("X-KindleMaster-Job-Links"), "signed")
 
+    def test_public_guest_history_does_not_scan_or_expose_recovered_shared_artifacts(self) -> None:
+        guest_id = "guest-session-aaaaaaaaaaaaaaaa"
+        for index, recovery_field in enumerate(
+            ("recovered_from_artifacts", "restored_from_artifacts", "restored_from_smoke", "imported_from_local")
+        ):
+            job_id = f"recovered-shared-job-{index}"
+            self._register_job(job_id, guest_id=guest_id)
+            app_module._set_conversion_job(job_id, **{recovery_field: True})
+
+        with (
+            patch("app._merge_cloud_jobs_into_store_for_request") as merge_cloud,
+            patch("app._ensure_local_artifact_history_loaded") as import_artifacts,
+        ):
+            response = self.client.get(
+                "/convert/jobs",
+                base_url="https://api.example.com",
+                headers={"X-KindleMaster-Guest-Id": guest_id},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["jobs"], [])
+        self.assertEqual(payload["library_scope"], "guest")
+        self.assertEqual(payload["import"]["source"], "disabled_for_public_guest")
+        merge_cloud.assert_not_called()
+        import_artifacts.assert_not_called()
+
     def test_guest_cannot_delete_another_guest_job(self) -> None:
         guest_a = "guest-session-aaaaaaaaaaaaaaaa"
         guest_b = "guest-session-bbbbbbbbbbbbbbbb"

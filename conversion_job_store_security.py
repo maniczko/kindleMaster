@@ -137,6 +137,18 @@ def _job_is_legacy_unowned(job: Mapping[str, Any]) -> bool:
     return not _job_user_owner(job) and not _job_guest_owner(job)
 
 
+def _job_is_shared_artifact_recovery(job: Mapping[str, Any]) -> bool:
+    return any(
+        bool(job.get(field))
+        for field in (
+            "recovered_from_artifacts",
+            "restored_from_artifacts",
+            "restored_from_smoke",
+            "imported_from_local",
+        )
+    )
+
+
 def _read_allowed(job_id: str, job: Mapping[str, Any], identity: RequestIdentity) -> bool:
     if not has_request_context():
         return True
@@ -149,7 +161,7 @@ def _read_allowed(job_id: str, job: Mapping[str, Any], identity: RequestIdentity
     if identity.authenticated:
         return bool(identity.user_id) and _job_user_owner(job) == identity.user_id
     if identity.guest_owner_id:
-        return _job_guest_owner(job) == identity.guest_owner_id
+        return _job_guest_owner(job) == identity.guest_owner_id and not _job_is_shared_artifact_recovery(job)
     return identity.legacy_local and _job_is_legacy_unowned(job)
 
 
@@ -165,7 +177,11 @@ def _write_allowed(job: Mapping[str, Any], identity: RequestIdentity) -> bool:
         return identity.authenticated and identity.user_id == user_owner
     guest_owner = _job_guest_owner(job)
     if guest_owner:
-        return not identity.bearer_present and identity.guest_owner_id == guest_owner
+        return (
+            not identity.bearer_present
+            and identity.guest_owner_id == guest_owner
+            and not _job_is_shared_artifact_recovery(job)
+        )
     return identity.legacy_local and _job_is_legacy_unowned(job)
 
 
@@ -419,7 +435,11 @@ def install_conversion_job_store_security() -> None:
         if identity.authenticated:
             return {job_id: job for job_id, job in jobs.items() if _job_user_owner(job) == identity.user_id}
         if identity.guest_owner_id:
-            return {job_id: job for job_id, job in jobs.items() if _job_guest_owner(job) == identity.guest_owner_id}
+            return {
+                job_id: job
+                for job_id, job in jobs.items()
+                if _job_guest_owner(job) == identity.guest_owner_id and not _job_is_shared_artifact_recovery(job)
+            }
         if identity.legacy_local:
             return {job_id: job for job_id, job in jobs.items() if _job_is_legacy_unowned(job)}
         return {}

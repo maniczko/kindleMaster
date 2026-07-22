@@ -1320,6 +1320,74 @@ class AppAsyncConvertTests(unittest.TestCase):
         self.assertEqual(response.get_json()["status"], "deleted")
         cloud_delete.assert_called_once_with("token", user_id, job_id)
 
+    def test_authenticated_delete_reconciles_hidden_ownerless_local_artifacts(self) -> None:
+        job_id = "cloud-delete-with-stale-local"
+        user_id = "12345678-1234-1234-1234-123456789012"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        local_job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="stale-local.pdf",
+            created_at=created_at,
+        )
+        local_job["status"] = "ready"
+        cloud_job = dict(local_job)
+        cloud_job.update({"user_id": user_id, "cloud": True})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_root = Path(temp_dir) / "artifacts"
+            job_dir = artifact_root / job_id
+            (job_dir / "log").mkdir(parents=True)
+            (job_dir / "report").mkdir()
+            (job_dir / "log" / f"{job_id}.runtime.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": job_id,
+                        "status": "ready",
+                        "runtime": {
+                            "replay": {"command": {"kwargs": {"original_filename": "stale-local.pdf"}}}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / "report" / "debug.json").write_text("{}", encoding="utf-8")
+            with app_module._CONVERSION_JOBS_LOCK:
+                app_module._CONVERSION_JOBS[job_id] = local_job
+            app_module._CONVERSION_JOB_STORE.persist()
+
+            auth_context = AuthContext(authenticated=True, user_id=user_id)
+            with (
+                patch.object(app_module, "ARTIFACT_ROOT", artifact_root),
+                patch("conversion_job_store_security.validate_bearer_token", return_value=auth_context),
+                patch.object(app_module, "validate_bearer_token", return_value=auth_context),
+                patch.object(app_module, "_authenticated_request_context", return_value=({"id": user_id}, "token")),
+                patch.object(app_module, "_load_supabase_conversion_jobs", return_value={job_id: cloud_job}),
+                patch.object(
+                    app_module,
+                    "_delete_supabase_conversion_job",
+                    return_value={"status": "deleted", "provider": "supabase"},
+                ) as cloud_delete,
+            ):
+                response = self.client.delete(
+                    f"/convert/jobs/{job_id}",
+                    base_url="https://api.example.com",
+                    headers={"Authorization": "Bearer token"},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["cloud_delete"]["status"], "deleted")
+            self.assertEqual(payload["local_state_cleanup"], {"status": "deleted"})
+            self.assertIsNone(app_module._get_local_conversion_job_unscoped(job_id))
+            marker = job_dir / app_module.DELETED_ARTIFACT_MARKER
+            self.assertTrue(marker.is_file())
+            self.assertFalse((job_dir / "report" / "debug.json").exists())
+            with patch.object(app_module, "ARTIFACT_ROOT", artifact_root):
+                self.assertIsNone(app_module._restore_local_artifact_job_by_id(job_id))
+            cloud_delete.assert_called_once_with("token", user_id, job_id)
+
     def test_authenticated_delete_is_idempotent_when_cloud_history_is_already_missing(self) -> None:
         job_id = "missing-cloud-delete-job"
         user_id = "12345678-1234-1234-1234-123456789012"

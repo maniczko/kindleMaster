@@ -92,6 +92,36 @@ class JobOwnershipRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertIsNotNone(app_module._CONVERSION_JOB_STORE.get("job-user-b"))
 
+    def test_cloud_delete_does_not_remove_conflicting_local_job_owned_by_another_user(self) -> None:
+        self._register_job("shared-job-id", user_id="user-b")
+        cloud_job = self._register_job("cloud-user-a-copy", user_id="user-a")
+        cloud_job.update({"job_id": "shared-job-id", "cloud": True})
+        app_module._CONVERSION_JOB_STORE.delete("cloud-user-a-copy")
+        auth_context = self._authenticated_context("user-a")
+
+        with (
+            patch("conversion_job_store_security.validate_bearer_token", return_value=auth_context),
+            patch("app.validate_bearer_token", return_value=auth_context),
+            patch("app._authenticated_request_context", return_value=({"id": "user-a"}, "token-a")),
+            patch("app._load_supabase_conversion_jobs", return_value={"shared-job-id": cloud_job}),
+            patch(
+                "app._delete_supabase_conversion_job",
+                return_value={"status": "deleted", "provider": "supabase"},
+            ),
+            patch("app._cleanup_deleted_conversion_job_files", return_value={"failed_paths": []}) as cleanup,
+        ):
+            response = self.client.delete(
+                "/convert/jobs/shared-job-id",
+                base_url="https://api.example.com",
+                headers={"Authorization": "Bearer token-a"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["local_state_cleanup"]["status"], "protected")
+        self.assertIsNotNone(app_module._CONVERSION_JOB_STORE.get("shared-job-id"))
+        cleanup.assert_called_once()
+        self.assertFalse(cleanup.call_args.kwargs["remove_artifact_job_dir"])
+
     def test_authenticated_user_cannot_retry_another_users_input(self) -> None:
         self._register_job("job-user-b", status="failed", user_id="user-b")
         cloud_client = MagicMock()

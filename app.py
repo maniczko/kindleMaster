@@ -28,6 +28,7 @@ from bs4 import BeautifulSoup
 from app_runtime_services import (
     DEFAULT_DEBUG,
     DEFAULT_PORT,
+    DELETED_ARTIFACT_MARKER,
     LOCALHOST,
     build_conversion_metadata,
     ConversionRequest,
@@ -2647,6 +2648,9 @@ def _import_local_artifact_history() -> dict:
         for job_dir in sorted(root.iterdir(), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True):
             if not job_dir.is_dir():
                 continue
+            if _named_artifact_child(job_dir, DELETED_ARTIFACT_MARKER) is not None:
+                skipped += 1
+                continue
             if job_dir.name in existing:
                 skipped += 1
                 continue
@@ -2699,10 +2703,8 @@ def _restore_local_artifact_job_by_id(job_id: str) -> dict | None:
     if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
         return None
 
-    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
-    root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
-    job_dir = (root / safe_job_id).resolve()
-    if not _is_path_under(job_dir, root) or not job_dir.is_dir():
+    job_dir = _artifact_job_root_for_id(safe_job_id)
+    if job_dir is None or _named_artifact_child(job_dir, DELETED_ARTIFACT_MARKER) is not None:
         return None
 
     job = _rebuild_job_from_local_artifact_dir(job_dir)
@@ -3390,10 +3392,11 @@ def _get_conversion_job(job_id: str) -> dict | None:
     return _CONVERSION_JOB_STORE.get(job_id) or _recover_orphan_conversion_job(job_id)
 
 
-def _local_conversion_job_exists_unscoped(job_id: str) -> bool:
-    """Distinguish an absent job from one hidden by the ownership guard."""
+def _get_local_conversion_job_unscoped(job_id: str) -> dict | None:
+    """Read raw local state only for ownership-aware reconciliation."""
     with _CONVERSION_JOBS_LOCK:
-        return job_id in _CONVERSION_JOBS
+        job = _CONVERSION_JOBS.get(job_id)
+        return dict(job) if isinstance(job, dict) else None
 
 
 def _is_conversion_job_id(value: str | None) -> bool:
@@ -4771,7 +4774,44 @@ def _get_existing_conversion_job_for_auth(job_id: str, auth_context: AuthContext
         return None
 
 
-def _cleanup_deleted_conversion_job_files(job_id: str, job: dict) -> dict:
+def _delete_local_job_after_cloud_confirmation(job_id: str, user_id: str) -> dict:
+    """Remove stale ownerless local state after Supabase proves ownership."""
+    with _CONVERSION_JOBS_LOCK:
+        raw_job = _CONVERSION_JOBS.get(job_id)
+        if not isinstance(raw_job, dict):
+            return {"status": "absent", "job": None}
+        local_user_id = str(raw_job.get("user_id") or "").strip()
+        local_guest_owner = str(raw_job.get("guest_owner_id") or "").strip()
+        if (local_user_id and local_user_id != user_id) or local_guest_owner:
+            return {"status": "protected", "job": None}
+        deleted = dict(_CONVERSION_JOBS.pop(job_id))
+    persist_result = _CONVERSION_JOB_STORE.persist()
+    return {"status": "deleted", "job": deleted, "persist": persist_result}
+
+
+def _local_artifact_job_dir(job_id: str) -> Path | None:
+    root = ARTIFACT_ROOT.resolve()
+    if not root.is_dir():
+        return None
+    try:
+        candidates = root.iterdir()
+    except OSError:
+        return None
+    for candidate in candidates:
+        try:
+            if candidate.is_dir() and candidate.name == job_id:
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def _cleanup_deleted_conversion_job_files(
+    job_id: str,
+    job: dict,
+    *,
+    remove_artifact_job_dir: bool = True,
+) -> dict:
     """Remove local files owned by a deleted conversion job."""
     deleted_paths: list[str] = []
     missing_paths: list[str] = []
@@ -4802,14 +4842,36 @@ def _cleanup_deleted_conversion_job_files(job_id: str, job: dict) -> dict:
             elif path.is_dir():
                 shutil.rmtree(path)
                 deleted_paths.append(str(path))
-        except Exception as error:
-            failed_paths.append({"path": raw_path, "error": str(error)})
+        except Exception:
+            failed_paths.append({"path": raw_path, "error": "local_artifact_cleanup_failed"})
+
+    tombstone_path = ""
+    artifact_job_dir = _local_artifact_job_dir(job_id) if remove_artifact_job_dir else None
+    if artifact_job_dir is not None:
+        try:
+            shutil.rmtree(artifact_job_dir)
+            deleted_paths.append(str(artifact_job_dir))
+        except OSError:
+            failed_paths.append({"path": str(artifact_job_dir), "error": "artifact_directory_cleanup_failed"})
+        try:
+            artifact_job_dir.mkdir(parents=True, exist_ok=True)
+            marker = artifact_job_dir / DELETED_ARTIFACT_MARKER
+            marker.write_text(datetime.now(UTC).isoformat().replace("+00:00", "Z"), encoding="utf-8")
+            tombstone_path = str(marker)
+        except OSError:
+            failed_paths.append(
+                {
+                    "path": str(artifact_job_dir / DELETED_ARTIFACT_MARKER),
+                    "error": "artifact_tombstone_write_failed",
+                }
+            )
 
     return {
         "job_id": job_id,
         "deleted_paths": deleted_paths,
         "missing_paths": missing_paths,
         "failed_paths": failed_paths,
+        "tombstone_path": tombstone_path,
     }
 
 
@@ -5855,14 +5917,7 @@ def convert_job_delete(job_id: str):
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
-    if not job and _local_conversion_job_exists_unscoped(job_id):
-        return _json_error(
-            "Nie znaleziono zadania konwersji.",
-            error_code=ERROR_MISSING_OUTPUT,
-            status_code=404,
-            phase="delete",
-            job_id=job_id,
-        )
+    raw_local_job = _get_local_conversion_job_unscoped(job_id)
     cloud_user, cloud_token = _authenticated_request_context()
     if not job and cloud_user and cloud_token:
         job = _load_supabase_conversion_jobs(
@@ -5872,6 +5927,14 @@ def convert_job_delete(job_id: str):
         ).get(job_id)
         if job:
             job["cloud"] = True
+    if not job and raw_local_job is not None:
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="delete",
+            job_id=job_id,
+        )
     if not job:
         if cloud_user and cloud_token:
             cloud_delete = _delete_supabase_conversion_job(
@@ -5938,6 +6001,13 @@ def convert_job_delete(job_id: str):
         )
 
     deleted = _CONVERSION_JOB_STORE.delete(job_id)
+    local_state_cleanup = {"status": "deleted" if deleted else "absent", "job": deleted}
+    if not deleted and cloud_user and cloud_delete.get("status") in {"deleted", "missing"}:
+        local_state_cleanup = _delete_local_job_after_cloud_confirmation(
+            job_id,
+            str(cloud_user.get("id") or ""),
+        )
+        deleted = local_state_cleanup.get("job")
     if not deleted and not bool(job.get("cloud")):
         return _json_error(
             "Nie znaleziono zadania konwersji.",
@@ -5947,7 +6017,11 @@ def convert_job_delete(job_id: str):
             job_id=job_id,
         )
 
-    cleanup = _cleanup_deleted_conversion_job_files(job_id, deleted or job)
+    cleanup = _cleanup_deleted_conversion_job_files(
+        job_id,
+        deleted or job,
+        remove_artifact_job_dir=local_state_cleanup.get("status") != "protected",
+    )
     behavior_signal = _record_user_behavior_signal_safely(
         job_id=job_id,
         job=deleted or job,
@@ -5959,6 +6033,7 @@ def convert_job_delete(job_id: str):
             "job_id": job_id,
             "status": "deleted",
             "cleanup": cleanup,
+            "local_state_cleanup": {"status": str(local_state_cleanup.get("status") or "unknown")},
             "cloud_delete": cloud_delete,
             "behavior_signal": behavior_signal,
         }

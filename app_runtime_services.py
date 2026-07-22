@@ -29,6 +29,7 @@ METADATA_LIST_LIMIT = 20
 METADATA_MESSAGE_LIMIT = 12
 METADATA_DEPTH_LIMIT = 4
 ARTIFACT_RECOVERY_LIMIT = 200
+DELETED_ARTIFACT_MARKER = ".kindlemaster-deleted"
 
 ConvertFunction = Callable[..., dict[str, Any]]
 HeadingRepairFunction = Callable[..., Any]
@@ -444,6 +445,8 @@ def _existing_artifact_location(record: Any) -> str:
 
 
 def _recover_conversion_job_from_artifact_dir(job_dir: Path) -> dict[str, Any] | None:
+    if (job_dir / DELETED_ARTIFACT_MARKER).is_file():
+        return None
     job_id = job_dir.name
     runtime_path = _first_matching_file(job_dir, "log", "*.runtime.json")
     report_json_path = _first_matching_file(job_dir, "report", "*.quality.json")

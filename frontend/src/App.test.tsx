@@ -1995,7 +1995,7 @@ describe("Premium React shell", () => {
     confirmSpy.mockRestore();
   });
 
-  it("dismisses a stale library publication when its delete endpoint returns 404", async () => {
+  it("keeps a publication visible when the server does not confirm deletion", async () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2037,7 +2037,8 @@ describe("Premium React shell", () => {
     await user.click(await screen.findByRole("button", { name: "Biblioteka" }));
     await user.click(await screen.findByRole("button", { name: "Usuń publikację stale-job.pdf" }));
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: "stale-job.pdf" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Nie znaleziono zadania konwersji.")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "stale-job.pdf" })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/convert/jobs/stale-job", expect.objectContaining({ method: "DELETE" }));
     confirmSpy.mockRestore();
   });

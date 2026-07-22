@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app_runtime_services import (
+    DELETED_ARTIFACT_MARKER,
     ConversionOutcome,
     ConversionJobStore,
     ConversionRequest,
@@ -414,6 +415,33 @@ class AppRuntimeServicesTests(unittest.TestCase):
         self.assertTrue(jobs["job-recovered"]["output_path"].endswith("report.epub"))
         self.assertIn("output", jobs["job-recovered"]["artifacts"])
         self.assertTrue(jobs["job-recovered"]["quality_state_snapshot"]["download_available"])
+
+    def test_conversion_job_store_does_not_recover_tombstoned_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            job_dir = root / "job-deleted"
+            (job_dir / "log").mkdir(parents=True)
+            (job_dir / "log" / "job-deleted.runtime.json").write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-deleted",
+                        "status": "ready",
+                        "runtime": {
+                            "replay": {"command": {"kwargs": {"original_filename": "deleted.pdf"}}}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job_dir / DELETED_ARTIFACT_MARKER).write_text("2026-07-22T10:00:00Z", encoding="utf-8")
+            jobs: dict[str, dict] = {}
+            store = ConversionJobStore(jobs, threading.Lock(), persistence_path=Path(temp_dir) / "jobs.json")
+
+            result = store.recover_from_artifacts(root)
+
+        self.assertFalse(result["recovered"])
+        self.assertEqual(result["job_count"], 0)
+        self.assertEqual(jobs, {})
 
     def test_conversion_job_store_recovery_does_not_invent_missing_output_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

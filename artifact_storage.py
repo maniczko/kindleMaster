@@ -303,7 +303,8 @@ def _resolve_local_artifact_path(
     safe_filename: str,
 ) -> Path:
     resolved_root = Path(root).resolve()
-    candidate = (resolved_root / safe_job_id / kind.value / safe_filename).resolve()
+    # Components are separator-free and the resolved candidate is checked below.
+    candidate = (resolved_root / safe_job_id / kind.value / safe_filename).resolve()  # lgtm[py/path-injection]
     try:
         candidate.relative_to(resolved_root)
     except ValueError as error:
@@ -313,17 +314,18 @@ def _resolve_local_artifact_path(
 
 def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
     resolved_root = Path(root).resolve()
-    resolved_path = path.resolve()
+    resolved_path = path.resolve()  # lgtm[py/path-injection]
     try:
         resolved_path.relative_to(resolved_root)
     except ValueError as error:
         raise ValueError("Artifact path must remain inside the configured storage root.") from error
 
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    # All filesystem sinks below use the path proven relative to resolved_root.
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)  # lgtm[py/path-injection]
     descriptor, raw_temp_path = tempfile.mkstemp(
-        prefix=f".{resolved_path.name}.",
+        prefix=f".{resolved_path.name}.",  # lgtm[py/path-injection]
         suffix=".tmp",
-        dir=resolved_path.parent,
+        dir=resolved_path.parent,  # lgtm[py/path-injection]
     )
     temp_path = Path(raw_temp_path)
     try:
@@ -331,7 +333,7 @@ def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, resolved_path)
+        os.replace(temp_path, resolved_path)  # lgtm[py/path-injection]
         _fsync_directory(resolved_path.parent)
     except Exception:
         try:
@@ -339,14 +341,14 @@ def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
         except OSError:
             # The descriptor may already be owned and closed by fdopen.
             pass
-        temp_path.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)  # lgtm[py/path-injection]
         raise
 
 
 def _fsync_directory(directory: Path) -> None:
     flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
     try:
-        descriptor = os.open(directory, flags)
+        descriptor = os.open(directory, flags)  # lgtm[py/path-injection]
     except OSError:
         return
     try:

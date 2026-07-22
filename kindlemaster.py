@@ -173,6 +173,7 @@ RELEASE_TESTS = [
     "test_epub_quality_recovery.py",
     "test_release_quality_recovery.py",
     "test_epub_release_pipeline.py",
+    "test_chess_semantic_release_gate.py",
     "test_app_heading_repair.py",
 ]
 
@@ -209,6 +210,7 @@ QUALITY_CRITICAL_TESTS = [
     "test_epub_delivery_repair.py",
     "test_epub_quality_recovery.py",
     "test_release_quality_recovery.py",
+    "test_chess_semantic_release_gate.py",
 ]
 
 QUALITY_CRITICAL_COVERAGE_SOURCES = [
@@ -352,6 +354,20 @@ def main() -> int:
     validate_parser.add_argument("epub_paths", nargs="+")
     validate_parser.add_argument("--reports-dir", default="reports/validators")
     validate_parser.add_argument("--strict", action="store_true", help="For auto chess output directories, fail on unresolved FEN/PGN review items.")
+
+    chess_release_gate_parser = subparsers.add_parser(
+        "chess-release-gate",
+        help="Validate semantic chess integrity before publication.",
+    )
+    chess_release_gate_parser.add_argument("semantic_json")
+    chess_release_gate_parser.add_argument("--mode", choices=("development", "strict", "release"), default="development")
+    chess_release_gate_parser.add_argument("--reports-dir", default="reports/chess_reader")
+    chess_release_gate_parser.add_argument("--expected-counts-json", default="")
+    chess_release_gate_parser.add_argument("--metadata-json", default="")
+    chess_release_gate_parser.add_argument("--toc-report-json", default="")
+    chess_release_gate_parser.add_argument("--fen-release-report-json", default="")
+    chess_release_gate_parser.add_argument("--documents-root", default="")
+    chess_release_gate_parser.add_argument("--allow-warning", action="append", default=[])
 
     report_parser = subparsers.add_parser("report", help="Build or print an auto chess flow report.")
     report_parser.add_argument("out_dir")
@@ -910,6 +926,24 @@ def main() -> int:
         payload = run_epub_validators(args.epub_paths, reports_dir=args.reports_dir)
         _print_json(payload)
         return 0 if payload["overall_status"] != "failed" else 1
+    if args.command == "chess-release-gate":
+        from chess_semantic_release_gate import DEFAULT_ALLOWED_WARNINGS, run_gate_from_files
+
+        allowlist = set(DEFAULT_ALLOWED_WARNINGS)
+        allowlist.update(args.allow_warning)
+        payload = run_gate_from_files(
+            args.semantic_json,
+            mode=args.mode,
+            reports_dir=args.reports_dir,
+            expected_counts_json=args.expected_counts_json or None,
+            metadata_json=args.metadata_json or None,
+            toc_report_json=args.toc_report_json or None,
+            fen_release_report_json=args.fen_release_report_json or None,
+            documents_root=args.documents_root or None,
+            allowed_warnings=allowlist,
+        )
+        _print_json(payload.to_dict())
+        return payload.exit_code
     if args.command == "report":
         from chess_auto_flow import report_auto_chess_output
 

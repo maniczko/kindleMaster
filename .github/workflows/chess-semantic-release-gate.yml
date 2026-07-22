@@ -1,0 +1,76 @@
+name: Chess Semantic Release Gate
+
+on:
+  pull_request:
+    paths:
+      - "chess_semantic_release_gate.py"
+      - "chess_study_export.py"
+      - "chess_exercise_model.py"
+      - "chess_exercise_navigation.py"
+      - "chess_solution_integrity.py"
+      - "chess_exercise_reconciliation.py"
+      - "kindlemaster.py"
+      - "test_chess_semantic_release_gate.py"
+      - "tests/chess/test_semantic_release_gate.py"
+      - "tests/chess/test_semantic_release_gate_hook.py"
+      - "tests/chess/test_semantic_release_gate_cli.py"
+      - ".github/workflows/chess-semantic-release-gate.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "chess_semantic_release_gate.py"
+      - "chess_study_export.py"
+      - "chess_exercise_model.py"
+      - "chess_exercise_navigation.py"
+      - "chess_solution_integrity.py"
+      - "chess_exercise_reconciliation.py"
+      - "kindlemaster.py"
+      - "test_chess_semantic_release_gate.py"
+      - "tests/chess/test_semantic_release_gate.py"
+      - "tests/chess/test_semantic_release_gate_hook.py"
+      - "tests/chess/test_semantic_release_gate_cli.py"
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-release-gate:
+    name: semantic-release-gate (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+      - name: Run release gate and stacked compatibility tests
+        shell: bash
+        run: |
+          mkdir -p reports/semantic-release-gate
+          set -o pipefail
+          python -m unittest -v \
+            test_chess_semantic_release_gate \
+            tests.chess.test_exercise_solution_navigation \
+            tests.chess.test_semantic_navigation_model \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            tests.chess.test_exercise_reconciliation \
+            tests.chess.test_exercise_model_reconciliation \
+            test_chess_reader_exercises \
+            test_chess_reader_solutions \
+            test_chess_reader_navigation \
+            2>&1 | tee reports/semantic-release-gate/python-${{ matrix.python-version }}.log
+      - name: Upload evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chess-semantic-release-gate-python-${{ matrix.python-version }}
+          path: reports/semantic-release-gate/
+          if-no-files-found: warn
+          retention-days: 14

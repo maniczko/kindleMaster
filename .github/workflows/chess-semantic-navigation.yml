@@ -1,0 +1,81 @@
+name: Chess Semantic Navigation
+
+on:
+  pull_request:
+    paths:
+      - "chess_exercise_navigation.py"
+      - "chess_exercise_model.py"
+      - "chess_study_export.py"
+      - "tests/chess/test_exercise_solution_navigation.py"
+      - "tests/chess/test_semantic_navigation_model.py"
+      - "test_chess_reader_exercises.py"
+      - "test_chess_reader_solutions.py"
+      - "test_chess_reader_navigation.py"
+      - "test_chess_study_data_contracts.py"
+      - "test_chess_study_pipeline.py"
+      - ".github/workflows/chess-semantic-navigation.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "chess_exercise_navigation.py"
+      - "chess_exercise_model.py"
+      - "chess_study_export.py"
+      - "tests/chess/test_exercise_solution_navigation.py"
+      - "tests/chess/test_semantic_navigation_model.py"
+      - "test_chess_reader_exercises.py"
+      - "test_chess_reader_solutions.py"
+      - "test_chess_reader_navigation.py"
+      - "test_chess_study_data_contracts.py"
+      - "test_chess_study_pipeline.py"
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-navigation:
+    name: semantic-navigation (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+
+      - name: Run navigation and compatibility tests
+        shell: bash
+        run: |
+          mkdir -p reports/semantic-navigation
+          set -o pipefail
+          python -m unittest -v \
+            tests.chess.test_exercise_solution_navigation \
+            tests.chess.test_semantic_navigation_model \
+            tests.chess.test_exercise_reconciliation \
+            tests.chess.test_exercise_model_reconciliation \
+            tests.chess.test_solution_integrity \
+            tests.chess.test_solution_integrity_model \
+            test_chess_reader_exercises \
+            test_chess_reader_solutions \
+            test_chess_reader_navigation \
+            test_chess_study_data_contracts \
+            test_chess_study_pipeline \
+            2>&1 | tee reports/semantic-navigation/python-${{ matrix.python-version }}.log
+
+      - name: Upload navigation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chess-semantic-navigation-python-${{ matrix.python-version }}
+          path: reports/semantic-navigation/
+          if-no-files-found: warn
+          retention-days: 14

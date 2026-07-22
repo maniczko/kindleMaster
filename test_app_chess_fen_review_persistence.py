@@ -103,6 +103,35 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
             review_payload=review_payload,
         )
 
+    def test_post_publish_rebinds_reused_source_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth = app_module.AuthContext(authenticated=True, user_id="owner-a")
+            with (
+                patch.object(app_module, "_resolve_request_auth_context", return_value=auth),
+                patch.object(
+                    app_module,
+                    "_get_conversion_job_for_auth",
+                    return_value={"job_id": "new-artifact", "user_id": auth.user_id, "artifacts": {}},
+                ),
+                patch.object(app_module, "_resolve_local_fen_review_dir", return_value=Path(temp_dir)),
+                patch(
+                    "chess_fen_review_repository.ChessFenReviewRepository.load",
+                    return_value={"session_status": "active", "reused_from_artifact_id": "old-artifact", "rows": []},
+                ),
+                patch.object(
+                    app_module,
+                    "_maybe_publish_source_bound_verified_fen",
+                    return_value={"status": "published", "summary": {"fen_human_verified": 254}},
+                ) as reuse_publish,
+                patch.object(app_module, "_publish_verified_fen_review_artifacts") as direct_publish,
+            ):
+                response = self.client.post("/convert/artifact/new-artifact/chess_fen_publish")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["publication"]["summary"]["fen_human_verified"], 254)
+        reuse_publish.assert_called_once_with("new-artifact")
+        direct_publish.assert_not_called()
+
     def test_publish_rejects_noncanonical_artifact_id_before_lookup(self) -> None:
         with patch.object(app_module, "_get_conversion_job_for_auth") as lookup:
             response = self.client.post(
@@ -157,6 +186,45 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
         self.assertEqual(summary["fen_human_verified"], 1)
         self.assertEqual(summary["fen_automatic"], 1)
         self.assertEqual(summary["fen_unrecognized"], 1)
+
+    def test_new_conversion_reuses_only_complete_exact_source_review(self) -> None:
+        class FakeReviewClient:
+            available = True
+
+            def load_review(self, **_kwargs):
+                return {
+                    "session_status": "complete",
+                    "source_document_sha256": "a" * 64,
+                    "reused_from_artifact_id": "old-artifact",
+                    "rows": [
+                        {
+                            "artifact_id": "old-artifact",
+                            "diagram_id": "diagram-1",
+                            "source_document_sha256": "a" * 64,
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = {"job_id": "new-artifact", "user_id": "owner-a", "artifacts": {}}
+            with (
+                patch.object(app_module, "_get_conversion_job", return_value=job),
+                patch.object(app_module, "_resolve_local_fen_review_dir", return_value=Path(temp_dir)),
+                patch.object(app_module, "_source_sha256_for_job", return_value="a" * 64),
+                patch("supabase_fen_review.SupabaseFenReviewClient", return_value=FakeReviewClient()),
+                patch.object(
+                    app_module,
+                    "_publish_verified_fen_review_artifacts",
+                    return_value={"status": "published", "summary": {"fen_human_verified": 1}},
+                ) as publish,
+            ):
+                result = app_module._maybe_publish_source_bound_verified_fen("new-artifact")
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["reused_from_artifact_id"], "old-artifact")
+        rebound = publish.call_args.kwargs["review_payload"]
+        self.assertEqual(rebound["rows"][0]["artifact_id"], "new-artifact")
+        self.assertEqual(rebound["rows"][0]["source_review_artifact_id"], "old-artifact")
 
     def test_stale_revision_returns_http_409_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

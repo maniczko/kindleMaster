@@ -245,6 +245,9 @@ def _apply_human_verified_fen(record: dict[str, Any], label: Mapping[str, Any]) 
             "verified_by": str(label.get("verified_by") or ""),
             "verified_at": str(label.get("verified_at") or ""),
             "verified_artifact_id": str(label.get("artifact_id") or ""),
+            "verified_source_review_artifact_id": str(
+                label.get("source_review_artifact_id") or label.get("artifact_id") or ""
+            ),
             "verified_source_document_sha256": str(label.get("source_document_sha256") or ""),
             "verified_diagram_fingerprint": str(label.get("diagram_fingerprint") or ""),
             "verified_board_crop_sha256": str(label.get("crop_sha256") or ""),

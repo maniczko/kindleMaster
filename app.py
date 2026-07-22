@@ -1067,7 +1067,9 @@ def _publish_verified_fen_review_artifacts(
     review_dir: Path,
     review_payload: Mapping[str, object],
 ) -> dict[str, object]:
-    artifacts = dict(job.get("artifacts", {}) or {})
+    current_job = _get_conversion_job(job_id)
+    effective_job = current_job if isinstance(current_job, Mapping) else job
+    artifacts = dict(effective_job.get("artifacts", {}) or {})
     diagrams_artifact = artifacts.get("chess_diagrams")
     diagrams_path = _resolve_local_artifact_path(
         diagrams_artifact if isinstance(diagrams_artifact, dict) else None
@@ -1148,7 +1150,7 @@ def _publish_verified_fen_review_artifacts(
         structure={"chapters": [{"chapter_no": 1, "title": "Chess diagrams"}]},
         positions={"positions": positions},
         qa_report=qa_report,
-        source_pdf=_job_input_path(dict(job)),
+        source_pdf=_job_input_path(dict(effective_job)),
         source_html=html_path,
         source_gate={
             "decision": "use_source_bound_verified_positions_as_final_reader",
@@ -1170,6 +1172,67 @@ def _publish_verified_fen_review_artifacts(
     if updated is None:
         raise ValueError("conversion_job_update_failed")
     return report
+
+
+def _source_sha256_for_job(job: Mapping[str, object]) -> str:
+    source_path = _job_input_path(dict(job))
+    if source_path is None or not source_path.is_file():
+        return ""
+    digest = sha256()
+    try:
+        with source_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def _maybe_publish_source_bound_verified_fen(job_id: str) -> dict[str, object]:
+    """Apply a completed exact-source review to a newly converted artifact."""
+    job = _get_conversion_job(job_id)
+    if not job:
+        return {"status": "skipped", "reason": "conversion_job_missing"}
+    owner_user_id = str(job.get("user_id") or "").strip()
+    if not owner_user_id:
+        return {"status": "skipped", "reason": "authenticated_owner_required"}
+    review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
+        return {"status": "skipped", "reason": "fen_review_artifact_missing"}
+    source_digest = _source_sha256_for_job(job)
+    if not source_digest:
+        return {"status": "skipped", "reason": "source_document_missing"}
+
+    from chess_verified_fen_reuse import bind_complete_review_to_artifact
+    from supabase_fen_review import SupabaseFenReviewClient
+
+    client = SupabaseFenReviewClient()
+    if not client.available:
+        return {"status": "skipped", "reason": "supabase_fen_review_unavailable"}
+    review_payload = client.load_review(
+        artifact_id=job_id,
+        source_document_sha256=source_digest,
+        owner_user_id=owner_user_id,
+    )
+    if not isinstance(review_payload, Mapping):
+        return {"status": "skipped", "reason": "completed_source_review_missing"}
+    if str(review_payload.get("session_status") or "").strip().lower() != "complete":
+        return {"status": "skipped", "reason": "source_review_not_complete"}
+    bound_payload = bind_complete_review_to_artifact(
+        review_payload,
+        artifact_id=job_id,
+        source_document_sha256=source_digest,
+    )
+    report = _publish_verified_fen_review_artifacts(
+        job_id,
+        job,
+        review_dir=review_dir,
+        review_payload=bound_payload,
+    )
+    return {
+        **report,
+        "reused_from_artifact_id": str(bound_payload.get("reused_from_artifact_id") or ""),
+    }
 
 
 def _create_semantic_chess_reader_sidecar(
@@ -2365,7 +2428,15 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         return None
 
     input_file = _first_file(job_dir / "input", "*")
-    output_file = _first_file(job_dir / "output", "*.epub")
+    output_candidates = sorted((job_dir / "output").glob("*.epub")) if (job_dir / "output").is_dir() else []
+    verified_positions_epub_file = next(
+        (path for path in output_candidates if path.name == "chess_verified_positions.epub"),
+        None,
+    )
+    output_file = next(
+        (path for path in output_candidates if path.name != "chess_verified_positions.epub"),
+        None,
+    )
     quality_json_file = _first_file(job_dir / "report", "*.quality.json")
     markdown_report_file = _first_file(job_dir / "report", "*.quality.md")
     report_pgn_files = sorted((job_dir / "report").glob("*.pgn")) if (job_dir / "report").is_dir() else []
@@ -2384,6 +2455,9 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     )
     chess_glyph_diagnostics_file = _first_file(job_dir / "report", "chess_glyph_diagnostics.json")
     chess_diagrams_file = _first_file(job_dir / "report", "chess_diagrams.json")
+    chess_diagrams_verified_file = _first_file(job_dir / "report", "chess_diagrams_verified.json")
+    chess_verified_positions_pgn_file = _first_file(job_dir / "report", "chess_verified_positions.pgn")
+    chess_verified_fen_publication_file = _first_file(job_dir / "report", "chess_verified_fen_publication.json")
     chess_fen_two_crop_review_artifacts_file = _first_file(
         job_dir / "report",
         _TWO_CROP_REVIEW_ZIP_NAME,
@@ -2504,6 +2578,38 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         )
         artifacts["chess_diagrams"]["download_url"] = f"/convert/artifact/{job_id}/chess_diagrams"
         artifacts["chess_diagrams"]["label"] = "Chess diagrams"
+    if chess_diagrams_verified_file is not None:
+        artifacts["chess_diagrams_verified"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_diagrams_verified_file,
+        )
+        artifacts["chess_diagrams_verified"]["download_url"] = f"/convert/artifact/{job_id}/chess_diagrams_verified"
+        artifacts["chess_diagrams_verified"]["label"] = "Zweryfikowane diagramy"
+    if chess_verified_positions_pgn_file is not None:
+        artifacts["chess_verified_positions_pgn"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_verified_positions_pgn_file,
+        )
+        artifacts["chess_verified_positions_pgn"]["download_url"] = f"/convert/artifact/{job_id}/chess_verified_positions_pgn"
+        artifacts["chess_verified_positions_pgn"]["label"] = "PGN zweryfikowanych pozycji"
+    if verified_positions_epub_file is not None:
+        artifacts["chess_verified_positions_epub"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.OUTPUT,
+            verified_positions_epub_file,
+        )
+        artifacts["chess_verified_positions_epub"]["download_url"] = f"/convert/artifact/{job_id}/chess_verified_positions_epub"
+        artifacts["chess_verified_positions_epub"]["label"] = "EPUB zweryfikowanych pozycji"
+    if chess_verified_fen_publication_file is not None:
+        artifacts["chess_verified_fen_publication"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_verified_fen_publication_file,
+        )
+        artifacts["chess_verified_fen_publication"]["download_url"] = f"/convert/artifact/{job_id}/chess_verified_fen_publication"
+        artifacts["chess_verified_fen_publication"]["label"] = "Raport publikacji FEN"
     if chess_fen_two_crop_review_artifacts_file is not None:
         artifacts["chess_fen_two_crop_review_artifacts"] = _local_artifact_metadata(
             job_id,
@@ -4956,47 +5062,19 @@ def _sync_job_to_cloud(job_id: str) -> dict:
         client = _supabase_library_client()
         quality_state = _build_job_quality_state(job_id, job)
         client.upsert_job_snapshot(user_id=user_id, job=job, quality_state=quality_state, imported_from_local=False)
-
-        output_path = Path(str(job.get("output_path", "") or ""))
-        if output_path.is_file():
-            client.upload_artifact_bytes(
-                user_id=user_id,
-                job_id=job_id,
-                kind="output",
-                filename=str(job.get("download_name") or f"{job_id}.epub"),
-                data=output_path.read_bytes(),
-                content_type="application/epub+zip",
-            )
-
-        if job.get("status") == "ready":
-            report_payload = build_quality_report_payload(
-                job_id,
-                job,
-                quality_state=quality_state,
-                output_size_bytes=_read_output_size_bytes(job),
-                include_text=False,
-            )
-            client.upload_artifact_bytes(
-                user_id=user_id,
-                job_id=job_id,
-                kind="report",
-                filename=f"{job_id}.quality.json",
-                data=json.dumps(report_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                content_type="application/json",
-            )
-            client.upload_artifact_bytes(
-                user_id=user_id,
-                job_id=job_id,
-                kind="report",
-                filename=f"{job_id}.quality.md",
-                data=render_quality_report_markdown(report_payload).encode("utf-8"),
-                content_type="text/markdown; charset=utf-8",
-            )
+        uploaded = _upload_durable_job_artifacts(
+            client,
+            user_id=user_id,
+            job_id=job_id,
+            job=job,
+            quality_state=quality_state,
+        )
 
         cloud_sync = {
             "status": "synced",
             "provider": "supabase",
             "synced_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "artifacts": uploaded,
         }
         _set_conversion_job(job_id, cloud_sync=cloud_sync)
         return cloud_sync
@@ -5025,6 +5103,95 @@ def _sync_job_to_cloud(job_id: str) -> dict:
         return cloud_sync
 
 
+def _upload_durable_job_artifacts(
+    client: SupabaseLibraryClient,
+    *,
+    user_id: str,
+    job_id: str,
+    job: Mapping[str, object],
+    quality_state: Mapping[str, object],
+) -> list[dict[str, object]]:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    previous_rows = {
+        str(row.get("kind") or ""): dict(row)
+        for row in (dict(job.get("cloud_sync", {}) or {}).get("artifacts") or [])
+        if isinstance(row, Mapping) and row.get("kind")
+    }
+    uploaded: list[dict[str, object]] = []
+    direct_keys = (
+        "input",
+        "output",
+        "report_json",
+        "report_markdown",
+        "chess_verified_positions_pgn",
+        "chess_verified_positions_epub",
+        "chess_verified_fen_publication",
+        "chess_diagrams_verified",
+    )
+    for key in direct_keys:
+        artifact = artifacts.get(key)
+        path = _resolve_local_artifact_path(artifact if isinstance(artifact, dict) else None)
+        if path is None or not path.is_file():
+            continue
+        payload = path.read_bytes()
+        payload_sha = sha256(payload).hexdigest()
+        previous = previous_rows.get(key, {})
+        if previous.get("content_sha256") == payload_sha:
+            uploaded.append(previous)
+            continue
+        record = client.upload_artifact_bytes(
+            user_id=user_id,
+            job_id=job_id,
+            kind=key,
+            filename=str((artifact or {}).get("filename") or path.name),
+            data=payload,
+            content_type=str((artifact or {}).get("content_type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream"),
+            retention_days=365 if key == "input" else 90 if key.startswith("chess_") or key.startswith("report_") else 30,
+        )
+        uploaded.append({**record, "content_sha256": payload_sha})
+
+    if job.get("status") == "ready" and "report_json" not in {str(row.get("kind") or "") for row in uploaded}:
+        report_payload = build_quality_report_payload(
+            job_id,
+            job,
+            quality_state=quality_state,
+            output_size_bytes=_read_output_size_bytes(dict(job)),
+            include_text=False,
+        )
+        uploaded.append(
+            client.upload_artifact_bytes(
+                user_id=user_id,
+                job_id=job_id,
+                kind="report_json",
+                filename=f"{job_id}.quality.json",
+                data=json.dumps(report_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                content_type="application/json",
+            )
+        )
+
+    job_root = _local_artifact_job_dir(job_id)
+    if job_root is not None and (job_root / "review").is_dir():
+        from conversion_rebuild_bundle import build_conversion_rebuild_bundle
+
+        bundle, manifest = build_conversion_rebuild_bundle(job_root)
+        previous = previous_rows.get("chess_rebuild_bundle", {})
+        previous_manifest = previous.get("manifest") if isinstance(previous.get("manifest"), Mapping) else {}
+        if previous_manifest.get("bundle_sha256") == manifest["bundle_sha256"]:
+            uploaded.append(previous)
+        else:
+            record = client.upload_artifact_bytes(
+                user_id=user_id,
+                job_id=job_id,
+                kind="chess_rebuild_bundle",
+                filename=f"{job_id}.chess-rebuild.zip",
+                data=bundle,
+                content_type="application/zip",
+                retention_days=365,
+            )
+            uploaded.append({**record, "manifest": manifest})
+    return uploaded
+
+
 def _materialize_cloud_job_for_local_processing(job_id: str, cloud_job: dict) -> dict | None:
     if not cloud_job.get("cloud"):
         return cloud_job
@@ -5051,6 +5218,69 @@ def _materialize_cloud_job_for_local_processing(job_id: str, cloud_job: dict) ->
     job["output_size_bytes"] = len(data)
     _CONVERSION_JOB_STORE.create(job)
     return _get_conversion_job(job_id) or job
+
+
+def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) -> dict | None:
+    safe_job_id = _canonical_artifact_route_id(job_id)
+    if safe_job_id is None:
+        return None
+    artifacts = dict(job.get("artifacts", {}) or {})
+    from conversion_rebuild_bundle import RESTORE_MARKER_FILENAME
+
+    local_root = _artifact_job_root_for_id(safe_job_id)
+    if local_root is not None and (
+        (local_root / RESTORE_MARKER_FILENAME).is_file()
+        and (local_root / "review" / "fen_manual_review.html").is_file()
+        and (local_root / "semantic_chess_html" / "index.html").is_file()
+    ):
+        return _get_conversion_job(safe_job_id) or dict(job)
+    bundle = artifacts.get("chess_rebuild_bundle")
+    if not isinstance(bundle, Mapping):
+        return None
+    storage_path = str(bundle.get("storage_path") or "").strip()
+    if not storage_path:
+        return None
+    destination = (ARTIFACT_ROOT.resolve() / safe_job_id).resolve()
+    if destination.parent != ARTIFACT_ROOT.resolve():
+        return None
+    try:
+        from conversion_rebuild_bundle import restore_conversion_rebuild_bundle
+
+        data = _supabase_library_client().download_artifact_bytes(storage_path=storage_path)
+        restore_report = restore_conversion_rebuild_bundle(
+            data,
+            destination_root=destination,
+            expected_job_id=safe_job_id,
+        )
+        rebuilt = _rebuild_job_from_local_artifact_dir(destination)
+    except Exception as error:
+        app.logger.warning("Cloud rebuild bundle restore failed for %s: %s", safe_job_id, error)
+        return None
+    if not rebuilt:
+        return None
+
+    rebuilt_artifacts = dict(rebuilt.get("artifacts", {}) or {})
+    merged_artifacts = dict(artifacts)
+    for key, artifact in rebuilt_artifacts.items():
+        if key in {"input", "output"} and key in merged_artifacts:
+            continue
+        merged_artifacts[key] = artifact
+    current = _get_conversion_job(safe_job_id)
+    if current is None:
+        restored_job = dict(job)
+        restored_job["artifacts"] = merged_artifacts
+        restored_job["cloud_rebuild"] = restore_report
+        try:
+            _CONVERSION_JOB_STORE.create(restored_job)
+        except Exception:
+            return None
+    else:
+        _set_conversion_job(
+            safe_job_id,
+            artifacts=merged_artifacts,
+            cloud_rebuild=restore_report,
+        )
+    return _get_conversion_job(safe_job_id) or {**dict(job), "artifacts": merged_artifacts}
 
 
 def _active_conversion_job_count() -> int:
@@ -5426,6 +5656,15 @@ def _spawn_conversion_job(
                 error="",
                 error_code="",
             )
+            try:
+                verified_fen_reuse = _maybe_publish_source_bound_verified_fen(job_id)
+            except Exception as error:
+                app.logger.warning("Automatic verified FEN publication failed for %s: %s", job_id, error)
+                verified_fen_reuse = {
+                    "status": "failed",
+                    "reason": "verified_fen_reuse_failed",
+                }
+            _set_conversion_job(job_id, verified_fen_reuse=verified_fen_reuse)
             _store_quality_report_artifacts(job_id)
             _sync_job_to_cloud(job_id)
             _log_conversion_event(
@@ -7056,6 +7295,19 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             job_id=job_id,
         )
     key = _safe_artifact_key(artifact_key)
+    if key in {
+        "chess_reader",
+        "chess_pgn_html",
+        "chess_fen_review",
+        "chess_diagrams",
+        "chess_diagrams_verified",
+        "chess_verified_positions_pgn",
+        "chess_verified_positions_epub",
+        "chess_verified_fen_publication",
+    }:
+        restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
+        if restored_job is not None:
+            job = restored_job
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(job_id, job)
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get(key)
@@ -7201,6 +7453,11 @@ def convert_fen_manual_review_progress(job_id: str):
         )
     review_dir = _resolve_local_fen_review_dir(job_id, job)
     if review_dir is None:
+        restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
+        if restored_job is not None:
+            job = restored_job
+            review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
         return _json_error(
             "Nie znaleziono zestawu do oznaczania FEN.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -7299,6 +7556,8 @@ def convert_fen_manual_review_progress(job_id: str):
                 review_dir=review_dir,
                 review_payload=complete_review_payload,
             )
+            _store_quality_report_artifacts(job_id)
+            _sync_job_to_cloud(job_id)
         except Exception:
             app.logger.error("Verified FEN publication failed")
             payload["verified_fen_publication"] = {
@@ -7353,6 +7612,11 @@ def convert_publish_verified_fen(job_id: str):
         )
     review_dir = _resolve_local_fen_review_dir(job_id, job)
     if review_dir is None:
+        restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
+        if restored_job is not None:
+            job = restored_job
+            review_dir = _resolve_local_fen_review_dir(job_id, job)
+    if review_dir is None:
         return _json_error(
             "Nie znaleziono zestawu do oznaczania FEN.",
             error_code=ERROR_MISSING_OUTPUT,
@@ -7370,12 +7634,19 @@ def convert_publish_verified_fen(job_id: str):
     )
     try:
         review_payload = repository.load()
-        report = _publish_verified_fen_review_artifacts(
-            job_id,
-            job,
-            review_dir=review_dir,
-            review_payload=review_payload,
-        )
+        if review_payload.get("reused_from_artifact_id"):
+            report = _maybe_publish_source_bound_verified_fen(job_id)
+            if report.get("status") != "published":
+                raise ValueError("verified_fen_source_reuse_not_publishable")
+        else:
+            report = _publish_verified_fen_review_artifacts(
+                job_id,
+                job,
+                review_dir=review_dir,
+                review_payload=review_payload,
+            )
+        _store_quality_report_artifacts(job_id)
+        _sync_job_to_cloud(job_id)
     except Exception:
         app.logger.error("Verified FEN publication failed")
         return _json_error(
@@ -7401,6 +7672,10 @@ def convert_fen_manual_review_asset(job_id: str, asset_path: str):
         job = _get_conversion_job(job_id)
     if not job:
         job = _restore_local_artifact_job_by_id(job_id)
+    if job:
+        restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
+        if restored_job is not None:
+            job = restored_job
     if not job:
         return _json_error(
             "Nie znaleziono zadania konwersji.",
@@ -7465,6 +7740,9 @@ def convert_chess_pgn_html_asset(job_id: str, asset_path: str):
             phase="download",
             job_id=job_id,
         )
+    restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
+    if restored_job is not None:
+        job = restored_job
     artifacts = dict(job.get("artifacts", {}) or {})
     artifact = artifacts.get("chess_pgn_html")
     if not isinstance(artifact, dict):

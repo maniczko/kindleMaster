@@ -76,8 +76,8 @@ class ChessFenReviewRepository:
         payload.update(
             {
                 "revision": 0 if reused_from_artifact_id else int(database_payload.get("revision") or 0),
-                "session_status": "active" if reused_from_artifact_id else str(database_payload.get("session_status") or "active"),
-                "closed_at": "" if reused_from_artifact_id else str(database_payload.get("closed_at") or ""),
+                "session_status": str(database_payload.get("session_status") or "active"),
+                "closed_at": str(database_payload.get("closed_at") or ""),
                 "reused_from_artifact_id": reused_from_artifact_id,
             }
         )

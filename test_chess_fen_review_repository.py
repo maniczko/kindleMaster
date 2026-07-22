@@ -117,6 +117,36 @@ class ChessFenReviewRepositoryTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["verified"], 1)
         self.assertEqual(payload["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
 
+    def test_source_bound_reuse_preserves_complete_session_for_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            review_dir = Path(temp_dir) / "review"
+            seed = self._write_seed(review_dir)
+            database_row = self._verified_row(seed)
+            cloud = FakeCloudClient(
+                {
+                    "source_document_sha256": "a" * 64,
+                    "rows": [database_row],
+                    "summary": {"total": 1, "verified": 1},
+                    "saved_at": "2026-07-16T12:00:00Z",
+                    "session_status": "complete",
+                    "closed_at": "2026-07-16T12:00:00Z",
+                    "revision": 109,
+                    "reused_from_artifact_id": "source-artifact",
+                }
+            )
+
+            payload = ChessFenReviewRepository(
+                review_dir,
+                artifact_id="current-artifact",
+                owner_user_id="owner-1",
+                cloud_client=cloud,
+            ).load()
+
+        self.assertEqual(payload["session_status"], "complete")
+        self.assertEqual(payload["closed_at"], "2026-07-16T12:00:00Z")
+        self.assertEqual(payload["revision"], 0)
+        self.assertEqual(payload["reused_from_artifact_id"], "source-artifact")
+
     def test_stale_revision_is_not_silently_written_to_file_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             review_dir = Path(temp_dir) / "review"

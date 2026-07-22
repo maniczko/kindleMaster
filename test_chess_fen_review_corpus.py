@@ -127,6 +127,45 @@ class ChessFenReviewCorpusTests(unittest.TestCase):
             self.assertTrue(any(issue["code"] == "crop_sha256_mismatch" for issue in payload["issues"]))
             self.assertFalse((root / "out" / "review" / "fen_verified_labels.jsonl").exists())
 
+    def test_placement_only_rows_remain_auditable_without_blocking_verified_fen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            review_dir = root / "source-review"
+            review_payload = self._review_payload(review_dir)
+            placement_only = {
+                **review_payload["rows"][0],
+                "diagram_id": "p003-d1",
+                "diagram_fingerprint": "3" * 64,
+                "label_status": "placement_verified",
+                "manual_fen": "",
+                "fen_human_verified": False,
+            }
+            review_payload["rows"].append(placement_only)
+            review_payload["summary"].update(
+                {"total": 3, "placement_verified": 1}
+            )
+
+            payload = export_fen_review_corpus(
+                artifact_id="artifact-1",
+                out_dir=root / "out",
+                review_dir=review_dir,
+                cloud_client=FakeReviewClient(review_payload),
+            )
+
+            excluded = [
+                json.loads(line)
+                for line in Path(payload["artifacts"]["excluded"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(payload["status"], "passed")
+            self.assertEqual(payload["verified_count"], 1)
+            self.assertEqual(payload["excluded_count"], 2)
+            self.assertEqual(payload["placement_verified_count"], 1)
+            self.assertEqual(
+                {row["label_status"] for row in excluded},
+                {"unreadable", "placement_verified"},
+            )
+
     def test_export_fails_closed_on_duplicate_excluded_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

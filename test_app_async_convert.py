@@ -1249,6 +1249,7 @@ class AppAsyncConvertTests(unittest.TestCase):
             created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
         job["status"] = "ready"
+        job["user_id"] = user_id
         app_module._CONVERSION_JOB_STORE.create(job)
         requests: list[dict] = []
 
@@ -1286,6 +1287,7 @@ class AppAsyncConvertTests(unittest.TestCase):
             created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
         job["status"] = "ready"
+        job["user_id"] = user_id
         app_module._CONVERSION_JOB_STORE.create(job)
 
         with patch.object(app_module, "_resolve_request_auth_context", return_value=AuthContext(authenticated=True, user_id=user_id)), patch.object(

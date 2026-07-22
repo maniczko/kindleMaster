@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -6,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import app as app_module
 from conversion_job_access import create_job_access_token, guest_owner_id
+from durable_job_queue import DurableJobDatabase, SQLiteConversionJobStore
 from supabase_auth import AuthContext
 
 
@@ -210,6 +212,57 @@ class JobOwnershipRouteTests(unittest.TestCase):
         self.assertEqual(payload["import"]["source"], "disabled_for_public_guest")
         merge_cloud.assert_not_called()
         import_artifacts.assert_not_called()
+
+    def test_durable_store_guest_history_is_scoped_by_owner(self) -> None:
+        guest_a = "guest-session-aaaaaaaaaaaaaaaa"
+        guest_b = "guest-session-bbbbbbbbbbbbbbbb"
+        database = DurableJobDatabase(Path(self.store_temp_dir.name) / "runtime.sqlite3")
+        app_module._CONVERSION_JOB_STORE = SQLiteConversionJobStore(database)
+        self._register_job("job-guest-a", guest_id=guest_a)
+        self._register_job("job-guest-b", guest_id=guest_b)
+        self._register_job("job-ownerless")
+
+        response_a = self.client.get(
+            "/convert/jobs",
+            base_url="https://api.example.com",
+            headers={"X-KindleMaster-Guest-Id": guest_a},
+        )
+        response_b = self.client.get(
+            "/convert/jobs",
+            base_url="https://api.example.com",
+            headers={"X-KindleMaster-Guest-Id": guest_b},
+        )
+
+        self.assertEqual(response_a.status_code, 200)
+        self.assertEqual(response_b.status_code, 200)
+        self.assertEqual([job["job_id"] for job in response_a.get_json()["jobs"]], ["job-guest-a"])
+        self.assertEqual([job["job_id"] for job in response_b.get_json()["jobs"]], ["job-guest-b"])
+
+    def test_durable_store_records_guest_owner_when_starting_conversion(self) -> None:
+        guest_id = "guest-session-aaaaaaaaaaaaaaaa"
+        database = DurableJobDatabase(Path(self.store_temp_dir.name) / "runtime.sqlite3")
+        app_module._CONVERSION_JOB_STORE = SQLiteConversionJobStore(database)
+
+        with (
+            patch("app._active_conversion_job_count", return_value=0),
+            patch("app._store_artifact_bytes", return_value={"provider": "local", "kind": "input"}),
+            patch("app._submit_runtime_job", return_value={"mode": "durable"}),
+            patch("app._spawn_conversion_job") as spawn_job,
+        ):
+            response = self.client.post(
+                "/convert/start",
+                base_url="https://api.example.com",
+                headers={"X-KindleMaster-Guest-Id": guest_id},
+                data={"file": (io.BytesIO(b"%PDF-1.4\n"), "guest.pdf")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        job_id = response.get_json()["job_id"]
+        stored = app_module._CONVERSION_JOB_STORE.get(job_id)
+        self.assertEqual(stored["guest_owner_id"], guest_owner_id(guest_id))
+        self.assertNotIn("user_id", stored)
+        spawn_job.assert_called_once()
 
     def test_guest_cannot_delete_another_guest_job(self) -> None:
         guest_a = "guest-session-aaaaaaaaaaaaaaaa"

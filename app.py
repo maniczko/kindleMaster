@@ -76,7 +76,17 @@ from conversion_jobs import (
     recommended_poll_interval_ms as lifecycle_recommended_poll_interval_ms,
     should_timeout_job,
 )
-from conversion_job_access import is_local_request_host, legacy_local_guest_allowed
+from conversion_job_access import (
+    GUEST_ID_HEADER,
+    LEGACY_LOCAL_OWNER_ID,
+    JobOwner,
+    JobOwnerResolutionError,
+    apply_job_owner,
+    is_local_request_host,
+    job_owned_by,
+    legacy_local_guest_allowed,
+    resolve_job_owner,
+)
 from conversion_library import (
     LibraryFilters,
     build_library_index,
@@ -332,6 +342,24 @@ def _resolve_request_auth_context() -> AuthContext:
             )
         return AuthContext()
     return validate_bearer_token(token, config=config)
+
+
+def _resolve_request_job_owner(auth_context: AuthContext) -> JobOwner:
+    return resolve_job_owner(
+        authenticated=auth_context.authenticated,
+        user_id=auth_context.user_id,
+        guest_id=request.headers.get(GUEST_ID_HEADER),
+        request_host=request.host,
+    )
+
+
+def _json_job_owner_error(error: JobOwnerResolutionError):
+    return _json_error(
+        "Nie moĹĽna potwierdziÄ‡ wĹ‚aĹ›ciciela sesji konwersji.",
+        error_code=error.error_code,
+        status_code=401,
+        phase="auth",
+    )
 
 
 def _json_auth_error(context: AuthContext):
@@ -4599,12 +4627,15 @@ def _is_internal_library_job(job: dict) -> bool:
     return original_filename in _INTERNAL_LIBRARY_FILENAMES
 
 
-def _visible_conversion_jobs_snapshot() -> dict:
-    return {
+def _visible_conversion_jobs_snapshot(*, owner: JobOwner | None = None) -> dict:
+    jobs = {
         job_id: job
         for job_id, job in _CONVERSION_JOB_STORE.snapshot().items()
         if not _is_internal_library_job(dict(job))
     }
+    if owner is None:
+        return jobs
+    return {job_id: job for job_id, job in jobs.items() if job_owned_by(job, owner)}
 
 
 def _input_pdf_artifact(job: dict) -> dict:
@@ -4893,7 +4924,11 @@ def _build_cloud_jobs_payload(auth_context: AuthContext, *, limit: int) -> dict:
             "cloud_sync": {"status": "available", "provider": "supabase"},
         }
     except Exception as error:
-        jobs = _visible_conversion_jobs_snapshot()
+        owner = resolve_job_owner(authenticated=True, user_id=auth_context.user_id)
+        jobs = _visible_conversion_jobs_snapshot(owner=owner)
+        if is_local_request_host(request.host) and legacy_local_guest_allowed(request.host):
+            legacy_owner = JobOwner(kind="legacy_local", owner_id=LEGACY_LOCAL_OWNER_ID)
+            jobs.update(_visible_conversion_jobs_snapshot(owner=legacy_owner))
         recent_jobs = sorted(
             jobs.items(),
             key=lambda item: _conversion_job_sort_timestamp(item[1]),
@@ -5738,6 +5773,10 @@ def convert_start():
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
         return _json_auth_error(auth_context)
+    try:
+        request_owner = _resolve_request_job_owner(auth_context)
+    except JobOwnerResolutionError as error:
+        return _json_job_owner_error(error)
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     cloud_user, cloud_token = _authenticated_request_context()
@@ -5808,8 +5847,8 @@ def convert_start():
     job_record["runtime"] = runtime_metadata
     job_record["artifacts"] = {"input": input_artifact}
     job_record["artifact_storage"] = _artifact_storage_status()
+    apply_job_owner(job_record, request_owner)
     if auth_context.authenticated:
-        job_record["user_id"] = auth_context.user_id
         job_record["auth"] = {
             "provider": "supabase",
             "state": "authenticated",
@@ -5871,6 +5910,10 @@ def convert_jobs():
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
         return _json_auth_error(auth_context)
+    try:
+        request_owner = _resolve_request_job_owner(auth_context)
+    except JobOwnerResolutionError as error:
+        return _json_job_owner_error(error)
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     if auth_context.authenticated:
@@ -5886,7 +5929,7 @@ def convert_jobs():
     else:
         cloud_sync = {"status": "skipped", "reason": "public_guest_isolated"}
         import_result = {"imported": 0, "skipped": 0, "failed": 0, "source": "disabled_for_public_guest"}
-    jobs = _visible_conversion_jobs_snapshot()
+    jobs = _visible_conversion_jobs_snapshot(owner=request_owner)
     recent_jobs = sorted(
         jobs.items(),
         key=lambda item: _conversion_job_sort_timestamp(item[1]),
@@ -5921,10 +5964,22 @@ def convert_job_delete(job_id: str):
     auth_context = _resolve_request_auth_context()
     if auth_context.error:
         return _json_auth_error(auth_context)
+    try:
+        request_owner = _resolve_request_job_owner(auth_context)
+    except JobOwnerResolutionError as error:
+        if request.args.get("access"):
+            return _json_error(
+                "Nie znaleziono zadania konwersji.",
+                error_code=ERROR_MISSING_OUTPUT,
+                status_code=404,
+                phase="delete",
+                job_id=job_id,
+            )
+        return _json_job_owner_error(error)
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
-    job = _get_conversion_job(job_id)
     raw_local_job = _get_local_conversion_job_unscoped(job_id)
+    job = dict(raw_local_job) if job_owned_by(raw_local_job, request_owner) else None
     cloud_user, cloud_token = _authenticated_request_context()
     if not job and cloud_user and cloud_token:
         job = _load_supabase_conversion_jobs(

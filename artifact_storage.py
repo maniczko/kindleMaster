@@ -302,32 +302,24 @@ def _resolve_local_artifact_path(
     kind: ArtifactKind,
     safe_filename: str,
 ) -> Path:
-    resolved_root = Path(root).resolve()
-    # Components are separator-free and the resolved candidate is checked below.
-    # codeql[py/path-injection] The resolved candidate is rejected unless it remains below resolved_root.
-    candidate = (resolved_root / safe_job_id / kind.value / safe_filename).resolve()
-    try:
-        candidate.relative_to(resolved_root)
-    except ValueError as error:
-        raise ValueError("Artifact path must remain inside the configured storage root.") from error
-    return candidate
+    resolved_root = os.path.realpath(os.fspath(root))
+    candidate = os.path.realpath(os.path.join(resolved_root, safe_job_id, kind.value, safe_filename))
+    if not candidate.startswith(resolved_root + os.sep):
+        raise ValueError("Artifact path must remain inside the configured storage root.")
+    return Path(candidate)
 
 
 def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
-    resolved_root = Path(root).resolve()
-    # codeql[py/path-injection] Every filesystem sink uses the containment-checked resolved path below.
-    resolved_path = path.resolve()
-    try:
-        resolved_path.relative_to(resolved_root)
-    except ValueError as error:
-        raise ValueError("Artifact path must remain inside the configured storage root.") from error
+    resolved_root = os.path.realpath(os.fspath(root))
+    resolved_path_value = os.path.realpath(os.fspath(path))
+    if not resolved_path_value.startswith(resolved_root + os.sep):
+        raise ValueError("Artifact path must remain inside the configured storage root.")
+    resolved_path = Path(resolved_path_value)
 
     # All filesystem sinks below use the path proven relative to resolved_root.
-    # codeql[py/path-injection] resolved_path was proven relative to resolved_root above.
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     temp_prefix = f".{resolved_path.name}."
     temp_directory = resolved_path.parent
-    # codeql[py/path-injection] tempfile is created in the validated artifact directory.
     descriptor, raw_temp_path = tempfile.mkstemp(
         prefix=temp_prefix,
         suffix=".tmp",
@@ -339,7 +331,6 @@ def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        # codeql[py/path-injection] Both paths are inside the validated artifact directory.
         os.replace(temp_path, resolved_path)
         _fsync_directory(resolved_path.parent)
     except Exception:
@@ -348,7 +339,6 @@ def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
         except OSError:
             # The descriptor may already be owned and closed by fdopen.
             pass
-        # codeql[py/path-injection] temp_path was created in the validated artifact directory.
         temp_path.unlink(missing_ok=True)
         raise
 
@@ -356,7 +346,6 @@ def _atomic_write_bytes(root: str | Path, path: Path, data: bytes) -> None:
 def _fsync_directory(directory: Path) -> None:
     flags = getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY
     try:
-        # codeql[py/path-injection] directory is the validated parent of the artifact target.
         descriptor = os.open(directory, flags)
     except OSError:
         return

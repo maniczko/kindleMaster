@@ -141,6 +141,11 @@ class SupabaseLibraryTests(unittest.TestCase):
         self.assertIn("/storage/v1/object/kindlemaster-artifacts/user-id/job-1/output/Final.epub", upload_call["url"])
         self.assertEqual(upload_call["headers"]["x-upsert"], "true")
         self.assertIn("/rest/v1/conversion_artifacts", metadata_call["url"])
+        self.assertIn("on_conflict=job_id,user_id,kind,filename", metadata_call["url"])
+        self.assertEqual(
+            metadata_call["headers"]["Prefer"],
+            "resolution=merge-duplicates,return=representation",
+        )
         self.assertEqual(record["storage_path"], "user-id/job-1/output/Final.epub")
         self.assertEqual(record["kind"], "output")
 

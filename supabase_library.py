@@ -194,8 +194,12 @@ class SupabaseLibraryClient:
             "signed_url_metadata": {"created": False},
             "retention_days": retention_days or _retention_days_for_kind(kind),
         }
+        conflict_query = urllib.parse.urlencode(
+            {"on_conflict": "job_id,user_id,kind,filename"},
+            safe=",",
+        )
         result = self._request(
-            "/rest/v1/conversion_artifacts",
+            f"/rest/v1/conversion_artifacts?{conflict_query}",
             method="POST",
             headers={"Prefer": "resolution=merge-duplicates,return=representation"},
             payload=record,

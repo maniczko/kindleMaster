@@ -22,7 +22,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     KINDLEMASTER_BIND_HOST=0.0.0.0 \
     KINDLEMASTER_EPUBCHECK_JAR=/opt/epubcheck/epubcheck.jar \
     KINDLEMASTER_UPLOAD_DIR=/data/uploads \
-    KINDLEMASTER_ARTIFACT_ROOT=/data/output/artifacts
+    KINDLEMASTER_ARTIFACT_ROOT=/data/output/artifacts \
+    KINDLEMASTER_DURABLE_RUNTIME=1 \
+    KINDLEMASTER_DURABLE_DB_PATH=/data/kindlemaster/runtime.sqlite3
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -55,8 +57,11 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 COPY --from=ui-builder /ui/static/react ./static/react
 
-RUN mkdir -p /data/uploads /data/output/artifacts /data/reports /data/logs
+RUN mkdir -p /data/kindlemaster /data/uploads /data/output/artifacts /data/reports /data/logs
 
 EXPOSE 5001
 
-CMD ["python", "kindlemaster.py", "serve", "--runtime", "waitress"]
+# Local compatibility entrypoint remains available through:
+# CMD ["python", "kindlemaster.py", "serve", "--runtime", "waitress"]
+# Railway production uses the API/worker supervisor below.
+CMD ["python", "production_server.py"]

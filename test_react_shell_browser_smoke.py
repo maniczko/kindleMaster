@@ -9,12 +9,14 @@ import sys
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+GUEST_ACCESS_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{19,127}$"
 
 
 def _find_free_port() -> int:
@@ -156,7 +158,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
         }
 
         self.page.route(
-            "**/auth/config",
+            "**/auth/config**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -172,7 +174,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            "**/user/profile",
+            "**/user/profile**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -180,7 +182,7 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            "**/convert/delivery/config",
+            "**/convert/delivery/config**",
             lambda route: route.fulfill(
                 status=200,
                 content_type="application/json",
@@ -213,7 +215,12 @@ class ReactShellBrowserSmokeTests(unittest.TestCase):
 
         self.page.locator("h1", has_text="Biblioteka").wait_for()
         self.page.get_by_role("button", name="browser-smoke.pdf", exact=True).wait_for()
-        self.assertEqual(self.page.locator('a:has-text("PDF")').get_attribute("href"), "/convert/preview/job-browser/input")
+        pdf_href = self.page.locator('a:has-text("PDF")').get_attribute("href") or ""
+        parsed_pdf_href = urllib.parse.urlsplit(pdf_href)
+        self.assertEqual(parsed_pdf_href.path, "/convert/preview/job-browser/input")
+        guest_values = urllib.parse.parse_qs(parsed_pdf_href.query).get("km_guest", [])
+        self.assertEqual(len(guest_values), 1)
+        self.assertRegex(guest_values[0], GUEST_ACCESS_PATTERN)
 
         self.page.get_by_role("button", name="Otwórz").click()
         self.page.locator("h1", has_text="Szczegóły pliku").wait_for()

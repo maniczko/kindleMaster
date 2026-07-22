@@ -1,0 +1,49 @@
+name: Production Runtime
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  durable-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Bootstrap runtime
+        run: python kindlemaster.py bootstrap --runtime-only
+      - name: Compile production runtime
+        run: python -m py_compile artifact_storage.py durable_job_queue.py production_sqlite_connections.py production_store_compat.py production_runtime.py production_api_policy.py production_attempt_audit.py production_attempt_api.py production_queue_projection.py production_publication_guard.py production_api.py production_worker.py production_server.py
+      - name: Run durable queue, process, attempt and publication tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest -v \
+            production_tests.test_durable_job_queue \
+            production_tests.test_production_sqlite_connections \
+            production_tests.test_production_runtime \
+            production_tests.test_production_process_supervisor \
+            production_tests.test_production_attempt_audit \
+            production_tests.test_production_publication_guard \
+            production_tests.test_production_artifact_atomicity \
+            2>&1 | tee production-runtime-tests.log
+      - name: Upload production runtime test log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-runtime-test-log
+          path: production-runtime-tests.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify production entrypoint imports
+        env:
+          KINDLEMASTER_DURABLE_DB_PATH: ${{ runner.temp }}/kindlemaster/runtime.sqlite3
+        run: python -c "import production_api, production_server, production_worker; print('production runtime imports ok')"

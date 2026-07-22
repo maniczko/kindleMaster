@@ -96,7 +96,7 @@ The preferred local UI at `http://127.0.0.1:5001/` uses the Sprint 4 React shell
 
 ## Core Commands
 
-The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess`, `chess-study`, and `workflow`.
+The supported first-class command set is `bootstrap`, `doctor`, `prepare-reference-inputs`, `serve`, `convert`, `process`, `validate`, `report`, `review`, `smoke`, `corpus`, `status`, `ml`, `test`, `audit`, `chess`, `chess-release-gate`, `chess-study`, and `workflow`.
 
 ```powershell
 python kindlemaster.py doctor

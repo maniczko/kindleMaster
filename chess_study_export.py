@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from chess_diagram_fingerprint import DIAGRAM_FINGERPRINT_SCHEMA, source_document_sha256
 from chess_exercise_model import build_chess_exercise_model, exercise_to_reader_item
+from chess_semantic_release_gate import run_output_semantic_release_gate
 from chess_page_geometry import analyze_exercise_page_geometry, bbox_containment, order_geometry_items
 from chess_fen_runtime import DEFAULT_FEN_MODEL_PATH
 from chess_fen_square_model import predict_portable_fen_board
@@ -646,6 +647,7 @@ def run_chess_study_export(
             pdf_path=config.pdf,
             qa_report=qa_report,
             source_gate=source_gate,
+            integrity_mode=("strict" if config.strict_thresholds else None),
         )
     return qa_report
 
@@ -657,6 +659,7 @@ def rebuild_chess_source_html_export(
     pdf_path: str | Path | None = None,
     qa_report: dict[str, Any] | None = None,
     source_gate: dict[str, Any] | None = None,
+    integrity_mode: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild a semantic, asset-backed study reader from the PDF-layout HTML artifact.
 
@@ -739,9 +742,25 @@ def rebuild_chess_source_html_export(
     _write_source_html_reports(book_payload, diagrams_payload, reports_dir)
     _write_chess_reader_semantic_book_reports(out, semantic_book)
     _write_artifact_manifest(data_dir / "artifact_manifest.json", artifact_manifest)
+    reader_html = _semantic_source_index_html(book_payload)
+    integrity_report = run_output_semantic_release_gate(
+        semantic_book,
+        out_dir=out,
+        mode=integrity_mode,
+        book_payload=book_payload,
+        documents={"index.html": reader_html},
+    )
+    book_payload["semantic_release_gate"] = integrity_report.to_dict()
+    if integrity_report.exit_code:
+        return {
+            **book_payload,
+            "status": "failed",
+            "final_reader_missing": True,
+            "blocked_before_write": True,
+        }
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
-    (out / "index.html").write_text(_semantic_source_index_html(book_payload), encoding="utf-8")
+    (out / "index.html").write_text(reader_html, encoding="utf-8")
     _write_final_reader_health_gate(
         out,
         artifact_manifest=artifact_manifest,
@@ -2913,7 +2932,11 @@ def build_ai_assisted_quality_eval(out_dir: str | Path) -> dict[str, Any]:
     return payload
 
 
-def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
+def render_semantic_source_reader(
+    out_dir: str | Path,
+    *,
+    integrity_mode: str | None = None,
+) -> dict[str, Any]:
     out = Path(out_dir)
     book = _load_source_book(out)
     if not book:
@@ -2929,9 +2952,25 @@ def render_semantic_source_reader(out_dir: str | Path) -> dict[str, Any]:
         book["semantic_book"] = semantic_book
         _write_json(out / "data" / "book.json", book)
     _write_chess_reader_semantic_book_reports(out, semantic_book)
+    reader_html = _semantic_source_index_html(book)
+    integrity_report = run_output_semantic_release_gate(
+        semantic_book,
+        out_dir=out,
+        mode=integrity_mode,
+        book_payload=book,
+        documents={"index.html": reader_html},
+    )
+    if integrity_report.exit_code:
+        return {
+            "status": "failed",
+            "schema": "kindlemaster.semantic_source_reader.v1",
+            "out_dir": str(out),
+            "blocked_before_write": True,
+            "semantic_release_gate": integrity_report.to_dict(),
+        }
     (out / "styles.css").write_text(_semantic_source_styles_css(), encoding="utf-8")
     (out / "app.js").write_text(_semantic_source_app_js(), encoding="utf-8")
-    (out / "index.html").write_text(_semantic_source_index_html(book), encoding="utf-8")
+    (out / "index.html").write_text(reader_html, encoding="utf-8")
     page_count = len([page for page in book.get("pages") or [] if _semantic_source_page_elements(page)])
     return {
         "status": "ok",
@@ -4229,6 +4268,7 @@ def build_chess_reader_semantic_book(book: Mapping[str, Any]) -> dict[str, Any]:
         "pages": semantic_pages,
         "exercise_model_schema": exercise_payload["schema"],
         "exercise_model_warnings": exercise_payload["warnings"],
+        "exercise_navigation": exercise_payload.get("exercise_navigation"),
         "exercises": exercise_payload["exercises"],
     }
 
@@ -4247,6 +4287,7 @@ def _write_chess_reader_semantic_book_reports(out: Path, semantic_book: Mapping[
                 "warning_count": int(dict(payload.get("summary") or {}).get("exercise_warning_count") or 0),
             },
             "warnings": list(payload.get("exercise_model_warnings") or []),
+            "exercise_navigation": payload.get("exercise_navigation"),
             "exercises": list(payload.get("exercises") or []),
         },
     )
@@ -4538,7 +4579,15 @@ def _semantic_heading_anchor(page_number: int, block_index: int, text: str) -> s
 
 def _semantic_book_flow_html(semantic_book: Mapping[str, Any]) -> str:
     pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
-    exercises_by_page = _semantic_exercise_items_by_page(semantic_book)
+    exercise_items = _semantic_exercise_items(semantic_book)
+    exercises_by_page: dict[int, list[dict[str, Any]]] = {}
+    for item in exercise_items:
+        exercises_by_page.setdefault(int(item.get("source_page") or 0), []).append(item)
+    navigation_by_exercise = {
+        str(item.get("exercise_id") or ""): item
+        for item in exercise_items
+        if str(item.get("exercise_id") or "")
+    }
     multi_exercise_pages = {page_number for page_number, items in exercises_by_page.items() if len(items) > 1}
     exercise_ids = {
         str(item.get("exercise_id") or "")
@@ -4562,7 +4611,20 @@ def _semantic_book_flow_html(semantic_book: Mapping[str, Any]) -> str:
                 block_exercise_id = str(block.get("exercise_id") or "")
                 if block_exercise_id in exercise_ids and block_type in {"diagram", "exercise", "pgn", "solution"}:
                     continue
-                rendered = _semantic_book_block_html(block, page_number=page_number, block_index=block_index)
+                rendered_block = dict(block)
+                if block_type == "solution" and block_exercise_id in navigation_by_exercise:
+                    navigation_item = navigation_by_exercise[block_exercise_id]
+                    for key in (
+                        "navigation_status",
+                        "exercise_anchor",
+                        "solution_anchor",
+                        "solution_href",
+                        "exercise_href",
+                        "solution_link_text",
+                        "backlink_text",
+                    ):
+                        rendered_block[key] = navigation_item.get(key)
+                rendered = _semantic_book_block_html(rendered_block, page_number=page_number, block_index=block_index)
                 if rendered:
                     page_parts.append(rendered)
         if len(page_parts) > 1:
@@ -4580,18 +4642,17 @@ def _semantic_exercise_items_by_page(semantic_book: Mapping[str, Any]) -> dict[i
 def _semantic_exercise_items(semantic_book: Mapping[str, Any]) -> list[dict[str, Any]]:
     canonical_exercises = [item for item in semantic_book.get("exercises") or [] if isinstance(item, Mapping)]
     if canonical_exercises:
-        return [
-            {
-                **exercise_to_reader_item(item),
-                "label": _semantic_exercise_label(str(item.get("exercise_id") or "")),
-                "solution_id": (
-                    _reader_anchor("solution", item.get("exercise_id"), fallback="exercise")
-                    if isinstance(item.get("solution"), Mapping)
-                    else ""
-                ),
-            }
-            for item in canonical_exercises
-        ]
+        items: list[dict[str, Any]] = []
+        for item in canonical_exercises:
+            reader_item = exercise_to_reader_item(item)
+            reader_item["label"] = _semantic_exercise_label(str(item.get("exercise_id") or ""))
+            reader_item["solution_id"] = (
+                str(reader_item.get("solution_anchor") or "")
+                if reader_item.get("navigation_status") == "accepted"
+                else ""
+            )
+            items.append(reader_item)
+        return items
     pages = [page for page in semantic_book.get("pages") or [] if isinstance(page, Mapping)]
     diagrams_by_exercise: dict[str, dict[str, Any]] = {}
     exercises_by_id: dict[str, dict[str, Any]] = {}
@@ -4679,7 +4740,14 @@ def _semantic_exercise_grid_html(page_number: int, items: list[dict[str, Any]], 
     anchor_ids = anchor_solution_ids or set()
     cards = "\n".join(
         _semantic_exercise_card_html(
-            {**item, "_solution_anchor_target": str(item.get("exercise_id") or "") in anchor_ids},
+            {
+                **item,
+                "_solution_anchor_target": (
+                    str(item.get("exercise_id") or "") in anchor_ids
+                    and item.get("navigation_status") == "accepted"
+                    and bool(item.get("solution_anchor"))
+                ),
+            },
             compact=True,
         )
         for item in items
@@ -4738,7 +4806,18 @@ def _semantic_study_mode_card_html(item: Mapping[str, Any], *, index: int, total
 
 def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> str:
     exercise_id = str(item.get("exercise_id") or "")
-    card_id = _reader_anchor("exercise", exercise_id, fallback="exercise") if compact else _reader_anchor("study-exercise", exercise_id, fallback="exercise")
+    navigation_accepted = item.get("navigation_status") == "accepted"
+    canonical_exercise_anchor = str(item.get("exercise_anchor") or "") if navigation_accepted else ""
+    canonical_solution_anchor = str(item.get("solution_anchor") or "") if navigation_accepted else ""
+    card_id = (
+        canonical_exercise_anchor
+        if compact and canonical_exercise_anchor
+        else (
+            _reader_anchor("exercise", exercise_id, fallback="exercise")
+            if compact
+            else _reader_anchor("study-exercise", exercise_id, fallback="exercise")
+        )
+    )
     label = str(item.get("label") or _semantic_exercise_label(exercise_id))
     fen = str(item.get("fen") or "")
     fen_valid = False
@@ -4776,7 +4855,9 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
         book_line=book_line,
         variations=list(item.get("variations") or []),
         commentary=commentary,
-        linked_target=card_id,
+        linked_target=(card_id if not item.get("navigation_status") else ""),
+        linked_href=str(item.get("exercise_href") or "") if navigation_accepted else "",
+        linked_label=str(item.get("backlink_text") or "Open linked diagram"),
         original_source=original_crop_path,
     )
     original_html = (
@@ -4788,8 +4869,18 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
             '<strong>Original crop unavailable</strong></span>'
         )
     )
+    solution_link_html = (
+        f'<a class="copy-button secondary semantic-solution-link" href="{html.escape(str(item.get("solution_href") or ""), quote=True)}">'
+        f'{html.escape(str(item.get("solution_link_text") or f"Open solution for {label}"))}</a>'
+        if navigation_accepted and item.get("solution_href")
+        else ""
+    )
     analysis_link = f'<a class="copy-button secondary" href="#{html.escape(card_id, quote=True)}">Open analysis / board</a>'
-    solution_anchor_attr = f' id="{html.escape(_reader_anchor("solution", exercise_id, fallback="solution"), quote=True)}"' if item.get("_solution_anchor_target") else ""
+    solution_anchor_attr = (
+        f' id="{html.escape(canonical_solution_anchor, quote=True)}"'
+        if item.get("_solution_anchor_target") and canonical_solution_anchor
+        else ""
+    )
     kinds = ["exercise"]
     kinds.append("fen-available" if fen_available else "fen-unavailable")
     if pgn or book_line or best_move:
@@ -4823,6 +4914,7 @@ def _semantic_exercise_card_html(item: Mapping[str, Any], *, compact: bool) -> s
     <div class="board-placeholder exercise-board" data-fen="{html.escape(fen if fen_available else '', quote=True)}">{board_html}</div>
     <div class="exercise-actions">
       {copy_fen_html}
+      {solution_link_html}
       {analysis_link}
       {original_html}
     </div>
@@ -4842,6 +4934,8 @@ def _semantic_exercise_solution_html(
     variations: list[Any] | None = None,
     commentary: str,
     linked_target: str = "",
+    linked_href: str = "",
+    linked_label: str = "Open linked diagram",
     original_source: str = "",
 ) -> str:
     if not any([best_move, pgn, book_line, commentary, variations]):
@@ -4853,6 +4947,8 @@ def _semantic_exercise_solution_html(
         variations=variations or [],
         commentary=commentary,
         linked_target=linked_target,
+        linked_href=linked_href,
+        linked_label=linked_label,
         original_source=original_source,
     )
 
@@ -4860,7 +4956,19 @@ def _semantic_exercise_solution_html(
 def _semantic_solution_card_html(block: Mapping[str, Any], *, page_number: int) -> str:
     exercise_id = str(block.get("exercise_id") or "")
     label = _semantic_exercise_label(exercise_id)
-    linked_target = _reader_anchor("exercise", exercise_id, fallback="exercise") if exercise_id else _reader_anchor("diagram", block.get("diagram_id"), fallback="diagram")
+    navigation_status = str(block.get("navigation_status") or "")
+    navigation_accepted = navigation_status == "accepted"
+    linked_href = str(block.get("exercise_href") or "") if navigation_accepted else ""
+    linked_label = str(block.get("backlink_text") or "Open linked diagram")
+    linked_target = (
+        ""
+        if navigation_status
+        else (
+            _reader_anchor("exercise", exercise_id, fallback="exercise")
+            if exercise_id
+            else _reader_anchor("diagram", block.get("diagram_id"), fallback="diagram")
+        )
+    )
     pgn = str(block.get("pgn") or "")
     book_line = str(block.get("book_line") or "")
     best_move = str(block.get("best_move") or _semantic_best_move_from_line(pgn or book_line))
@@ -4875,9 +4983,15 @@ def _semantic_solution_card_html(block: Mapping[str, Any], *, page_number: int) 
         variations=variations,
         commentary=commentary,
         linked_target=linked_target,
+        linked_href=linked_href,
+        linked_label=linked_label,
         original_source=str(block.get("original_source_path") or ""),
     )
-    solution_id = _reader_anchor("solution", exercise_id or block.get("diagram_id"), fallback="solution")
+    solution_id = (
+        str(block.get("solution_anchor") or "")
+        if navigation_accepted and block.get("solution_anchor")
+        else _reader_anchor("solution", exercise_id or block.get("diagram_id"), fallback="solution")
+    )
     kinds = ["solution"]
     kinds.append("pgn-available" if pgn or book_line or best_move else "pgn-unavailable")
     if status not in {"available", "accepted", "verified"}:
@@ -4913,7 +5027,9 @@ def _semantic_solution_body_html(
     variations: list[Any],
     commentary: str,
     linked_target: str,
-    original_source: str,
+    linked_href: str = "",
+    linked_label: str = "Open linked diagram",
+    original_source: str = "",
 ) -> str:
     moves_value = _semantic_moves_only_text(pgn or book_line)
     copy_solution_value = "\n".join(part for part in [best_move, pgn or book_line, commentary] if str(part or "").strip())
@@ -4943,8 +5059,16 @@ def _semantic_solution_body_html(
         action_parts.append(_reader_copy_button("Copy moves only", moves_value, secondary=True, aria_label="Copy solution moves only"))
     if copy_solution_value:
         action_parts.append(_reader_copy_button("Copy solution text", copy_solution_value, secondary=True, aria_label="Copy full solution text"))
-    if linked_target:
-        action_parts.append(f'<a class="copy-button secondary" href="#{html.escape(linked_target, quote=True)}">Open linked diagram</a>')
+    if linked_href:
+        action_parts.append(
+            f'<a class="copy-button secondary semantic-exercise-backlink" href="{html.escape(linked_href, quote=True)}">'
+            f'{html.escape(linked_label)}</a>'
+        )
+    elif linked_target:
+        action_parts.append(
+            f'<a class="copy-button secondary" href="#{html.escape(linked_target, quote=True)}">'
+            f'{html.escape(linked_label)}</a>'
+        )
     if original_source:
         action_parts.append(f'<a class="copy-button secondary" href="{html.escape(original_source, quote=True)}">Open original source</a>')
     else:

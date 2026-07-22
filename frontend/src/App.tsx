@@ -588,10 +588,9 @@ function App() {
       const response = await apiFetch(`/convert/jobs/${encodeURIComponent(job.job_id)}`, { method: "DELETE" });
       const payload = await response.json().catch(() => ({}));
       if (response.status === 404) {
-        setJobs((current) => current.filter((item) => item.job_id !== job.job_id));
-        setActiveJob((current) => (current?.job_id === job.job_id ? null : current));
-        setError("Publikacja nie istnieje juz na serwerze. Usunieto nieaktualny wpis z biblioteki.");
-        return;
+        throw new Error(
+          payload.error || "Serwer nie potwierdził usunięcia publikacji. Odświeżono Bibliotekę bez ukrywania wpisu.",
+        );
       }
       if (!response.ok || payload.success === false) {
         throw new Error(payload.error || "Nie udało się usunąć publikacji.");
@@ -600,6 +599,7 @@ function App() {
       setActiveJob((current) => (current?.job_id === job.job_id ? null : current));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Nie udalo sie usunac publikacji.");
+      await loadJobs();
     }
   }
 
@@ -781,6 +781,12 @@ function App() {
             importLocalHistory={importLocalHistory}
             dismissImportPrompt={dismissImportPrompt}
           />
+        ) : null}
+
+        {activeView !== "convert" && error ? (
+          <p className="km-delivery-error" role="alert">
+            {error}
+          </p>
         ) : null}
 
         {activeView === "convert" ? (

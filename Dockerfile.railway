@@ -22,7 +22,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     KINDLEMASTER_BIND_HOST=0.0.0.0 \
     KINDLEMASTER_EPUBCHECK_JAR=/opt/epubcheck/epubcheck.jar \
     KINDLEMASTER_UPLOAD_DIR=/data/uploads \
-    KINDLEMASTER_ARTIFACT_ROOT=/data/output/artifacts
+    KINDLEMASTER_ARTIFACT_ROOT=/data/output/artifacts \
+    KINDLEMASTER_DURABLE_QUEUE_PATH=/data/queue/conversion_jobs.sqlite3 \
+    KINDLEMASTER_DURABLE_SOURCE_DIR=/data/queue/sources \
+    KINDLEMASTER_ADMISSION_DB_PATH=/data/queue/admission.sqlite3
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -55,8 +58,13 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 COPY --from=ui-builder /ui/static/react ./static/react
 
-RUN mkdir -p /data/uploads /data/output/artifacts /data/reports /data/logs
+RUN mkdir -p \
+    /data/uploads \
+    /data/output/artifacts \
+    /data/reports \
+    /data/logs \
+    /data/queue/sources
 
 EXPOSE 5001
 
-CMD ["python", "kindlemaster.py", "serve", "--runtime", "waitress"]
+CMD ["python", "production_server.py"]

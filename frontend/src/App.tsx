@@ -277,6 +277,7 @@ function App() {
   });
   const authClientRef = React.useRef<SupabaseClient | null>(null);
   const authSubscriptionRef = React.useRef<{ unsubscribe: () => void } | null>(null);
+  const loadJobsRequestIdRef = React.useRef(0);
   const [isBusy, setIsBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [settingsStatus, setSettingsStatus] = React.useState("");
@@ -294,8 +295,6 @@ function App() {
 
   React.useEffect(() => {
     void loadAuth();
-    void loadJobs();
-    void loadSettings();
     return () => {
       authSubscriptionRef.current?.unsubscribe();
       authSubscriptionRef.current = null;
@@ -303,6 +302,7 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    if (!authReady) return;
     if (account.authenticated) {
       setGuestMode(false);
       window.localStorage?.removeItem(startGuestModeStorageKey());
@@ -315,7 +315,7 @@ function App() {
       void loadJobs();
       void loadSettings();
     }
-  }, [account.authenticated, account.userId]);
+  }, [authReady, account.authenticated, account.userId]);
 
   async function loadAuth() {
     try {
@@ -383,16 +383,19 @@ function App() {
   }
 
   async function loadJobs() {
+    const requestId = ++loadJobsRequestIdRef.current;
     try {
       const response = await apiFetch("/convert/jobs?limit=100", { cache: "no-store" });
       const payload = await response.json();
+      if (requestId !== loadJobsRequestIdRef.current) return;
       const items = Array.isArray(payload.jobs) ? payload.jobs : Array.isArray(payload.items) ? payload.items : [];
       const recentJobs = items.slice(0, 100);
       setJobs(recentJobs);
       const hydratedJobs = await Promise.all(recentJobs.map(loadJobQualityState));
+      if (requestId !== loadJobsRequestIdRef.current) return;
       setJobs(hydratedJobs);
     } catch {
-      setJobs([]);
+      if (requestId === loadJobsRequestIdRef.current) setJobs([]);
     }
   }
 

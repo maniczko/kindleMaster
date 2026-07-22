@@ -37,10 +37,12 @@ jobs:
           production_guardrails.py
           production_security_events.py
           production_upload_limits.py
+          production_acceptance_target.py
           production_api.py
           production_worker.py
           production_server.py
           scripts/run_production_p0_acceptance.py
+          scripts/run_production_p0_staging_acceptance.py
       - name: Run durable queue, process, security and admission tests
         shell: bash
         run: |
@@ -58,6 +60,7 @@ jobs:
             production_tests.test_production_guardrails \
             production_tests.test_production_security_events \
             production_tests.test_production_upload_limits \
+            production_tests.test_production_acceptance_target \
             2>&1 | tee production-runtime-tests.log
       - name: Upload production runtime test log
         if: ${{ always() }}

@@ -30,6 +30,8 @@ jobs:
       KINDLEMASTER_STAGING_BASE_URL: ${{ secrets.KINDLEMASTER_STAGING_BASE_URL }}
       KINDLEMASTER_STAGING_BEARER_TOKEN: ${{ secrets.KINDLEMASTER_STAGING_BEARER_TOKEN }}
       KINDLEMASTER_STAGING_GUEST_CAPABILITY: ${{ secrets.KINDLEMASTER_STAGING_GUEST_CAPABILITY }}
+      KINDLEMASTER_STAGING_ALLOWED_HOSTS: ${{ secrets.KINDLEMASTER_STAGING_ALLOWED_HOSTS }}
+      KINDLEMASTER_PRODUCTION_HOSTS: ${{ secrets.KINDLEMASTER_PRODUCTION_HOSTS }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -48,10 +50,11 @@ jobs:
             echo "Configure a staging bearer token or a validated guest capability." >&2
             exit 1
           fi
+          python -m production_acceptance_target "${KINDLEMASTER_STAGING_BASE_URL}"
       - name: Run bounded P0 acceptance
         shell: bash
         run: |
-          python scripts/run_production_p0_acceptance.py \
+          python scripts/run_production_p0_staging_acceptance.py \
             --mode "${{ inputs.mode }}" \
             --conversion-timeout-seconds "${{ inputs.conversion_timeout_seconds }}" \
             --report-dir reports/production-p0-acceptance

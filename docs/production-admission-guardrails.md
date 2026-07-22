@@ -2,7 +2,7 @@
 
 Public conversion endpoints are protected by process-safe admission controls installed by `production_server.py`. Counters, queue state and concurrency decisions use the same SQLite database on the persistent `/data` volume.
 
-These controls limit accidental overload and automated abuse. They are not a replacement for job ownership authorization from #341.
+These controls limit accidental overload and automated abuse. They complement, but never replace, the ownership isolation and signed artifact boundary consolidated by PR #401 against #341.
 
 ## Default limits
 
@@ -111,17 +111,37 @@ image_pixel_limit
 
 ## Anonymous identity boundary
 
-The preferred guest identifier is the server-issued `X-KindleMaster-Guest-Capability` from #341. It is deliberately ignored while `KINDLEMASTER_TRUST_GUEST_CAPABILITY=0`, because an arbitrary client-supplied value would allow rate-limit rotation. Enable the flag only after #341 validates and binds the capability to the anonymous browser owner.
+The preferred guest identifier is the server-issued `X-KindleMaster-Guest-Capability` from the #341 ownership contract consolidated in PR #401. It is deliberately ignored by admission control while `KINDLEMASTER_TRUST_GUEST_CAPABILITY=0`, because trusting an arbitrary client-supplied value would allow rate-limit rotation.
 
-Until then, unauthenticated requests share a pseudonymous HMAC key derived from the connection address. User-Agent changes and random invalid Bearer tokens do not create authenticated identities or fresh limiter buckets. This fallback is admission-only and must never authorize access to a job or artifact.
+Enable the flag only in an environment where the canonical request guard validates the server-issued capability before admission-control identity is resolved. Otherwise unauthenticated requests share a pseudonymous HMAC key derived from the connection address. User-Agent changes and random invalid Bearer tokens do not create authenticated identities or fresh limiter buckets. This fallback is admission-only and never authorizes access to a job or artifact.
+
+## Staging acceptance target safety
+
+The manual `Production P0 Staging Acceptance` workflow is allowed to send a bounded request burst, so its target is validated before any upload is attempted.
+
+`production_acceptance_target.py` fails closed when:
+
+- the target is a known production host or a hostname containing a `production`/`prod` label;
+- a remote URL uses plain HTTP;
+- credentials are embedded in the URL;
+- the remote hostname has no clear `staging`, `stage`, `test`, `qa`, `preview` or `sandbox` marker and is not explicitly allowlisted.
+
+Additional configuration:
+
+```text
+KINDLEMASTER_STAGING_ALLOWED_HOSTS=<comma-separated exact staging hosts>
+KINDLEMASTER_PRODUCTION_HOSTS=<comma-separated additional production hosts>
+```
+
+The production denylist takes precedence over the staging allowlist. Loopback HTTP remains available for local verification. The GitHub workflow uses `scripts/run_production_p0_staging_acceptance.py`, which validates the target again before delegating to the acceptance runner.
 
 ## Validation
 
 ```powershell
-python -m unittest -v production_tests.test_production_capacity production_tests.test_production_guardrails
-python -m py_compile production_capacity_guard.py production_guardrails.py production_server.py
+python -m unittest -v production_tests.test_production_capacity production_tests.test_production_guardrails production_tests.test_production_acceptance_target
+python -m py_compile production_capacity_guard.py production_guardrails.py production_acceptance_target.py production_server.py
 python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Before public rollout, run a bounded staging abuse test covering burst starts, invalid-token rotation, capability rotation, polling floods, queue saturation, low disk, low memory, MIME mismatch, malformed PDF, DOCX path traversal and archive expansion.
+The code and permanent CI gate are complete on `main` through PRs #401 and #402. Before closing #376, run the protected staging workflow in `safe` and `bounded-abuse` modes, then execute queue-saturation, low-disk and memory-pressure scenarios in a non-production environment. Attach the generated JSON/Markdown reports and observed Railway resource limits to the issue.

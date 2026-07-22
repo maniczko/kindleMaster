@@ -20,7 +20,7 @@ jobs:
           python-version: "3.14"
       - name: Bootstrap runtime
         run: python kindlemaster.py bootstrap --runtime-only
-      - name: Compile production runtime and guardrails
+      - name: Compile production runtime, guardrails and acceptance runner
         run: >-
           python -m py_compile
           artifact_storage.py
@@ -40,6 +40,7 @@ jobs:
           production_api.py
           production_worker.py
           production_server.py
+          scripts/run_production_p0_acceptance.py
       - name: Run durable queue, process, security and admission tests
         shell: bash
         run: |

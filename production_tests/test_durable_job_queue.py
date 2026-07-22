@@ -144,7 +144,7 @@ class DurableJobQueueTests(unittest.TestCase):
         self.assertEqual(claimed[0]["attempt"], 1)
         self.assertEqual(self.queue.get("job-a").attempt, 1)
 
-    def test_expired_lease_from_exited_process_is_recovered(self) -> None:
+    def test_expired_lease_owned_by_exited_process_is_recovered(self) -> None:
         self.queue.enqueue(job_id="job-a", payload={}, max_attempts=3)
         context = multiprocessing.get_context("spawn")
 
@@ -152,7 +152,7 @@ class DurableJobQueueTests(unittest.TestCase):
         first_results = context.Queue()
         first_process = context.Process(
             target=_claim_job_in_process,
-            args=(str(self.database_path), "process-worker-a", 1, first_event, first_results),
+            args=(str(self.database_path), "process-worker-a", 30, first_event, first_results),
         )
         first_process.start()
         first_event.set()
@@ -162,7 +162,14 @@ class DurableJobQueueTests(unittest.TestCase):
         self.assertTrue(first["claimed"])
         self.assertEqual(first["attempt"], 1)
 
-        time.sleep(1.25)
+        # The production queue intentionally enforces a minimum 30-second lease.
+        # Advance only the persisted lease timestamp so this test remains fast and
+        # deterministic while both claims are still performed by separate processes.
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE durable_queue SET lease_expires_at = ? WHERE job_id = ?",
+                (time.time() - 1, "job-a"),
+            )
 
         second_event = context.Event()
         second_results = context.Queue()

@@ -16,11 +16,6 @@ on:
         type: number
         required: true
         default: 1200
-      chaos_wait_seconds:
-        description: Optional pause after enqueue; use this window to restart the staging API or worker
-        type: number
-        required: true
-        default: 0
 
 permissions:
   contents: read
@@ -59,7 +54,6 @@ jobs:
           python scripts/run_production_p0_acceptance.py \
             --mode "${{ inputs.mode }}" \
             --conversion-timeout-seconds "${{ inputs.conversion_timeout_seconds }}" \
-            --chaos-wait-seconds "${{ inputs.chaos_wait_seconds }}" \
             --report-dir reports/production-p0-acceptance
       - name: Upload acceptance evidence
         if: ${{ always() }}

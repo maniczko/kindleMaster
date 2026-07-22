@@ -46,7 +46,7 @@ The canonical job payload and the command queue are stored in the same SQLite da
 
 Existing code paths that read a job from `_CONVERSION_JOBS` and mutate the returned dictionary remain durable through write-through compatibility. The compatibility layer performs a three-way merge onto the freshest SQLite record so a stale API view cannot overwrite a newer worker status, heartbeat or artifact.
 
-## Idempotency
+## Idempotency and ownership
 
 Authenticated callers may send:
 
@@ -54,9 +54,9 @@ Authenticated callers may send:
 Idempotency-Key: <opaque-client-generated-key>
 ```
 
-The key is scoped to the authenticated owner. Repeating a start or retry request returns the canonical job rather than scheduling duplicate work. Raw bearer tokens and cloud access tokens are never persisted in queue payloads.
+The key is scoped to the verified owner. Repeating a start or retry request returns the canonical job rather than scheduling duplicate work. Raw bearer tokens and cloud access tokens are never persisted in queue payloads.
 
-Anonymous ownership and cross-browser isolation are finalized by #341. Until that change is merged, queue owner metadata for guests is job-scoped and is not an authorization mechanism.
+Ownership isolation, opaque guest sessions and signed read-only artifact access were consolidated into `main` by PR #401 against the #341 contract. Queue ownership metadata is an authorization scope only after the canonical request guard verifies the authenticated user or server-issued guest capability. A `job_id` alone never authorizes read, retry, deletion, cancellation or artifact access.
 
 ## Cancellation
 
@@ -105,4 +105,6 @@ python kindlemaster.py test --suite runtime
 python kindlemaster.py test --suite release
 ```
 
-Hosted acceptance must additionally execute `docs/qa/scenarios/durable-runtime-restart-recovery.md`, kill the API and worker children during active jobs, and confirm one canonical artifact, one terminal state and no duplicate execution.
+The code and permanent CI gate are complete on `main` through PRs #401 and #402. Closing #375 still requires hosted evidence from a non-production Railway environment: confirm the `/data` mount, interrupt API and worker children during active jobs, exercise supervisor/container recovery, and prove one canonical artifact with zero duplicate execution.
+
+Hosted acceptance must execute `docs/qa/scenarios/durable-runtime-restart-recovery.md`. The safe synthetic and idempotency checks run through `.github/workflows/production-p0-staging-acceptance.yml`; destructive child-process restart scenarios remain operator-controlled under #377.

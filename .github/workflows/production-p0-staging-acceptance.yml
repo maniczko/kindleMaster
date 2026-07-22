@@ -1,0 +1,65 @@
+name: Production P0 Staging Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Safe checks or a bounded rate-limit burst
+        type: choice
+        required: true
+        default: safe
+        options:
+          - safe
+          - bounded-abuse
+      conversion_timeout_seconds:
+        description: Maximum time to wait for the synthetic conversion
+        type: number
+        required: true
+        default: 1200
+
+permissions:
+  contents: read
+
+environment: staging
+
+jobs:
+  staging-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      KINDLEMASTER_STAGING_BASE_URL: ${{ secrets.KINDLEMASTER_STAGING_BASE_URL }}
+      KINDLEMASTER_STAGING_BEARER_TOKEN: ${{ secrets.KINDLEMASTER_STAGING_BEARER_TOKEN }}
+      KINDLEMASTER_STAGING_GUEST_CAPABILITY: ${{ secrets.KINDLEMASTER_STAGING_GUEST_CAPABILITY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Bootstrap runtime dependencies
+        run: python kindlemaster.py bootstrap --runtime-only
+      - name: Validate staging configuration
+        shell: bash
+        run: |
+          if [[ -z "${KINDLEMASTER_STAGING_BASE_URL}" ]]; then
+            echo "KINDLEMASTER_STAGING_BASE_URL is required in the staging environment." >&2
+            exit 1
+          fi
+          if [[ -z "${KINDLEMASTER_STAGING_BEARER_TOKEN}" && -z "${KINDLEMASTER_STAGING_GUEST_CAPABILITY}" ]]; then
+            echo "Configure a staging bearer token or a validated guest capability." >&2
+            exit 1
+          fi
+      - name: Run bounded P0 acceptance
+        shell: bash
+        run: |
+          python scripts/run_production_p0_acceptance.py \
+            --mode "${{ inputs.mode }}" \
+            --conversion-timeout-seconds "${{ inputs.conversion_timeout_seconds }}" \
+            --report-dir reports/production-p0-acceptance
+      - name: Upload acceptance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-p0-staging-acceptance
+          path: reports/production-p0-acceptance/
+          if-no-files-found: error
+          retention-days: 30

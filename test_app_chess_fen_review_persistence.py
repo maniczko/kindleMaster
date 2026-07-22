@@ -179,13 +179,30 @@ class AppChessFenReviewPersistenceTests(unittest.TestCase):
             {"status": "accepted", "fen": "fen-a", "fen_human_verified": True},
             {"status": "accepted", "fen": "fen-b", "fen_human_verified": False},
             {"status": "needs_review", "fen": "", "side_to_move": "unknown"},
+            {
+                "status": "needs_review",
+                "fen": "",
+                "side_to_move": "unknown",
+                "placement_human_verified": True,
+                "human_review_status": "placement_verified",
+            },
+            {
+                "status": "needs_review",
+                "fen": "",
+                "side_to_move": "unknown",
+                "human_review_status": "unreadable",
+            },
         ]
 
         summary = app_module._reader_sidecar_summary(positions)
 
         self.assertEqual(summary["fen_human_verified"], 1)
         self.assertEqual(summary["fen_automatic"], 1)
-        self.assertEqual(summary["fen_unrecognized"], 1)
+        self.assertEqual(summary["fen_unrecognized"], 3)
+        self.assertEqual(summary["fen_placement_verified"], 1)
+        self.assertEqual(summary["fen_unreadable"], 1)
+        self.assertEqual(summary["terminal_without_full_fen_count"], 2)
+        self.assertEqual(summary["needs_review_count"], 1)
 
     def test_new_conversion_reuses_only_complete_exact_source_review(self) -> None:
         class FakeReviewClient:

@@ -29,6 +29,9 @@ class ChessFenReviewUiPersistenceTests(unittest.TestCase):
         self.assertIn("/chess_fen_publish", rendered)
         self.assertIn("publishFen.addEventListener('click',publishVerifiedFenToServer)", rendered)
         self.assertIn("summary.fen_human_verified", rendered)
+        self.assertIn("summary.false_positive_candidates", rendered)
+        self.assertIn('id="metric-rejected"', rendered)
+        self.assertIn('id="metric-unreadable"', rendered)
 
     def test_review_ui_distinguishes_login_from_server_failure(self) -> None:
         row = {

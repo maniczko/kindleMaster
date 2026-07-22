@@ -1023,6 +1023,9 @@ def _diagram_record_to_reader_position(record: Mapping[str, object], index: int)
         "fen_source": "human_verified" if human_verified else str(record.get("fen_source") or "automatic"),
         "human_verified": bool(record.get("human_verified")),
         "fen_human_verified": human_verified,
+        "placement_human_verified": record.get("placement_human_verified") is True,
+        "human_review_status": str(record.get("human_review_status") or ""),
+        "confirmed_diagram": record.get("confirmed_diagram") is not False,
         "verification_source": str(record.get("verification_source") or ""),
         "verified_by": str(record.get("verified_by") or ""),
         "verified_at": str(record.get("verified_at") or ""),
@@ -1045,6 +1048,13 @@ def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, obj
     accepted = [item for item in positions if item.get("status") == "accepted" and item.get("fen")]
     human_verified = [item for item in accepted if item.get("fen_human_verified") is True]
     automatic = [item for item in accepted if item.get("fen_human_verified") is not True]
+    terminal_without_fen = [
+        item
+        for item in positions
+        if item.get("status") != "accepted"
+        and str(item.get("human_review_status") or "")
+        in {"placement_verified", "unreadable"}
+    ]
     return {
         "pages": max([int(item.get("diagram_page") or 0) for item in positions] or [0]),
         "diagrams_total": len(positions),
@@ -1052,7 +1062,20 @@ def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, obj
         "fen_human_verified": len(human_verified),
         "fen_automatic": len(automatic),
         "fen_unrecognized": len(positions) - len(accepted),
-        "needs_review_count": len([item for item in positions if item.get("status") != "accepted"]),
+        "fen_placement_verified": len(
+            [item for item in positions if item.get("placement_human_verified") is True]
+        ),
+        "fen_unreadable": len(
+            [item for item in positions if item.get("human_review_status") == "unreadable"]
+        ),
+        "terminal_without_full_fen_count": len(terminal_without_fen),
+        "needs_review_count": len(
+            [
+                item
+                for item in positions
+                if item.get("status") != "accepted" and item not in terminal_without_fen
+            ]
+        ),
         "side_unknown_count": side_unknown_count,
         "trusted_marker_count": len([item for item in positions if _app_trusted_marker_status(item.get("side_marker_status"))]),
         "side_marker_crop_count": len([item for item in positions if str(item.get("side_marker_crop_path") or "").strip()]),
@@ -1126,7 +1149,7 @@ def _publish_verified_fen_review_artifacts(
     diagram_records = [
         dict(record)
         for record in verified_payload.get("records") or []
-        if isinstance(record, Mapping)
+        if isinstance(record, Mapping) and record.get("publication_included") is not False
     ]
     positions = [
         _diagram_record_to_reader_position(record, index)

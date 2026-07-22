@@ -170,6 +170,104 @@ class ChessVerifiedFenPublicationTests(unittest.TestCase):
                         review_dir=review_dir,
                     )
 
+    def test_terminal_human_outcomes_define_real_diagram_denominator(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload, review_dir = self._fixture(root)
+            crop = review_dir / "fen_manual_assets" / "board.png"
+            crop_digest = hashlib.sha256(crop.read_bytes()).hexdigest()
+            records_payload = json.loads(
+                (root / "report" / "chess_diagrams.json").read_text(encoding="utf-8")
+            )
+
+            status_rows = []
+            for page, status in enumerate(
+                ("placement_verified", "rejected", "unreadable"),
+                start=3,
+            ):
+                diagram_id = f"layout-chess-p{page:03d}-d01"
+                fingerprint = hashlib.sha256(
+                    f"{payload['source_document_sha256']}:{diagram_id}:{page}".encode("utf-8")
+                ).hexdigest()
+                records_payload["records"].append(
+                    {
+                        "diagram_id": diagram_id,
+                        "page": page,
+                        "board_crop_path": "review/chess_fen/fen_manual_assets/board.png",
+                        "full_fen": FEN if status != "unreadable" else "",
+                        "full_fen_allowed": status != "unreadable",
+                        "full_fen_status": "FEN_MACHINE_ACCEPTED",
+                        "status": "accepted" if status != "unreadable" else "review",
+                        "requires_review": status == "unreadable",
+                    }
+                )
+                status_rows.append(
+                    {
+                        **payload["rows"][0],
+                        "diagram_id": diagram_id,
+                        "diagram_fingerprint": fingerprint,
+                        "page": page,
+                        "review_index": page,
+                        "crop_sha256": crop_digest,
+                        "label_status": status,
+                        "manual_fen": "",
+                        "fen_human_verified": False,
+                        "manual_side_to_move": "",
+                        "manual_side_evidence": "unknown",
+                    }
+                )
+            (root / "report" / "chess_diagrams.json").write_text(
+                json.dumps(records_payload),
+                encoding="utf-8",
+            )
+            payload["rows"].extend(status_rows)
+            payload["summary"].update(
+                {
+                    "total": 4,
+                    "verified": 1,
+                    "placement_verified": 1,
+                    "excluded": 2,
+                }
+            )
+
+            report = publish_verified_fen_artifacts(
+                artifact_id="artifact-verified-fen",
+                artifact_root=root,
+                review_payload=payload,
+                review_dir=review_dir,
+            )
+
+            summary = report["summary"]
+            self.assertEqual(summary["diagram_candidates_total"], 5)
+            self.assertEqual(summary["confirmed_diagrams_total"], 4)
+            self.assertEqual(summary["false_positive_candidates"], 1)
+            self.assertEqual(summary["fen_human_verified"], 1)
+            self.assertEqual(summary["fen_automatic"], 1)
+            self.assertEqual(summary["fen_placement_verified"], 1)
+            self.assertEqual(summary["fen_unreadable"], 1)
+            self.assertEqual(summary["fen_unrecognized"], 2)
+            self.assertEqual(summary["candidate_without_full_fen"], 3)
+            self.assertEqual(summary["full_fen_coverage"], 0.5)
+            self.assertEqual(summary["placement_or_fen_coverage"], 0.75)
+
+            verified = json.loads(
+                (root / "report" / "chess_diagrams_verified.json").read_text(encoding="utf-8")
+            )
+            by_status = {
+                row.get("human_review_status"): row
+                for row in verified["records"]
+                if row.get("human_review_status")
+            }
+            self.assertFalse(by_status["placement_verified"]["full_fen_allowed"])
+            self.assertTrue(by_status["placement_verified"]["placement_human_verified"])
+            self.assertFalse(by_status["rejected"]["publication_included"])
+            self.assertTrue(by_status["unreadable"]["publication_included"])
+
+            with zipfile.ZipFile(root / "output" / "chess_verified_positions.epub") as archive:
+                page = archive.read("EPUB/positions-001.xhtml").decode("utf-8")
+                self.assertNotIn('id="diagram-layout-chess-p004-d01"', page)
+                self.assertIn('id="diagram-layout-chess-p005-d01"', page)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,10 +11,24 @@ from chess_fen_review_store import (
     FenReviewStoreError,
     load_fen_review_progress,
     save_fen_review_progress,
+    summarize_fen_review_rows,
 )
 
 
 class ChessFenReviewStoreTests(unittest.TestCase):
+    def test_summary_separates_false_positives_from_unreadable_diagrams(self) -> None:
+        rows = [
+            {"label_status": "rejected", "verified_by": "reviewer"},
+            {"label_status": "unreadable", "verified_by": "reviewer"},
+        ]
+
+        summary = summarize_fen_review_rows(rows)
+
+        self.assertEqual(summary["rejected"], 1)
+        self.assertEqual(summary["unreadable"], 1)
+        self.assertEqual(summary["excluded"], 2)
+        self.assertEqual(summary["completed"], 2)
+
     def _seed_row(self, fingerprint: str, *, diagram_id: str) -> dict:
         return {
             "schema": "kindlemaster.fen_manual_review.row.v4",

@@ -78,6 +78,7 @@ from conversion_jobs import (
 )
 from conversion_job_access import (
     GUEST_ID_HEADER,
+    JOB_ACCESS_QUERY_PARAM,
     LEGACY_LOCAL_OWNER_ID,
     JobOwner,
     JobOwnerResolutionError,
@@ -86,6 +87,7 @@ from conversion_job_access import (
     job_owned_by,
     legacy_local_guest_allowed,
     resolve_job_owner,
+    verify_job_access_token,
 )
 from conversion_library import (
     LibraryFilters,
@@ -4424,6 +4426,32 @@ def _merge_cloud_jobs_into_store_for_request(*, limit: int | None = None) -> dic
     return {"status": "synced", "provider": "supabase", "imported": imported, "user_id": user_id}
 
 
+def _restore_cloud_job_for_signed_access(job_id: str) -> dict | None:
+    safe_job_id = _canonical_artifact_route_id(job_id)
+    access_token = str(request.args.get(JOB_ACCESS_QUERY_PARAM) or "").strip()
+    if safe_job_id is None or not verify_job_access_token(safe_job_id, access_token):
+        return None
+    try:
+        cloud_job = _supabase_library_client().get_job_by_id(job_id=safe_job_id)
+    except Exception as error:
+        app.logger.warning("Signed cloud job restore failed for %s: %s", safe_job_id, error)
+        return None
+    if not isinstance(cloud_job, dict):
+        return None
+    if (
+        str(cloud_job.get("job_id") or "").strip() != safe_job_id
+        or not str(cloud_job.get("user_id") or "").strip()
+        or cloud_job.get("cloud") is not True
+    ):
+        return None
+    try:
+        _CONVERSION_JOB_STORE.create(cloud_job)
+    except Exception as error:
+        app.logger.warning("Signed cloud job cache failed for %s: %s", safe_job_id, error)
+        return None
+    return _get_conversion_job(safe_job_id)
+
+
 def _authenticated_request_context() -> tuple[dict | None, str]:
     token = _request_bearer_token()
     if not token:
@@ -4683,6 +4711,26 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
     chess_delivery_payload = _enrich_job_chess_delivery_artifacts(response_job_id, job)
     download_state = _build_job_download_state(response_job_id, job)
     source_preview_url = _source_pdf_preview_url(response_job_id, job)
+    artifacts = dict(job.get("artifacts", {}) or {})
+    if not isinstance(artifacts.get("chess_fen_review"), Mapping):
+        job_root = _artifact_job_root_for_id(response_job_id)
+        review_path = job_root / "review" / "fen_manual_review.html" if job_root is not None else None
+        if review_path is not None and review_path.is_file():
+            review_artifact = _local_artifact_metadata(response_job_id, ArtifactKind.REPORT, review_path)
+            review_artifact["download_url"] = f"/convert/artifact/{response_job_id}/chess_fen_review"
+            review_artifact["label"] = "Oznaczanie FEN i markerow"
+            artifacts["chess_fen_review"] = review_artifact
+        elif isinstance(artifacts.get("chess_rebuild_bundle"), Mapping):
+            artifacts["chess_fen_review"] = {
+                "provider": "cloud_rebuild",
+                "status": "restorable",
+                "kind": "chess_fen_review",
+                "job_id": response_job_id,
+                "filename": "fen_manual_review.html",
+                "content_type": "text/html; charset=utf-8",
+                "download_url": f"/convert/artifact/{response_job_id}/chess_fen_review",
+                "label": "Oznaczanie FEN i markerow",
+            }
     item = {
         "job_id": response_job_id,
         "status": status,
@@ -4699,7 +4747,7 @@ def _build_conversion_job_history_item(job_id: str, job: dict) -> dict:
         "auto_repair": _build_job_auto_repair_state(job),
         "email_delivery": _build_job_email_delivery_state(job),
         "runtime": dict(job.get("runtime", {}) or {}),
-        "artifacts": dict(job.get("artifacts", {}) or {}),
+        "artifacts": artifacts,
         "artifact_storage": dict(job.get("artifact_storage", {}) or {}),
         "cloud_sync": dict(job.get("cloud_sync", {}) or {}),
     }
@@ -7284,6 +7332,8 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         # local store before deciding the artifact is missing.
         _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
         job = _get_conversion_job(job_id)
+    if not job:
+        job = _restore_cloud_job_for_signed_access(job_id)
     if not job:
         job = _restore_local_artifact_job_by_id(job_id)
     if not job:

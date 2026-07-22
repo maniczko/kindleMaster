@@ -239,6 +239,25 @@ class SupabaseLibraryClient:
         artifacts = self._fetch_artifacts_by_job(user_id=user_id, job_ids=[job_id]).get(job_id, [])
         return job_row_to_runtime_job(rows[0], artifacts=artifacts)
 
+    def get_job_by_id(self, *, job_id: str) -> dict[str, Any] | None:
+        """Load a cloud job after the caller has authorized its job-scoped capability."""
+        self._ensure_available()
+        query = urllib.parse.urlencode(
+            {
+                "job_id": f"eq.{job_id}",
+                "limit": "1",
+            }
+        )
+        rows = self._request(f"/rest/v1/conversion_jobs?{query}", method="GET")
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], Mapping):
+            return None
+        row = rows[0]
+        user_id = str(row.get("user_id") or "").strip()
+        if not user_id or str(row.get("job_id") or "").strip() != job_id:
+            return None
+        artifacts = self._fetch_artifacts_by_job(user_id=user_id, job_ids=[job_id]).get(job_id, [])
+        return job_row_to_runtime_job(row, artifacts=artifacts)
+
     def create_signed_artifact_url(
         self,
         *,

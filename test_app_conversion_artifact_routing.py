@@ -8,10 +8,12 @@ import unittest
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import app as app_module
 from app import app
 from artifact_storage import ArtifactKind
+from conversion_job_access import create_job_access_token
 
 
 class AppConversionArtifactRoutingTests(unittest.TestCase):
@@ -298,6 +300,94 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         assert job is not None
         self.assertEqual(job["status"], "ready")
         self.assertIn("chess_fen_review", job["artifacts"])
+
+    def test_signed_cloud_only_fen_review_is_rehydrated_after_restart(self) -> None:
+        job_id = "cloud-fen-review-after-restart"
+        review_dir = self._artifact_root(job_id) / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "fen_manual_review.html").write_text(
+            "<!doctype html><title>Cloud review restored</title>",
+            encoding="utf-8",
+        )
+        cloud_job = {
+            "job_id": job_id,
+            "user_id": "user-1",
+            "cloud": True,
+            "status": "ready",
+            "filename": "study.pdf",
+            "source_type": "pdf",
+            "artifacts": {},
+            "metadata": {},
+        }
+        cloud_client = MagicMock()
+        cloud_client.get_job_by_id.return_value = cloud_job
+
+        with (
+            patch.dict("os.environ", {"KINDLEMASTER_JOB_ACCESS_SECRET": "test-secret"}, clear=False),
+            patch("app._merge_cloud_jobs_into_store_for_request", return_value={"status": "local"}),
+            patch("app._ensure_local_artifact_history_loaded", return_value={"status": "skipped"}),
+            patch("app._supabase_library_client", return_value=cloud_client),
+        ):
+            token = create_job_access_token(job_id)
+            response = self.client.get(
+                f"/convert/artifact/{job_id}/chess_fen_review?access={token}",
+                base_url="https://api.example.com",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="metric-completed"', response.data)
+        cloud_client.get_job_by_id.assert_called_once_with(job_id=job_id)
+        cached_job = app_module._CONVERSION_JOB_STORE.get(job_id)
+        self.assertIsNotNone(cached_job)
+        self.assertEqual(cached_job["user_id"], "user-1")
+        response.close()
+
+    def test_invalid_capability_does_not_query_cloud_job_by_id(self) -> None:
+        job_id = "cloud-fen-review-invalid-access"
+        cloud_client = MagicMock()
+
+        with (
+            patch("app._merge_cloud_jobs_into_store_for_request", return_value={"status": "local"}),
+            patch("app._ensure_local_artifact_history_loaded", return_value={"status": "skipped"}),
+            patch("app._restore_local_artifact_job_by_id", return_value=None),
+            patch("app._supabase_library_client", return_value=cloud_client),
+        ):
+            response = self.client.get(
+                f"/convert/artifact/{job_id}/chess_fen_review?access=invalid",
+                base_url="https://api.example.com",
+            )
+
+        self.assertEqual(response.status_code, 404)
+        cloud_client.get_job_by_id.assert_not_called()
+        response.close()
+
+    def test_history_exposes_restorable_fen_review_route(self) -> None:
+        job_id = "cloud-fen-review-bundle"
+        item = app_module._build_conversion_job_history_item(
+            job_id,
+            {
+                "job_id": job_id,
+                "user_id": "user-1",
+                "cloud": True,
+                "status": "ready",
+                "filename": "study.pdf",
+                "source_type": "pdf",
+                "artifacts": {
+                    "chess_rebuild_bundle": {
+                        "provider": "supabase",
+                        "kind": "chess_rebuild_bundle",
+                        "storage_path": "user-1/cloud-fen-review-bundle/chess_rebuild_bundle/rebuild.zip",
+                    }
+                },
+            },
+        )
+
+        review = item["artifacts"]["chess_fen_review"]
+        self.assertEqual(review["status"], "restorable")
+        self.assertEqual(
+            review["download_url"],
+            f"/convert/artifact/{job_id}/chess_fen_review",
+        )
 
     def _register_chess_pgn_artifact(self, job_id: str, pgn_text: str) -> Path:
         job_root = self._artifact_root(job_id)

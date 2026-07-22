@@ -234,7 +234,17 @@ def _prepare_new_job_owner(store: ConversionJobStore, payload: dict[str, Any]) -
             raise Unauthorized(description="Conversion job owner does not match the authenticated user.")
         local_server_owned_job = identity.auth_error and identity.legacy_local and identity.bearer_present
         signed_existing_job = bool(existing and _read_allowed(job_id, existing, identity))
-        if not identity.authenticated and not local_server_owned_job and not signed_existing_job:
+        signed_cloud_read = bool(
+            request.method in {"GET", "HEAD"}
+            and payload.get("cloud") is True
+            and verify_job_access_token(job_id, _request_access_token())
+        )
+        if (
+            not identity.authenticated
+            and not local_server_owned_job
+            and not signed_existing_job
+            and not signed_cloud_read
+        ):
             raise Unauthorized(description="Authenticated ownership is required for this conversion job.")
         return payload
 

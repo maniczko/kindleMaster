@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,7 +6,9 @@ const supabaseMocks = vi.hoisted(() => {
   const client = {
     auth: {
       getSession: vi.fn(async () => ({ data: { session: null } })),
-      onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })),
+      onAuthStateChange: vi.fn((_callback: (...args: any[]) => void) => ({
+        data: { subscription: { unsubscribe: vi.fn() } },
+      })),
       signInWithPassword: vi.fn(async () => ({ data: { session: null }, error: null })),
       signUp: vi.fn(async () => ({ data: { session: null }, error: null })),
       signOut: vi.fn(async () => ({ error: null })),
@@ -94,7 +96,10 @@ describe("Premium React shell", () => {
     supabaseMocks.createClient.mockClear();
     supabaseMocks.client.auth.getSession.mockReset();
     supabaseMocks.client.auth.getSession.mockResolvedValue({ data: { session: null } });
-    supabaseMocks.client.auth.onAuthStateChange.mockClear();
+    supabaseMocks.client.auth.onAuthStateChange.mockReset();
+    supabaseMocks.client.auth.onAuthStateChange.mockReturnValue({
+      data: { subscription: { unsubscribe: vi.fn() } },
+    });
     supabaseMocks.client.auth.signInWithPassword.mockReset();
     supabaseMocks.client.auth.signInWithPassword.mockResolvedValue({ data: { session: null }, error: null });
     supabaseMocks.client.auth.signUp.mockReset();
@@ -310,6 +315,122 @@ describe("Premium React shell", () => {
       );
     });
     expect(await screen.findByText("Zaimportowano 2, pominięto 1.")).toBeInTheDocument();
+  });
+
+  it("waits for auth hydration before loading the publication library", async () => {
+    let resolveSession!: (value: { data: { session: null } }) => void;
+    supabaseMocks.client.auth.getSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSession = resolve;
+      }),
+    );
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/auth/config") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            auth: {
+              enabled: true,
+              configured: true,
+              supabase_url: "https://project.supabase.co",
+              publishable_key: "sb_publishable_public",
+            },
+          }),
+        };
+      }
+      if (url.startsWith("/convert/jobs")) return { ok: true, json: async () => ({ jobs: [] }) };
+      if (url === "/user/profile") return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      if (url === "/convert/delivery/config") return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/auth/config", { cache: "no-store" }));
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/convert/jobs"))).toBe(false);
+
+    await act(async () => resolveSession({ data: { session: null } }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/convert/jobs"))).toBe(true);
+    });
+  });
+
+  it("ignores a stale guest library response after the account session changes", async () => {
+    const accountSession = {
+      access_token: "access-token",
+      user: { id: "user-1", email: "reader@example.com" },
+    };
+    let authStateCallback!: (_event: string, session: typeof accountSession | null) => void;
+    let resolveGuestJobs!: (response: Response) => void;
+    const guestJobs = new Promise<Response>((resolve) => {
+      resolveGuestJobs = resolve;
+    });
+    let currentSession: typeof accountSession | null = null;
+
+    supabaseMocks.client.auth.getSession.mockImplementation(async () => ({ data: { session: currentSession } }) as any);
+    supabaseMocks.client.auth.onAuthStateChange.mockImplementation((callback: typeof authStateCallback) => {
+      authStateCallback = callback;
+      return { data: { subscription: { unsubscribe: vi.fn() } } };
+    });
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/auth/config") {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            auth: {
+              enabled: true,
+              configured: true,
+              supabase_url: "https://project.supabase.co",
+              publishable_key: "sb_publishable_public",
+            },
+          }),
+        };
+      }
+      if (url.startsWith("/convert/jobs")) {
+        const headers = init?.headers as Record<string, string> | undefined;
+        if (!headers?.Authorization) return guestJobs;
+        return { ok: true, json: async () => ({ jobs: [] }) };
+      }
+      if (url === "/user/profile") return { ok: true, json: async () => ({ success: true, profile: defaultProfile }) };
+      if (url === "/convert/delivery/config") return { ok: true, json: async () => ({ success: true, delivery: { configured: false } }) };
+      return { ok: true, json: async () => ({}) };
+    });
+
+    window.history.replaceState(null, "", "/#library");
+    render(<App />);
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/convert/jobs"))).toHaveLength(1);
+    });
+    currentSession = accountSession;
+    await act(async () => authStateCallback("SIGNED_IN", accountSession));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/convert/jobs"))).toHaveLength(2);
+    });
+
+    await act(async () => {
+      resolveGuestJobs({
+        ok: true,
+        json: async () => ({
+          jobs: [
+            {
+              job_id: "stale-local-job",
+              filename: "deleted-publication.pdf",
+              source_type: "pdf",
+              status: "ready",
+            },
+          ],
+        }),
+      } as Response);
+      await guestJobs;
+    });
+
+    expect(screen.queryByRole("button", { name: "deleted-publication.pdf" })).not.toBeInTheDocument();
   });
 
   it("enables conversion when a file is selected using profile defaults", async () => {

@@ -496,7 +496,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             lambda route: route.fulfill(status=200, content_type="application/json", body=_json_body(status_payload)),
         )
         page.route(
-            f"**/convert/download/{job_id}",
+            f"**/convert/download/{job_id}**",
             lambda route: route.fulfill(
                 status=200,
                 headers={
@@ -752,7 +752,7 @@ class UiStateScreenshotPackTests(unittest.TestCase):
             if expect_download:
                 page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
                 with page.expect_download(timeout=10000):
-                    page.locator(f'a[href="/convert/download/{job_id}"]').click()
+                    page.locator(f'a[href^="/convert/download/{job_id}"]').click()
             page.wait_for_function(
                 """(expected) => {
                   const text = document.body ? document.body.innerText || "" : "";

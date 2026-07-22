@@ -389,7 +389,7 @@ class Sprint2PlaywrightRuntimeSmokeTests(unittest.TestCase):
             ),
         )
         self.page.route(
-            f"**/convert/download/{job_id}",
+            f"**/convert/download/{job_id}**",
             lambda route: (
                 evidence.__setitem__("download_attempted", True),
                 route.fulfill(
@@ -429,7 +429,7 @@ class Sprint2PlaywrightRuntimeSmokeTests(unittest.TestCase):
         self.page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=30000)
 
         with self.page.expect_download() as download_info:
-            self.page.locator(f'a[href="/convert/download/{job_id}"]').click()
+            self.page.locator(f'a[href^="/convert/download/{job_id}"]').click()
         download = download_info.value
         self.assertIn("sprint2-smoke", download.suggested_filename)
 

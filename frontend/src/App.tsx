@@ -42,7 +42,7 @@ import {
   type AccountState,
   type AuthConfigPayload,
 } from "./lib/auth";
-import { apiRequestInput, apiUrl } from "./lib/api-base";
+import { GUEST_ACCESS_HEADER, apiRequestInput, apiUrl, getOrCreateGuestAccessId } from "./lib/api-base";
 import { normalizeQualityState, type NormalizedQualityState, type QualityStatePayload } from "./lib/quality-state";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -348,18 +348,19 @@ function App() {
   async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
     const token = await accessTokenFromClient(authClientRef.current);
     const requestInput = apiRequestInput(input);
-    if (!token) return fetch(requestInput, init);
     const baseHeaders =
       init.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
         : Array.isArray(init.headers)
           ? Object.fromEntries(init.headers)
           : { ...(init.headers as Record<string, string> | undefined) };
+    const guestAccessId = getOrCreateGuestAccessId();
     return fetch(requestInput, {
       ...init,
       headers: {
         ...baseHeaders,
-        Authorization: `Bearer ${token}`,
+        ...(guestAccessId ? { [GUEST_ACCESS_HEADER]: guestAccessId } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
   }

@@ -1052,7 +1052,7 @@ describe("Premium React shell", () => {
 
     expect(await screen.findByText("Naprawa zastosowana i jakość przeliczona ponownie.")).toBeInTheDocument();
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/convert/repair/job-blocked", { method: "POST" });
+      expect(fetchMock).toHaveBeenCalledWith("/convert/repair/job-blocked", expect.objectContaining({ method: "POST" }));
     });
   });
 
@@ -2258,7 +2258,7 @@ describe("Premium React shell", () => {
 
     expect(await screen.findByText("Naprawa zastosowana i jakość przeliczona ponownie.")).toBeInTheDocument();
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/convert/repair/job-blocked", { method: "POST" });
+      expect(fetchMock).toHaveBeenCalledWith("/convert/repair/job-blocked", expect.objectContaining({ method: "POST" }));
     });
   });
 

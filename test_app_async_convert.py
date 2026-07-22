@@ -1379,12 +1379,13 @@ class AppAsyncConvertTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertEqual(payload["cloud_delete"]["status"], "deleted")
-            self.assertEqual(payload["local_state_cleanup"]["status"], "deleted")
+            self.assertEqual(payload["local_state_cleanup"], {"status": "deleted"})
             self.assertIsNone(app_module._get_local_conversion_job_unscoped(job_id))
             marker = job_dir / app_module.DELETED_ARTIFACT_MARKER
             self.assertTrue(marker.is_file())
             self.assertFalse((job_dir / "report" / "debug.json").exists())
-            self.assertIsNone(app_module._rebuild_job_from_local_artifact_dir(job_dir))
+            with patch.object(app_module, "ARTIFACT_ROOT", artifact_root):
+                self.assertIsNone(app_module._restore_local_artifact_job_by_id(job_id))
             cloud_delete.assert_called_once_with("token", user_id, job_id)
 
     def test_authenticated_delete_is_idempotent_when_cloud_history_is_already_missing(self) -> None:

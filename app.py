@@ -2331,8 +2331,6 @@ def _source_type_from_filename(filename: str) -> str:
 
 
 def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
-    if (job_dir / DELETED_ARTIFACT_MARKER).is_file():
-        return None
     job_id = job_dir.name
     if not job_id or job_id.startswith("quality-"):
         return None
@@ -2650,6 +2648,9 @@ def _import_local_artifact_history() -> dict:
         for job_dir in sorted(root.iterdir(), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True):
             if not job_dir.is_dir():
                 continue
+            if _named_artifact_child(job_dir, DELETED_ARTIFACT_MARKER) is not None:
+                skipped += 1
+                continue
             if job_dir.name in existing:
                 skipped += 1
                 continue
@@ -2702,10 +2703,8 @@ def _restore_local_artifact_job_by_id(job_id: str) -> dict | None:
     if not safe_job_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_job_id):
         return None
 
-    configured_root = os.environ.get("KINDLEMASTER_ARTIFACT_ROOT")
-    root = (Path(configured_root) if configured_root else Path(app.root_path) / "output" / "artifacts").resolve()
-    job_dir = (root / safe_job_id).resolve()
-    if not _is_path_under(job_dir, root) or not job_dir.is_dir():
+    job_dir = _artifact_job_root_for_id(safe_job_id)
+    if job_dir is None or _named_artifact_child(job_dir, DELETED_ARTIFACT_MARKER) is not None:
         return None
 
     job = _rebuild_job_from_local_artifact_dir(job_dir)
@@ -4843,8 +4842,8 @@ def _cleanup_deleted_conversion_job_files(
             elif path.is_dir():
                 shutil.rmtree(path)
                 deleted_paths.append(str(path))
-        except Exception as error:
-            failed_paths.append({"path": raw_path, "error": str(error)})
+        except Exception:
+            failed_paths.append({"path": raw_path, "error": "local_artifact_cleanup_failed"})
 
     tombstone_path = ""
     artifact_job_dir = _local_artifact_job_dir(job_id) if remove_artifact_job_dir else None
@@ -4852,15 +4851,20 @@ def _cleanup_deleted_conversion_job_files(
         try:
             shutil.rmtree(artifact_job_dir)
             deleted_paths.append(str(artifact_job_dir))
-        except OSError as error:
-            failed_paths.append({"path": str(artifact_job_dir), "error": str(error)})
+        except OSError:
+            failed_paths.append({"path": str(artifact_job_dir), "error": "artifact_directory_cleanup_failed"})
         try:
             artifact_job_dir.mkdir(parents=True, exist_ok=True)
             marker = artifact_job_dir / DELETED_ARTIFACT_MARKER
             marker.write_text(datetime.now(UTC).isoformat().replace("+00:00", "Z"), encoding="utf-8")
             tombstone_path = str(marker)
-        except OSError as error:
-            failed_paths.append({"path": str(artifact_job_dir / DELETED_ARTIFACT_MARKER), "error": str(error)})
+        except OSError:
+            failed_paths.append(
+                {
+                    "path": str(artifact_job_dir / DELETED_ARTIFACT_MARKER),
+                    "error": "artifact_tombstone_write_failed",
+                }
+            )
 
     return {
         "job_id": job_id,
@@ -6029,9 +6033,7 @@ def convert_job_delete(job_id: str):
             "job_id": job_id,
             "status": "deleted",
             "cleanup": cleanup,
-            "local_state_cleanup": {
-                key: value for key, value in local_state_cleanup.items() if key != "job"
-            },
+            "local_state_cleanup": {"status": str(local_state_cleanup.get("status") or "unknown")},
             "cloud_delete": cloud_delete,
             "behavior_signal": behavior_signal,
         }

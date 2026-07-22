@@ -91,6 +91,8 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
                     process.kill()
 
     def _run_browser_probe(self, browser_name: str, launch_callable) -> dict:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
         try:
             browser = launch_callable()
         except Exception as exc:
@@ -164,23 +166,15 @@ class BrowserPrivacyDiagnosticsTests(unittest.TestCase):
                 }
                 """
             )
-            page.wait_for_function(
-                """() => {
-                  const text = document.body ? document.body.innerText || "" : "";
-                  return text.includes("Nowa konwersja") || text.includes("Kontynuuj lokalnie");
-                }""",
-                timeout=15000,
-            )
-            local_button = page.locator('[data-testid="continue-locally-button"]')
-            if local_button.count():
-                local_button.click()
-            page.wait_for_function(
-                """() => {
-                  const text = document.body ? document.body.innerText || "" : "";
-                  return text.includes("Nowa konwersja");
-                }""",
-                timeout=15000,
-            )
+            local_view_ready = """() => {
+              const text = document.body ? document.body.innerText || "" : "";
+              return text.includes("Nowa konwersja");
+            }"""
+            try:
+                page.wait_for_function(local_view_ready, timeout=15000)
+            except PlaywrightTimeoutError:
+                page.locator('[data-testid="continue-locally-button"]').click()
+                page.wait_for_function(local_view_ready, timeout=15000)
             page.locator('[data-testid="conversion-file-input"]').set_input_files(str(SAMPLE_PDF))
             page.locator('[data-testid="start-conversion-button"]').click()
             page.locator('[data-testid="file-details-view"]').wait_for(state="visible", timeout=120000)

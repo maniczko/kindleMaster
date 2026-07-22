@@ -3390,6 +3390,12 @@ def _get_conversion_job(job_id: str) -> dict | None:
     return _CONVERSION_JOB_STORE.get(job_id) or _recover_orphan_conversion_job(job_id)
 
 
+def _local_conversion_job_exists_unscoped(job_id: str) -> bool:
+    """Distinguish an absent job from one hidden by the ownership guard."""
+    with _CONVERSION_JOBS_LOCK:
+        return job_id in _CONVERSION_JOBS
+
+
 def _is_conversion_job_id(value: str | None) -> bool:
     normalized = str(value or "").strip().lower()
     return len(normalized) == 32 and all(char in "0123456789abcdef" for char in normalized)
@@ -5849,6 +5855,14 @@ def convert_job_delete(job_id: str):
     _mark_timed_out_conversion_jobs()
     _cleanup_expired_conversion_jobs()
     job = _get_conversion_job(job_id)
+    if not job and _local_conversion_job_exists_unscoped(job_id):
+        return _json_error(
+            "Nie znaleziono zadania konwersji.",
+            error_code=ERROR_MISSING_OUTPUT,
+            status_code=404,
+            phase="delete",
+            job_id=job_id,
+        )
     cloud_user, cloud_token = _authenticated_request_context()
     if not job and cloud_user and cloud_token:
         job = _load_supabase_conversion_jobs(

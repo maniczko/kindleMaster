@@ -78,6 +78,7 @@ class JobOwnershipRouteTests(unittest.TestCase):
 
         with (
             patch("conversion_job_store_security.validate_bearer_token", return_value=self._authenticated_context("user-a")),
+            patch("app.validate_bearer_token", return_value=self._authenticated_context("user-a")),
             patch("app._supabase_library_client", return_value=cloud_client),
         ):
             response = self.client.delete(
@@ -96,6 +97,7 @@ class JobOwnershipRouteTests(unittest.TestCase):
 
         with (
             patch("conversion_job_store_security.validate_bearer_token", return_value=self._authenticated_context("user-a")),
+            patch("app.validate_bearer_token", return_value=self._authenticated_context("user-a")),
             patch("app._supabase_library_client", return_value=cloud_client),
             patch("app._read_retry_input_artifact") as read_input,
         ):
@@ -111,9 +113,12 @@ class JobOwnershipRouteTests(unittest.TestCase):
     def test_authenticated_owner_can_delete_own_job(self) -> None:
         self._register_job("job-user-a", user_id="user-a")
 
-        with patch(
-            "conversion_job_store_security.validate_bearer_token",
-            return_value=self._authenticated_context("user-a"),
+        with (
+            patch(
+                "conversion_job_store_security.validate_bearer_token",
+                return_value=self._authenticated_context("user-a"),
+            ),
+            patch("app.validate_bearer_token", return_value=self._authenticated_context("user-a")),
         ):
             response = self.client.delete(
                 "/convert/jobs/job-user-a",

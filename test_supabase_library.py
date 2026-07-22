@@ -176,6 +176,43 @@ class SupabaseLibraryTests(unittest.TestCase):
         self.assertEqual(job["artifacts"]["output"]["provider"], "supabase")
         self.assertEqual(job["artifacts"]["output"]["storage_path"], "user-1/job-1/output/input.epub")
 
+    def test_get_job_by_id_loads_owner_and_artifacts_for_authorized_recovery(self) -> None:
+        transport = FakeTransport()
+        transport.queue(
+            [
+                {
+                    "job_id": "job-1",
+                    "user_id": "user-1",
+                    "status": "ready",
+                    "filename": "input.pdf",
+                    "source_type": "pdf",
+                }
+            ]
+        )
+        transport.queue(
+            [
+                {
+                    "job_id": "job-1",
+                    "user_id": "user-1",
+                    "kind": "chess_rebuild_bundle",
+                    "filename": "job-1.chess-rebuild.zip",
+                    "storage_bucket": "kindlemaster-artifacts",
+                    "storage_path": "user-1/job-1/chess_rebuild_bundle/job-1.chess-rebuild.zip",
+                }
+            ]
+        )
+        client = SupabaseLibraryClient(self._config(), transport=transport)
+
+        job = client.get_job_by_id(job_id="job-1")
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job["user_id"], "user-1")
+        self.assertTrue(job["cloud"])
+        self.assertIn("chess_rebuild_bundle", job["artifacts"])
+        self.assertIn("job_id=eq.job-1", transport.calls[0]["url"])
+        self.assertNotIn("user_id=", transport.calls[0]["url"])
+
     def test_import_local_jobs_skips_missing_outputs_and_reports_counts(self) -> None:
         transport = FakeTransport()
         transport.queue([{"job_id": "job-ready"}])

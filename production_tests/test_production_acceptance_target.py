@@ -27,6 +27,17 @@ class ProductionAcceptanceTargetTests(unittest.TestCase):
             validate_staging_target("https://kindlemaster-production.up.railway.app")
         self.assertEqual(context.exception.code, "production_target_blocked")
 
+    def test_production_denylist_takes_precedence_over_staging_allowlist(self) -> None:
+        with self.assertRaises(UnsafeAcceptanceTarget) as context:
+            validate_staging_target(
+                "https://api.example.com",
+                env={
+                    "KINDLEMASTER_PRODUCTION_HOSTS": "api.example.com",
+                    "KINDLEMASTER_STAGING_ALLOWED_HOSTS": "api.example.com",
+                },
+            )
+        self.assertEqual(context.exception.code, "production_target_blocked")
+
     def test_rejects_production_named_host_even_when_not_in_default_list(self) -> None:
         with self.assertRaises(UnsafeAcceptanceTarget) as context:
             validate_staging_target("https://kindlemaster-production-2.example.com")

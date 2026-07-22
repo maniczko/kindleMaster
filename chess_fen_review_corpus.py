@@ -22,6 +22,7 @@ from supabase_fen_review import SupabaseFenReviewClient
 CANONICAL_FEN_LABEL_SCHEMA = "kindlemaster.chess_fen_label.v2"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_ASSET_BYTES = 12 * 1024 * 1024
+_NON_FEN_TERMINAL_STATUSES = {"rejected", "unreadable", "placement_verified"}
 
 
 class FenReviewCorpusExportError(ValueError):
@@ -95,7 +96,7 @@ def export_fen_review_corpus(
             continue
         seen_fingerprints.add(fingerprint)
         status = str(row.get("label_status") or "").strip().lower()
-        if status in {"rejected", "unreadable"}:
+        if status in _NON_FEN_TERMINAL_STATUSES:
             excluded_rows.append(_excluded_audit_row(row))
             continue
         if status != "verified":
@@ -122,7 +123,9 @@ def export_fen_review_corpus(
             issues.append(_row_issue(row, str(exc)))
 
     expected_verified = int(summary.get("verified") or 0)
-    expected_excluded = int(summary.get("excluded") or summary.get("closed") or 0)
+    expected_excluded = int(summary.get("excluded") or summary.get("closed") or 0) + int(
+        summary.get("placement_verified") or 0
+    )
     if expected_verified and expected_verified != len(verified_rows):
         issues.append(
             {
@@ -180,6 +183,9 @@ def export_fen_review_corpus(
         "review_row_count": len(rows),
         "verified_count": len(verified_rows),
         "excluded_count": len(excluded_rows),
+        "placement_verified_count": sum(
+            1 for row in excluded_rows if str(row.get("label_status") or "").lower() == "placement_verified"
+        ),
         "issue_count": len(issues),
         "issues": issues,
         "validator": validator,

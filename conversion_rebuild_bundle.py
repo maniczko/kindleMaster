@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -13,15 +14,134 @@ from typing import Any
 
 
 SCHEMA = "kindlemaster.conversion_rebuild_bundle.v1"
+CHUNK_MANIFEST_SCHEMA = "kindlemaster.conversion_rebuild_bundle_chunks.v1"
 MANIFEST_PATH = "_kindlemaster/rebuild_manifest.json"
 RESTORE_MARKER_FILENAME = ".kindlemaster_rebuild_complete.json"
 MAX_FILE_COUNT = 10_000
 MAX_FILE_BYTES = 192 * 1024 * 1024
 MAX_TOTAL_BYTES = 768 * 1024 * 1024
+DEFAULT_STORAGE_CHUNK_BYTES = 45 * 1024 * 1024
 
 
 class ConversionRebuildBundleError(ValueError):
     pass
+
+
+def split_conversion_rebuild_bundle(
+    data: bytes,
+    *,
+    chunk_size_bytes: int = DEFAULT_STORAGE_CHUNK_BYTES,
+) -> tuple[list[bytes], dict[str, Any]]:
+    chunk_size = int(chunk_size_bytes)
+    if chunk_size <= 0:
+        raise ConversionRebuildBundleError("rebuild_chunk_size_invalid")
+    if not data:
+        raise ConversionRebuildBundleError("rebuild_bundle_empty")
+
+    parts = [data[offset : offset + chunk_size] for offset in range(0, len(data), chunk_size)]
+    manifest_parts = [
+        {
+            "index": index,
+            "kind": f"chess_rebuild_bundle_part_{index:04d}",
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        for index, payload in enumerate(parts, start=1)
+    ]
+    manifest = {
+        "schema": CHUNK_MANIFEST_SCHEMA,
+        "bundle_size_bytes": len(data),
+        "bundle_sha256": hashlib.sha256(data).hexdigest(),
+        "part_count": len(parts),
+        "parts": manifest_parts,
+    }
+    return parts, manifest
+
+
+def encode_conversion_rebuild_chunk_manifest(manifest: dict[str, Any]) -> bytes:
+    _validate_chunk_manifest(manifest)
+    return json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def decode_conversion_rebuild_chunk_manifest(data: bytes) -> dict[str, Any]:
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_invalid") from error
+    if not isinstance(manifest, dict):
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_invalid")
+    _validate_chunk_manifest(manifest)
+    return manifest
+
+
+def assemble_conversion_rebuild_bundle(
+    manifest: dict[str, Any],
+    part_payloads: dict[str, bytes],
+) -> bytes:
+    rows = _validate_chunk_manifest(manifest)
+    expected_kinds = {str(row["kind"]) for row in rows}
+    if set(part_payloads) != expected_kinds:
+        raise ConversionRebuildBundleError("rebuild_chunk_parts_mismatch")
+
+    ordered: list[bytes] = []
+    for row in rows:
+        kind = str(row["kind"])
+        payload = part_payloads[kind]
+        if len(payload) != int(row["size_bytes"]):
+            raise ConversionRebuildBundleError(f"rebuild_chunk_size_mismatch:{kind}")
+        if hashlib.sha256(payload).hexdigest() != str(row["sha256"]):
+            raise ConversionRebuildBundleError(f"rebuild_chunk_integrity_failed:{kind}")
+        ordered.append(payload)
+    bundle = b"".join(ordered)
+    if len(bundle) != int(manifest["bundle_size_bytes"]):
+        raise ConversionRebuildBundleError("rebuild_bundle_size_mismatch")
+    if hashlib.sha256(bundle).hexdigest() != str(manifest["bundle_sha256"]):
+        raise ConversionRebuildBundleError("rebuild_bundle_integrity_failed")
+    return bundle
+
+
+def _validate_chunk_manifest(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    if manifest.get("schema") != CHUNK_MANIFEST_SCHEMA:
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_schema_invalid")
+    rows = manifest.get("parts")
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_FILE_COUNT:
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_parts_invalid")
+    if int(manifest.get("part_count") or -1) != len(rows):
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_part_count_mismatch")
+    expected_indexes = list(range(1, len(rows) + 1))
+    indexes: list[int] = []
+    kinds: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ConversionRebuildBundleError("rebuild_chunk_manifest_row_invalid")
+        index = int(row.get("index") or 0)
+        kind = str(row.get("kind") or "")
+        expected_kind = f"chess_rebuild_bundle_part_{index:04d}"
+        digest = str(row.get("sha256") or "")
+        size_bytes = int(row.get("size_bytes") or 0)
+        if (
+            index <= 0
+            or kind != expected_kind
+            or size_bytes <= 0
+            or size_bytes > MAX_FILE_BYTES
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise ConversionRebuildBundleError("rebuild_chunk_manifest_row_invalid")
+        indexes.append(index)
+        kinds.append(kind)
+    if indexes != expected_indexes or len(kinds) != len(set(kinds)):
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_order_invalid")
+    bundle_size = int(manifest.get("bundle_size_bytes") or 0)
+    bundle_digest = str(manifest.get("bundle_sha256") or "")
+    if (
+        bundle_size <= 0
+        or bundle_size > MAX_TOTAL_BYTES
+        or sum(int(row["size_bytes"]) for row in rows) != bundle_size
+    ):
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_size_invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", bundle_digest):
+        raise ConversionRebuildBundleError("rebuild_chunk_manifest_digest_invalid")
+    return rows
 
 
 def build_conversion_rebuild_bundle(job_root: str | Path) -> tuple[bytes, dict[str, Any]]:

@@ -5099,6 +5099,21 @@ def _build_cloud_jobs_payload(auth_context: AuthContext, *, limit: int) -> dict:
         }
 
 
+class DurableArtifactSyncError(RuntimeError):
+    def __init__(self, *, uploaded: list[dict[str, object]], failures: list[dict[str, str]]) -> None:
+        super().__init__("durable_artifact_sync_incomplete")
+        self.uploaded = uploaded
+        self.failures = failures
+
+
+def _durable_storage_chunk_size_bytes(default_bytes: int) -> int:
+    try:
+        configured = int(os.environ.get("KINDLEMASTER_SUPABASE_OBJECT_MAX_BYTES", default_bytes))
+    except (TypeError, ValueError):
+        configured = default_bytes
+    return min(max(configured, 1), default_bytes)
+
+
 def _sync_job_to_cloud(job_id: str) -> dict:
     job = _get_conversion_job(job_id)
     if not job:
@@ -5123,6 +5138,17 @@ def _sync_job_to_cloud(job_id: str) -> dict:
             "provider": "supabase",
             "synced_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "artifacts": uploaded,
+        }
+        _set_conversion_job(job_id, cloud_sync=cloud_sync)
+        return cloud_sync
+    except DurableArtifactSyncError as error:
+        cloud_sync = {
+            "status": "partial" if error.uploaded else "failed",
+            "provider": "supabase",
+            "error": str(error),
+            "synced_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "artifacts": error.uploaded,
+            "failures": error.failures,
         }
         _set_conversion_job(job_id, cloud_sync=cloud_sync)
         return cloud_sync
@@ -5166,6 +5192,7 @@ def _upload_durable_job_artifacts(
         if isinstance(row, Mapping) and row.get("kind")
     }
     uploaded: list[dict[str, object]] = []
+    failures: list[dict[str, str]] = []
     direct_keys = (
         "input",
         "output",
@@ -5187,16 +5214,19 @@ def _upload_durable_job_artifacts(
         if previous.get("content_sha256") == payload_sha:
             uploaded.append(previous)
             continue
-        record = client.upload_artifact_bytes(
-            user_id=user_id,
-            job_id=job_id,
-            kind=key,
-            filename=str((artifact or {}).get("filename") or path.name),
-            data=payload,
-            content_type=str((artifact or {}).get("content_type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream"),
-            retention_days=365 if key == "input" else 90 if key.startswith("chess_") or key.startswith("report_") else 30,
-        )
-        uploaded.append({**record, "content_sha256": payload_sha})
+        try:
+            record = client.upload_artifact_bytes(
+                user_id=user_id,
+                job_id=job_id,
+                kind=key,
+                filename=str((artifact or {}).get("filename") or path.name),
+                data=payload,
+                content_type=str((artifact or {}).get("content_type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream"),
+                retention_days=365 if key == "input" else 90 if key.startswith("chess_") or key.startswith("report_") else 30,
+            )
+            uploaded.append({**record, "content_sha256": payload_sha})
+        except Exception as error:
+            failures.append({"kind": key, "error": str(error)})
 
     if job.get("status") == "ready" and "report_json" not in {str(row.get("kind") or "") for row in uploaded}:
         report_payload = build_quality_report_payload(
@@ -5206,37 +5236,89 @@ def _upload_durable_job_artifacts(
             output_size_bytes=_read_output_size_bytes(dict(job)),
             include_text=False,
         )
-        uploaded.append(
-            client.upload_artifact_bytes(
-                user_id=user_id,
-                job_id=job_id,
-                kind="report_json",
-                filename=f"{job_id}.quality.json",
-                data=json.dumps(report_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                content_type="application/json",
+        try:
+            uploaded.append(
+                client.upload_artifact_bytes(
+                    user_id=user_id,
+                    job_id=job_id,
+                    kind="report_json",
+                    filename=f"{job_id}.quality.json",
+                    data=json.dumps(report_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    content_type="application/json",
+                )
             )
-        )
+            failures = [row for row in failures if row.get("kind") != "report_json"]
+        except Exception as error:
+            if not any(row.get("kind") == "report_json" for row in failures):
+                failures.append({"kind": "report_json", "error": str(error)})
 
     job_root = _local_artifact_job_dir(job_id)
     if job_root is not None and (job_root / "review").is_dir():
-        from conversion_rebuild_bundle import build_conversion_rebuild_bundle
+        from conversion_rebuild_bundle import (
+            DEFAULT_STORAGE_CHUNK_BYTES,
+            build_conversion_rebuild_bundle,
+            encode_conversion_rebuild_chunk_manifest,
+            split_conversion_rebuild_bundle,
+        )
 
-        bundle, manifest = build_conversion_rebuild_bundle(job_root)
-        previous = previous_rows.get("chess_rebuild_bundle", {})
-        previous_manifest = previous.get("manifest") if isinstance(previous.get("manifest"), Mapping) else {}
-        if previous_manifest.get("bundle_sha256") == manifest["bundle_sha256"]:
-            uploaded.append(previous)
-        else:
-            record = client.upload_artifact_bytes(
-                user_id=user_id,
-                job_id=job_id,
-                kind="chess_rebuild_bundle",
-                filename=f"{job_id}.chess-rebuild.zip",
-                data=bundle,
-                content_type="application/zip",
-                retention_days=365,
-            )
-            uploaded.append({**record, "manifest": manifest})
+        try:
+            bundle, manifest = build_conversion_rebuild_bundle(job_root)
+            chunk_size = _durable_storage_chunk_size_bytes(DEFAULT_STORAGE_CHUNK_BYTES)
+            previous = previous_rows.get("chess_rebuild_bundle", {})
+            previous_manifest = previous.get("manifest") if isinstance(previous.get("manifest"), Mapping) else {}
+            if previous_manifest.get("bundle_sha256") == manifest["bundle_sha256"]:
+                uploaded.extend(
+                    row
+                    for kind, row in previous_rows.items()
+                    if kind == "chess_rebuild_bundle" or kind.startswith("chess_rebuild_bundle_part_")
+                )
+            elif len(bundle) <= chunk_size:
+                record = client.upload_artifact_bytes(
+                    user_id=user_id,
+                    job_id=job_id,
+                    kind="chess_rebuild_bundle",
+                    filename=f"{job_id}.chess-rebuild.zip",
+                    data=bundle,
+                    content_type="application/zip",
+                    retention_days=365,
+                )
+                uploaded.append({**record, "manifest": manifest})
+            else:
+                parts, chunk_manifest = split_conversion_rebuild_bundle(bundle, chunk_size_bytes=chunk_size)
+                part_upload_failed = False
+                for row, payload in zip(chunk_manifest["parts"], parts, strict=True):
+                    kind = str(row["kind"])
+                    try:
+                        record = client.upload_artifact_bytes(
+                            user_id=user_id,
+                            job_id=job_id,
+                            kind=kind,
+                            filename=f"{job_id}.chess-rebuild.zip.part{int(row['index']):04d}",
+                            data=payload,
+                            content_type="application/octet-stream",
+                            retention_days=365,
+                        )
+                        uploaded.append({**record, "content_sha256": row["sha256"]})
+                    except Exception as error:
+                        part_upload_failed = True
+                        failures.append({"kind": kind, "error": str(error)})
+                if not part_upload_failed:
+                    manifest_payload = encode_conversion_rebuild_chunk_manifest(chunk_manifest)
+                    record = client.upload_artifact_bytes(
+                        user_id=user_id,
+                        job_id=job_id,
+                        kind="chess_rebuild_bundle",
+                        filename=f"{job_id}.chess-rebuild.json",
+                        data=manifest_payload,
+                        content_type="application/json",
+                        retention_days=365,
+                    )
+                    uploaded.append({**record, "manifest": chunk_manifest})
+        except Exception as error:
+            failures.append({"kind": "chess_rebuild_bundle", "error": str(error)})
+
+    if failures:
+        raise DurableArtifactSyncError(uploaded=uploaded, failures=failures)
     return uploaded
 
 
@@ -5292,9 +5374,26 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
     if destination.parent != ARTIFACT_ROOT.resolve():
         return None
     try:
-        from conversion_rebuild_bundle import restore_conversion_rebuild_bundle
+        from conversion_rebuild_bundle import (
+            assemble_conversion_rebuild_bundle,
+            decode_conversion_rebuild_chunk_manifest,
+            restore_conversion_rebuild_bundle,
+        )
 
-        data = _supabase_library_client().download_artifact_bytes(storage_path=storage_path)
+        client = _supabase_library_client()
+        data = client.download_artifact_bytes(storage_path=storage_path)
+        if str(bundle.get("content_type") or "").lower() == "application/json" or str(
+            bundle.get("filename") or ""
+        ).lower().endswith(".json"):
+            chunk_manifest = decode_conversion_rebuild_chunk_manifest(data)
+            part_payloads: dict[str, bytes] = {}
+            for row in chunk_manifest["parts"]:
+                kind = str(row["kind"])
+                part = artifacts.get(kind)
+                if not isinstance(part, Mapping) or not str(part.get("storage_path") or "").strip():
+                    raise ValueError(f"cloud_rebuild_chunk_missing:{kind}")
+                part_payloads[kind] = client.download_artifact_bytes(storage_path=str(part["storage_path"]))
+            data = assemble_conversion_rebuild_bundle(chunk_manifest, part_payloads)
         restore_report = restore_conversion_rebuild_bundle(
             data,
             destination_root=destination,

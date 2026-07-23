@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import app as app_module
 from conversion_rebuild_bundle import (
+    RESTORE_MARKER_FILENAME,
     build_conversion_rebuild_bundle,
     encode_conversion_rebuild_chunk_manifest,
     split_conversion_rebuild_bundle,
@@ -343,6 +344,126 @@ class AppDurableArtifactSyncTests(unittest.TestCase):
         self.assertIsNotNone(restored)
         self.assertIn("chess_fen_review", restored["artifacts"])
         self.assertEqual(client.download_count, len(parts) + 1)
+
+    def test_refreshes_materialized_reader_when_chunk_manifest_changes(self) -> None:
+        job_id = "job-refresh"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_root = Path(temp_dir) / "source" / job_id
+            (source_root / "review").mkdir(parents=True)
+            (source_root / "semantic_chess_html").mkdir(parents=True)
+            (source_root / "review" / "fen_manual_review.html").write_text("review", encoding="utf-8")
+            reader_path = source_root / "semantic_chess_html" / "index.html"
+            reader_path.write_text("reader-v1", encoding="utf-8")
+            bundle_v1, _manifest_v1 = build_conversion_rebuild_bundle(source_root)
+            parts_v1, chunk_manifest_v1 = split_conversion_rebuild_bundle(bundle_v1, chunk_size_bytes=32)
+
+            reader_path.write_text("reader-v2", encoding="utf-8")
+            bundle_v2, _manifest_v2 = build_conversion_rebuild_bundle(source_root)
+            parts_v2, chunk_manifest_v2 = split_conversion_rebuild_bundle(bundle_v2, chunk_size_bytes=32)
+
+            manifest_path = "owner/job-refresh/chess-rebuild.json"
+            artifacts = {
+                "chess_rebuild_bundle": {
+                    "provider": "supabase",
+                    "filename": f"{job_id}.chess-rebuild.json",
+                    "content_type": "application/json",
+                    "storage_path": manifest_path,
+                }
+            }
+            payloads_v1 = {manifest_path: encode_conversion_rebuild_chunk_manifest(chunk_manifest_v1)}
+            payloads_v2 = {manifest_path: encode_conversion_rebuild_chunk_manifest(chunk_manifest_v2)}
+            for row, payload in zip(chunk_manifest_v1["parts"], parts_v1, strict=True):
+                storage_path = f"owner/job-refresh/{row['kind']}.part"
+                artifacts[row["kind"]] = {"provider": "supabase", "storage_path": storage_path}
+                payloads_v1[storage_path] = payload
+            for row, payload in zip(chunk_manifest_v2["parts"], parts_v2, strict=True):
+                storage_path = f"owner/job-refresh/{row['kind']}.part"
+                artifacts[row["kind"]] = {"provider": "supabase", "storage_path": storage_path}
+                payloads_v2[storage_path] = payload
+
+            cloud_root = Path(temp_dir) / "cloud"
+            cloud_root.mkdir()
+            job = app_module.build_conversion_job_record(
+                job_id=job_id,
+                source_path="",
+                source_type="pdf",
+                filename="source.pdf",
+                created_at="2026-07-23T10:00:00Z",
+            )
+            job.update({"status": "ready", "user_id": "owner", "cloud": True, "artifacts": artifacts})
+            app_module._CONVERSION_JOB_STORE.create(job)
+            try:
+                client_v1 = FakeDownloadClient(payloads_v1)
+                with (
+                    patch.object(app_module, "ARTIFACT_ROOT", cloud_root),
+                    patch.object(app_module, "_supabase_library_client", return_value=client_v1),
+                ):
+                    restored_v1 = app_module._materialize_cloud_rebuild_bundle(job_id, job)
+                marker_v1 = app_module._read_json_file(cloud_root / job_id / RESTORE_MARKER_FILENAME)
+
+                client_v2 = FakeDownloadClient(payloads_v2)
+                with (
+                    patch.object(app_module, "ARTIFACT_ROOT", cloud_root),
+                    patch.object(app_module, "_supabase_library_client", return_value=client_v2),
+                ):
+                    restored_v2 = app_module._materialize_cloud_rebuild_bundle(job_id, restored_v1 or job)
+                marker_v2 = app_module._read_json_file(cloud_root / job_id / RESTORE_MARKER_FILENAME)
+            finally:
+                with app_module._CONVERSION_JOBS_LOCK:
+                    app_module._CONVERSION_JOBS.pop(job_id, None)
+                app_module._CONVERSION_JOB_STORE.persist()
+
+            restored_reader = (cloud_root / job_id / "semantic_chess_html" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIsNotNone(restored_v2)
+        self.assertEqual(restored_reader, "reader-v2")
+        self.assertNotEqual(marker_v1["bundle_sha256"], marker_v2["bundle_sha256"])
+        self.assertEqual(marker_v2["bundle_sha256"], chunk_manifest_v2["bundle_sha256"])
+        self.assertEqual(client_v2.download_count, len(parts_v2) + 1)
+
+    def test_cloud_publication_artifacts_override_stale_rebuild_files(self) -> None:
+        cloud_epub = {
+            "provider": "supabase",
+            "storage_path": "owner/job/chess_verified_positions_epub/current.epub",
+            "size_bytes": 7,
+        }
+        rebuilt = {
+            "artifacts": {
+                "chess_verified_positions_epub": {
+                    "location": "stale/chess_verified_positions.epub",
+                    "size_bytes": 29,
+                },
+                "chess_pgn_html": {"location": "current/semantic_chess_html/index.html"},
+            }
+        }
+        job_id = "job-cloud-authoritative"
+        job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="source.pdf",
+            created_at="2026-07-23T10:00:00Z",
+        )
+        job["artifacts"] = {"chess_verified_positions_epub": cloud_epub}
+        app_module._CONVERSION_JOB_STORE.create(job)
+        try:
+            merged = app_module._merge_materialized_cloud_job(
+                job_id,
+                job=job,
+                cloud_artifacts=job["artifacts"],
+                rebuilt=rebuilt,
+                restore_report={"status": "restored"},
+            )
+        finally:
+            with app_module._CONVERSION_JOBS_LOCK:
+                app_module._CONVERSION_JOBS.pop(job_id, None)
+            app_module._CONVERSION_JOB_STORE.persist()
+
+        self.assertEqual(merged["artifacts"]["chess_verified_positions_epub"], cloud_epub)
+        self.assertEqual(
+            merged["artifacts"]["chess_pgn_html"]["location"],
+            "current/semantic_chess_html/index.html",
+        )
 
 
 if __name__ == "__main__":

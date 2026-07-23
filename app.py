@@ -5386,17 +5386,47 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
     if safe_job_id is None:
         return None
     artifacts = dict(job.get("artifacts", {}) or {})
-    from conversion_rebuild_bundle import RESTORE_MARKER_FILENAME
+    from conversion_rebuild_bundle import (
+        RESTORE_MARKER_FILENAME,
+        decode_conversion_rebuild_chunk_manifest,
+    )
 
     local_root = _artifact_job_root_for_id(safe_job_id)
-    if local_root is not None and (
+    local_bundle_ready = local_root is not None and (
         (local_root / RESTORE_MARKER_FILENAME).is_file()
         and (local_root / "review" / "fen_manual_review.html").is_file()
         and (local_root / "semantic_chess_html" / "index.html").is_file()
-    ):
+    )
+    bundle = artifacts.get("chess_rebuild_bundle")
+    if not isinstance(bundle, Mapping):
+        return None
+    storage_path = str(bundle.get("storage_path") or "").strip()
+    if not storage_path:
+        return None
+
+    client = _supabase_library_client()
+    bundle_payload: bytes | None = None
+    chunk_manifest: dict[str, object] | None = None
+    is_chunk_manifest = str(bundle.get("content_type") or "").lower() == "application/json" or str(
+        bundle.get("filename") or ""
+    ).lower().endswith(".json")
+    if local_bundle_ready and is_chunk_manifest:
+        try:
+            bundle_payload = client.download_artifact_bytes(storage_path=storage_path)
+            chunk_manifest = decode_conversion_rebuild_chunk_manifest(bundle_payload)
+        except Exception as error:
+            app.logger.warning("Cloud rebuild manifest check failed for %s: %s", safe_job_id, error)
+            return None
+        restore_marker = _read_json_file(local_root / RESTORE_MARKER_FILENAME)
+        local_bundle_ready = (
+            str(restore_marker.get("bundle_sha256") or "")
+            == str(chunk_manifest.get("bundle_sha256") or "")
+        )
+
+    if local_bundle_ready:
         try:
             _materialize_cloud_source_input(
-                _supabase_library_client(),
+                client,
                 artifacts=artifacts,
                 destination=local_root,
             )
@@ -5414,28 +5444,18 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
             rebuilt=rebuilt,
             restore_report=dict((current or job).get("cloud_rebuild", {}) or {"status": "already_restored"}),
         )
-    bundle = artifacts.get("chess_rebuild_bundle")
-    if not isinstance(bundle, Mapping):
-        return None
-    storage_path = str(bundle.get("storage_path") or "").strip()
-    if not storage_path:
-        return None
     destination = (ARTIFACT_ROOT.resolve() / safe_job_id).resolve()
     if destination.parent != ARTIFACT_ROOT.resolve():
         return None
     try:
         from conversion_rebuild_bundle import (
             assemble_conversion_rebuild_bundle,
-            decode_conversion_rebuild_chunk_manifest,
             restore_conversion_rebuild_bundle,
         )
 
-        client = _supabase_library_client()
-        data = client.download_artifact_bytes(storage_path=storage_path)
-        if str(bundle.get("content_type") or "").lower() == "application/json" or str(
-            bundle.get("filename") or ""
-        ).lower().endswith(".json"):
-            chunk_manifest = decode_conversion_rebuild_chunk_manifest(data)
+        data = bundle_payload if bundle_payload is not None else client.download_artifact_bytes(storage_path=storage_path)
+        if is_chunk_manifest:
+            chunk_manifest = chunk_manifest or decode_conversion_rebuild_chunk_manifest(data)
             part_payloads: dict[str, bytes] = {}
             for row in chunk_manifest["parts"]:
                 kind = str(row["kind"])
@@ -5480,8 +5500,18 @@ def _merge_materialized_cloud_job(
 ) -> dict | None:
     rebuilt_artifacts = dict(rebuilt.get("artifacts", {}) or {})
     merged_artifacts = dict(cloud_artifacts)
+    cloud_authoritative_keys = {
+        "input",
+        "output",
+        "report_json",
+        "report_markdown",
+        "chess_verified_positions_pgn",
+        "chess_verified_positions_epub",
+        "chess_verified_fen_publication",
+        "chess_diagrams_verified",
+    }
     for key, artifact in rebuilt_artifacts.items():
-        if key in {"input", "output"} and key in merged_artifacts:
+        if key in cloud_authoritative_keys and key in merged_artifacts:
             continue
         merged_artifacts[key] = artifact
     current = _get_conversion_job(job_id)

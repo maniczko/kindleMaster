@@ -248,6 +248,8 @@ def restore_conversion_rebuild_bundle(
                 "restored_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "file_count": len(written),
                 "total_uncompressed_bytes": total_bytes,
+                "bundle_size_bytes": len(data),
+                "bundle_sha256": hashlib.sha256(data).hexdigest(),
             },
             ensure_ascii=False,
             indent=2,

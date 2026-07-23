@@ -126,6 +126,11 @@ class ChessVerifiedFenPublicationTests(unittest.TestCase):
             self.assertTrue(first["fen_human_verified"])
             self.assertEqual(first["fen_source"], "human_verified_override")
             self.assertEqual(first["verified_board_crop_sha256"], payload["rows"][0]["crop_sha256"])
+            self.assertEqual(report["summary"]["verified_board_render_count"], 1)
+            self.assertTrue(first["rendered_svg"].startswith("assets/verified_fen/"))
+            self.assertTrue(
+                (root / "semantic_chess_html" / first["rendered_svg"]).is_file()
+            )
             pgn_text = (root / "report" / "chess_verified_positions.pgn").read_text(encoding="utf-8")
             self.assertEqual(pgn_text.count('[SetUp "1"]'), 2)
             with zipfile.ZipFile(root / "output" / "chess_verified_positions.epub") as archive:
@@ -134,6 +139,8 @@ class ChessVerifiedFenPublicationTests(unittest.TestCase):
                 page = archive.read("EPUB/positions-001.xhtml").decode("utf-8")
                 self.assertIn("Human verified FEN", page)
                 self.assertIn("Automatically accepted FEN", page)
+                self.assertIn('src="images/diagram-0001.svg"', page)
+                self.assertIn("EPUB/images/diagram-0001.svg", archive.namelist())
 
     def test_rejects_fingerprint_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -247,6 +254,7 @@ class ChessVerifiedFenPublicationTests(unittest.TestCase):
             self.assertEqual(summary["fen_unreadable"], 1)
             self.assertEqual(summary["fen_unrecognized"], 2)
             self.assertEqual(summary["candidate_without_full_fen"], 3)
+            self.assertEqual(summary["verified_board_render_count"], 2)
             self.assertEqual(summary["full_fen_coverage"], 0.5)
             self.assertEqual(summary["placement_or_fen_coverage"], 0.75)
 
@@ -260,6 +268,7 @@ class ChessVerifiedFenPublicationTests(unittest.TestCase):
             }
             self.assertFalse(by_status["placement_verified"]["full_fen_allowed"])
             self.assertTrue(by_status["placement_verified"]["placement_human_verified"])
+            self.assertTrue(by_status["placement_verified"]["rendered_svg"].startswith("assets/verified_fen/"))
             self.assertFalse(by_status["rejected"]["publication_included"])
             self.assertTrue(by_status["unreadable"]["publication_included"])
 

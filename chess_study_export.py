@@ -6027,6 +6027,14 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
     fen_candidate = str(diagram.get("fen_candidate") or "")
     image_path = str(diagram.get("original_crop_path") or diagram.get("image_path") or "")
     board_crop_path = str(diagram.get("board_crop_path") or diagram.get("source_crop") or diagram.get("image_path") or image_path)
+    verified_render_path = str(
+        diagram.get("rendered_diagram")
+        or diagram.get("rendered_svg")
+        or diagram.get("rendered_png")
+        or ""
+    )
+    if diagram.get("placement_human_verified") is True and verified_render_path:
+        board_crop_path = verified_render_path
     caption = str(diagram.get("caption") or diagram.get("id") or "Diagram")
     missing_reason = str(diagram.get("asset_missing_reason") or "source_asset_unavailable")
     marker_status = str(diagram.get("side_marker_status") or "")
@@ -6049,7 +6057,9 @@ def _semantic_source_diagram_html(diagram: dict[str, Any]) -> str:
         )
     )
     fallback_board_html = (
-        f'<img class="board-crop-fallback" src="{html.escape(board_crop_path, quote=True)}" alt="{html.escape(caption, quote=True)} board crop">'
+        f'<img class="board-crop-fallback{" verified-board-render" if board_crop_path == verified_render_path else ""}" '
+        f'src="{html.escape(board_crop_path, quote=True)}" alt="{html.escape(caption, quote=True)} '
+        f'{"verified board render" if board_crop_path == verified_render_path else "board crop"}">'
         if board_crop_path
         else '<span>Board crop unavailable.</span>'
     )

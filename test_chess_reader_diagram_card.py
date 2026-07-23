@@ -76,6 +76,25 @@ class ChessReaderDiagramCardTests(unittest.TestCase):
         self.assertIn("Moves unavailable", html)
         self.assertNotIn("Copy FEN", html)
 
+    def test_human_verified_placement_uses_generated_board_without_claiming_fen(self) -> None:
+        html = _semantic_source_diagram_html(
+            {
+                "id": "p010_d04",
+                "caption": "Diagram 1-6",
+                "page": 10,
+                "validation_status": "needs-human-review",
+                "fen": "",
+                "placement_human_verified": True,
+                "rendered_svg": "assets/verified_fen/p010_d04.svg",
+                "board_crop_path": "assets/diagrams/p010_d04.png",
+            }
+        )
+
+        self.assertIn("verified-board-render", html)
+        self.assertIn('src="assets/verified_fen/p010_d04.svg"', html)
+        self.assertIn("FEN unavailable", html)
+        self.assertNotIn("Copy FEN", html)
+
 
 if __name__ == "__main__":
     unittest.main()

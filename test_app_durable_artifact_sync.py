@@ -145,6 +145,65 @@ class AppDurableArtifactSyncTests(unittest.TestCase):
         self.assertIn("chess_pgn_html", first["artifacts"])
         self.assertEqual(client.download_count, 1)
 
+    def test_materializes_durable_source_input_with_cloud_rebuild_bundle(self) -> None:
+        job_id = "job-source-restore"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_root = Path(temp_dir) / "source" / job_id
+            (source_root / "review").mkdir(parents=True)
+            (source_root / "semantic_chess_html").mkdir(parents=True)
+            (source_root / "review" / "fen_manual_review.html").write_text("review", encoding="utf-8")
+            (source_root / "semantic_chess_html" / "index.html").write_text("reader", encoding="utf-8")
+            bundle, _manifest = build_conversion_rebuild_bundle(source_root)
+            bundle_path = "owner/job-source-restore/chess-rebuild.zip"
+            input_path = "owner/job-source-restore/input/source.pdf"
+            client = FakeDownloadClient({bundle_path: bundle, input_path: b"durable-pdf"})
+            cloud_root = Path(temp_dir) / "cloud"
+            cloud_root.mkdir()
+            job = app_module.build_conversion_job_record(
+                job_id=job_id,
+                source_path="",
+                source_type="pdf",
+                filename="source.pdf",
+                created_at="2026-07-22T10:00:00Z",
+            )
+            job.update(
+                {
+                    "status": "ready",
+                    "user_id": "owner",
+                    "cloud": True,
+                    "artifacts": {
+                        "input": {
+                            "provider": "supabase",
+                            "filename": "source.pdf",
+                            "size_bytes": len(b"durable-pdf"),
+                            "storage_path": input_path,
+                        },
+                        "chess_rebuild_bundle": {
+                            "provider": "supabase",
+                            "storage_path": bundle_path,
+                        },
+                    },
+                }
+            )
+            app_module._CONVERSION_JOB_STORE.create(job)
+            try:
+                with (
+                    patch.object(app_module, "ARTIFACT_ROOT", cloud_root),
+                    patch.object(app_module, "_supabase_library_client", return_value=client),
+                ):
+                    restored = app_module._materialize_cloud_rebuild_bundle(job_id, job)
+                    restored_again = app_module._materialize_cloud_rebuild_bundle(job_id, restored or job)
+            finally:
+                with app_module._CONVERSION_JOBS_LOCK:
+                    app_module._CONVERSION_JOBS.pop(job_id, None)
+                app_module._CONVERSION_JOB_STORE.persist()
+            restored_source = (cloud_root / job_id / "input" / "source.pdf").read_bytes()
+
+        self.assertIsNotNone(restored)
+        self.assertIsNotNone(restored_again)
+        self.assertEqual(restored_source, b"durable-pdf")
+        self.assertEqual(client.download_count, 2)
+
     def test_large_rebuild_bundle_uses_bounded_parts_and_json_commit_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "job-chunked"

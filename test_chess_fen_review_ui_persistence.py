@@ -32,6 +32,10 @@ class ChessFenReviewUiPersistenceTests(unittest.TestCase):
         self.assertIn("summary.false_positive_candidates", rendered)
         self.assertIn('id="metric-rejected"', rendered)
         self.assertIn('id="metric-unreadable"', rendered)
+        self.assertIn("Nowy diagram z etykiety", rendered)
+        self.assertIn('class="verified-render-board"', rendered)
+        self.assertIn("function renderVerifiedPreview(card,row,check)", rendered)
+        self.assertIn("Kandydat odrzucony jako false positive.", rendered)
 
     def test_review_ui_distinguishes_login_from_server_failure(self) -> None:
         row = {

@@ -442,6 +442,14 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       output.placement_human_verified = row.placement_human_verified === true;
       return output;
     }
+    function reviewRowsSignature(rows) {
+      const fields = ['diagram_fingerprint','square_labels','piece_labels_verified','manual_side_to_move','manual_side_evidence','manual_visible_marker','board_crop_label','marker_crop_label','label_status','status_migration','verified_by','verified_at','notes'];
+      return JSON.stringify(rows.map(row => {
+        const normalized = {};
+        for (const field of fields) normalized[field] = field === 'square_labels' ? (Array.isArray(row[field]) ? row[field] : []) : (row[field] ?? '');
+        return normalized;
+      }).sort((left,right) => String(left.diagram_fingerprint).localeCompare(String(right.diagram_fingerprint))));
+    }
     function placementCheck(cells) {
       if (!Array.isArray(cells) || cells.length !== 64) return {ok:false,message:'Siatka musi zawierać 64 pola.'};
       if (cells.some(piece => !Object.prototype.hasOwnProperty.call(pieceGlyphs,piece))) return {ok:false,message:'Siatka zawiera nieznaną klasę figury.'};
@@ -714,8 +722,9 @@ _PAGE_TEMPLATE = r"""<!doctype html>
           return false;
         }
         if (error.conflict) localStorage.setItem(conflictKey,'true');
-        setSaveState('error',error.conflict ? 'Konflikt wersji; wczytaj nowszy zapis' : 'Błąd zapisu; dane są w tej przeglądarce');
-        if (showToast || error.conflict) toast(error.conflict ? 'Inna sesja zapisała nowszą wersję. Twoje zmiany pozostały lokalnie; odśwież dane przed kolejnym zapisem.' : `Nie udało się zapisać na serwerze: ${error.message}`);
+        const saveError = String(error.message || 'Nieznany błąd zapisu.');
+        setSaveState('error',error.conflict ? 'Konflikt wersji; wczytaj nowszy zapis' : `Błąd zapisu: ${saveError}`);
+        if (showToast || error.conflict) toast(error.conflict ? 'Inna sesja zapisała nowszą wersję. Twoje zmiany pozostały lokalnie; odśwież dane przed kolejnym zapisem.' : `Nie udało się zapisać na serwerze: ${saveError}`);
         return false;
       } finally {
         serverSaveInFlight = false;
@@ -733,9 +742,15 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         const serverSavedAt = Date.parse(payload.saved_at || '') || 0;
         serverRevision = Number(payload.revision || 0);
         applySessionStatus(payload.session_status || 'active');
+        const serverRowsByFingerprint = new Map(payload.rows.map(row => [String(row.diagram_fingerprint || ''),row]));
+        const localRowsMatchServer = reviewRowsSignature(cards.map(rowFor)) === reviewRowsSignature(cards.map(card => {
+          const serverRow = serverRowsByFingerprint.get(card.dataset.fingerprint);
+          return serverRow ? normalizeImported(serverRow,card) : seedRow(card);
+        }));
         // A completed server session is canonical. Local state may have a newer
-        // timestamp from an earlier browser session, but it can no longer be saved.
-        const keepLocal = sessionStatus !== 'complete' && Object.keys(state).length > 0 && localModifiedAt > serverSavedAt;
+        // timestamp from an earlier browser session. Do not resend an identical
+        // review just because the browser clock is newer than the server cache.
+        const keepLocal = sessionStatus !== 'complete' && Object.keys(state).length > 0 && localModifiedAt > serverSavedAt && !localRowsMatchServer;
         if (!keepLocal) {
           serverSavePending = false;
           state = {};

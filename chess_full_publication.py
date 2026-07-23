@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import shutil
+import time
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -365,6 +366,9 @@ def publish_full_chess_publication(
         title=_package_title(package_payload),
         spine_documents=spine_documents,
         member_bytes=final_member_bytes,
+        artifact_root=root,
+        verified_records=records,
+        accepted_pgn_payload=accepted_pgn,
         full_fen_count=full_fen_count,
         placement_count=placement_count,
         source_diagram_count=source_crop_count,
@@ -526,6 +530,9 @@ def _build_full_reader(
     title: str,
     spine_documents: Sequence[str],
     member_bytes: Mapping[str, bytes],
+    artifact_root: Path,
+    verified_records: Sequence[Mapping[str, Any]],
+    accepted_pgn_payload: bytes,
     full_fen_count: int,
     placement_count: int,
     source_diagram_count: int,
@@ -545,7 +552,20 @@ def _build_full_reader(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
 
+    diagram_assets = _reader_diagram_assets(
+        spine_documents=spine_documents,
+        member_bytes=member_bytes,
+    )
+    diagram_records_by_page: dict[int, list[Mapping[str, Any]]] = {}
+    for record in verified_records:
+        if _record_is_confirmed_diagram(record):
+            diagram_records_by_page.setdefault(_diagram_page(record), []).append(record)
+
     sections: list[str] = []
+    notation_cards: list[str] = []
+    notation_seen: set[str] = set()
+    notation_blocker_count = 0
+    notation_question_mark_count = 0
     visible_chars = 0
     spine_index = {
         document_path: index
@@ -591,6 +611,72 @@ def _build_full_reader(
                 )
         section_text = body.get_text(" ", strip=True)
         visible_chars += len(section_text)
+        for notation_index, node in enumerate(
+            body.select(
+                ".chess-notation-page, .chess-notation-text, .notation-heavy"
+            ),
+            start=1,
+        ):
+            if node.find_parent(
+                class_=lambda value: value
+                and any(
+                    token in {
+                        "chess-notation-page",
+                        "chess-notation-text",
+                        "notation-heavy",
+                    }
+                    for token in str(value).split()
+                )
+            ):
+                continue
+            page_number = _notation_page_number(node)
+            for fragment_index, notation_text in enumerate(
+                _notation_text_candidates(node),
+                start=1,
+            ):
+                notation_key = hashlib.sha256(
+                    (
+                        f"{document_path}\0{page_number}\0{notation_text}"
+                    ).encode("utf-8")
+                ).hexdigest()
+                if not notation_text or notation_key in notation_seen:
+                    continue
+                notation_seen.add(notation_key)
+                quality = _notation_quality(notation_text)
+                notation_blocker_count += int(quality["blocked"])
+                notation_question_mark_count += int(quality["question_mark_count"])
+                diagram_context = _notation_diagram_context(
+                    page_number=page_number,
+                    records=diagram_records_by_page.get(page_number, []),
+                    diagram_assets=diagram_assets,
+                )
+                source_label = (
+                    f"Strona PDF {page_number}, fragment {fragment_index}"
+                    if page_number
+                    else f"Sekcja {index}, fragment {notation_index}"
+                )
+                notation_id = f"notation-{len(notation_cards) + 1:04d}"
+                blocker_list = "".join(
+                    f"<li>{html.escape(reason)}</li>"
+                    for reason in quality["reasons"]
+                )
+                notation_cards.append(
+                    f'<article class="notation-card" data-status="{quality["status"]}" '
+                    f'data-source-page="{page_number or ""}">'
+                    f'<div class="card-heading"><div><p class="eyebrow">{html.escape(source_label)}</p>'
+                    f"<h3>Notacja źródłowa</h3></div>"
+                    f'<span class="quality-badge">{html.escape(quality["label"])}</span></div>'
+                    f'<pre id="{notation_id}" class="notation-source"><code>'
+                    f"{html.escape(notation_text)}</code></pre>"
+                    f'<div class="copy-actions"><button type="button" class="copy-button" '
+                    f'data-copy-target="{notation_id}">Kopiuj tekst notacji</button>'
+                    f'<button type="button" class="copy-button copy-pgn" disabled '
+                    f'title="PGN będzie dostępny po przejściu parsera i legalnego odtworzenia">'
+                    f"Kopiuj PGN</button></div>"
+                    f"{diagram_context}"
+                    f'{f"<ul class=quality-reasons>{blocker_list}</ul>" if blocker_list else ""}'
+                    f"</article>"
+                )
         sections.append(
             f'<section class="book-spine-document" id="spine-{index:03d}" '
             f'data-spine-href="{html.escape(document_path, quote=True)}">'
@@ -598,43 +684,91 @@ def _build_full_reader(
             f"{''.join(str(child) for child in body.contents)}</section>"
         )
 
+    page_layout = _build_reader_page_layout(
+        staging=staging,
+        artifact_root=artifact_root,
+        records=verified_records,
+        diagram_assets=diagram_assets,
+    )
+    pgn_cards = _reader_pgn_cards(accepted_pgn_payload)
     safe_title = html.escape(title or "Chess publication")
     index_html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{safe_title}</title><link rel="stylesheet" href="styles.css"></head>
 <body><header class="reader-header"><p>KindleMaster full publication</p><h1>{safe_title}</h1>
-<div class="reader-stats"><span>{len(spine_documents)} sections</span><span>{full_fen_count} verified FEN</span>
+<div class="reader-stats"><span>{page_layout["page_count"]} PDF pages</span><span>{len(spine_documents)} text sections</span><span>{full_fen_count} verified FEN</span>
 <span>{placement_count} verified placements</span><span>{source_diagram_count} unreadable source diagrams</span>
 <span>{accepted_pgn_count} accepted PGN</span></div>
-<p>Source prose and notation are preserved. Only parser-approved PGN is offered as a downloadable record.</p></header>
-<nav class="reader-nav" aria-label="Publication sections">{''.join(
-        f'<a href="#spine-{index:03d}">{index}</a>' for index in range(1, len(sections) + 1)
-    )}</nav><main>{''.join(sections)}</main></body></html>"""
+<p>Source prose and notation are preserved. Only parser-approved PGN can be copied as PGN.</p></header>
+<nav class="reader-nav" aria-label="Publication views">
+<a href="#pdf-pages">Strony PDF</a><a href="#book-text">Treść książki</a>
+<a href="#notation">Notacja</a><a href="#pgn">PGN</a></nav>
+<main>
+<section class="reader-surface" id="pdf-pages"><div class="surface-heading"><p class="eyebrow">Układ źródłowy</p>
+<h2>Strony PDF</h2><p>Diagramy zweryfikowane są nakładane w położeniu wynikającym ze współrzędnych źródłowych.</p></div>
+<div class="pdf-page-list">{page_layout["html"]}</div></section>
+<section class="reader-surface" id="book-text"><div class="surface-heading"><p class="eyebrow">Warstwa dostępna</p>
+<h2>Pełna treść książki</h2><p>Tekst reflow zachowuje pełną treść i odnośniki EPUB.</p></div>
+{''.join(sections)}</section>
+<section class="reader-surface" id="notation"><div class="surface-heading"><p class="eyebrow">Weryfikacja ruchów</p>
+<h2>Notacja</h2><p>Znaki oceny „?” i „!” mogą być poprawną częścią notacji. Blokowane są nierozpoznane glify, znaki zastępcze i tekst, który nie przeszedł replay.</p></div>
+<div class="notation-list">{''.join(notation_cards) or '<p class="empty-state">Brak wydzielonej notacji.</p>'}</div></section>
+<section class="reader-surface" id="pgn"><div class="surface-heading"><p class="eyebrow">Eksport maszynowy</p>
+<h2>PGN</h2><p>Przycisk kopiowania pojawia się wyłącznie dla rekordów zaakceptowanych przez parser i legalne odtworzenie.</p></div>
+{pgn_cards}</section>
+</main><div class="copy-toast" id="copy-toast" role="status" aria-live="polite"></div>
+<script src="reader.js"></script></body></html>"""
     styles = """
 :root{--paper:#f6f0e5;--ink:#172019;--muted:#6b6257;--line:#d6c7b4;--accent:#a44920}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#efe4d4,#faf7ef 42%,#e7ecdf);
-color:var(--ink);font-family:Georgia,serif;line-height:1.58}.reader-header,.reader-nav,main{width:min(920px,calc(100% - 2rem));margin:auto}
+color:var(--ink);font-family:Georgia,serif;line-height:1.58}.reader-header,.reader-nav,main{width:min(1120px,calc(100% - 2rem));margin:auto}
 .reader-header{padding:3rem 0 1.25rem}.reader-header p:first-child{color:var(--accent);font:700 .78rem/1.2 sans-serif;
 letter-spacing:.13em;text-transform:uppercase}.reader-header h1{font-size:clamp(2.25rem,7vw,5rem);line-height:.95;margin:.4rem 0 1.2rem}
 .reader-stats{display:flex;flex-wrap:wrap;gap:.55rem}.reader-stats span,.reader-nav a{border:1px solid var(--line);
 border-radius:999px;background:#fffaf2;padding:.4rem .7rem}.reader-nav{display:flex;gap:.4rem;overflow:auto;padding:.75rem 0 1.25rem;
-position:sticky;top:0;background:rgba(246,240,229,.94);z-index:5}.reader-nav a{color:var(--ink);text-decoration:none}
+position:sticky;top:0;background:rgba(246,240,229,.94);z-index:5;scrollbar-width:none}.reader-nav::-webkit-scrollbar{display:none}.reader-nav a{color:var(--ink);text-decoration:none}
+.reader-nav a{min-height:42px;display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap}
+.reader-surface{scroll-margin-top:5rem;margin-bottom:3rem}.surface-heading{max-width:760px;margin:1.5rem 0 1rem}.surface-heading h2{font-size:clamp(1.8rem,4vw,3rem);margin:.2rem 0}
+.eyebrow{margin:0;color:var(--accent);font:700 .72rem/1.2 sans-serif;letter-spacing:.12em;text-transform:uppercase}
+.pdf-page-list{display:grid;gap:1.4rem}.pdf-page{width:min(900px,100%);margin:auto;background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 18px 44px rgba(47,39,28,.12);scroll-margin-top:5.5rem}
+.pdf-page-header{display:flex;justify-content:space-between;gap:1rem;padding:.7rem 1rem;background:#f4ecdf;border-bottom:1px solid var(--line);font:700 .78rem/1.2 sans-serif}
+.page-canvas{position:relative;background:#fff;line-height:0}.page-image{display:block;width:100%;height:auto}.verified-diagram-overlay{position:absolute;left:var(--x);top:var(--y);width:var(--w);height:var(--h);object-fit:contain;margin:0;box-shadow:0 0 0 2px rgba(30,104,71,.72);background:transparent}
+.page-layout-warning{padding:.7rem 1rem;color:#8a4b00;background:#fff4dc;font:600 .78rem/1.4 sans-serif}
 .book-spine-document{background:#fffdf8;border:1px solid var(--line);border-radius:22px;padding:clamp(1.1rem,4vw,3rem);
-margin:0 auto 1.25rem;box-shadow:0 14px 36px rgba(47,39,28,.08)}.source-document-label{font:700 .72rem/1.2 sans-serif;
+margin:0 auto 1.25rem;box-shadow:0 14px 36px rgba(47,39,28,.08);min-width:0;overflow:hidden}.book-spine-document img,.book-spine-document svg{max-width:100%!important;height:auto!important}.book-spine-document table{display:block;max-width:100%;overflow-x:auto}.source-document-label{font:700 .72rem/1.2 sans-serif;
 letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-bottom:1rem}.chess-diagram{display:block;max-width:100%;height:auto;margin:1rem auto}
 .kindlemaster-generated-fen{font:600 .82rem/1.4 ui-monospace,monospace;overflow-wrap:anywhere;background:#edf5e9;padding:.7rem;border-radius:10px}
-pre,.chess-notation-page{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#8b3d1c}@media(max-width:640px){.reader-header{padding-top:1.7rem}
-.book-spine-document{border-radius:15px}.reader-nav{width:100%;padding-inline:1rem}}
+pre,.chess-notation-page{white-space:pre-wrap;overflow-wrap:anywhere}.notation-list,.pgn-list{display:grid;gap:1rem}.notation-card,.pgn-card{background:#fffdf8;border:1px solid var(--line);border-radius:16px;padding:1rem;box-shadow:0 10px 26px rgba(47,39,28,.06)}
+.notation-card[data-status=blocked]{border-left:5px solid #b5522d}.card-heading{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start}.card-heading h3{margin:.15rem 0}.quality-badge{border-radius:999px;padding:.32rem .55rem;background:#edf5e9;font:700 .7rem/1.2 sans-serif}.notation-card[data-status=blocked] .quality-badge{background:#fff0e8;color:#8b3519}
+.notation-source,.pgn-source{max-height:28rem;overflow:auto;padding:1rem;border-radius:10px;background:#172019;color:#f8f2e7;font:500 .84rem/1.55 ui-monospace,Consolas,monospace}.copy-actions{display:flex;flex-wrap:wrap;gap:.55rem;margin-top:.8rem}.copy-button{min-height:42px;border:1px solid #8f765f;border-radius:999px;background:#fff;padding:.58rem .85rem;color:var(--ink);font:700 .78rem/1 sans-serif;cursor:pointer}.copy-button:hover{background:#f5eadb}.copy-button:focus-visible{outline:3px solid #d98b5f;outline-offset:2px}.copy-button:disabled{cursor:not-allowed;opacity:.5}.copy-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}.notation-evidence{margin-top:1rem;padding:1rem;border:1px solid #d9cbb8;border-radius:12px;background:#f7f2e8}.notation-evidence h4{margin:.2rem 0 .65rem}.notation-evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.7rem}.notation-diagram{display:grid;grid-template-columns:64px 1fr;gap:.65rem;align-items:start;padding:.65rem;border-radius:10px;background:#fff}.notation-diagram img{width:64px;height:64px;object-fit:contain;background:#fff}.notation-diagram code{display:block;font-size:.68rem;overflow-wrap:anywhere}.quality-reasons{color:#8a4b00}.copy-toast{position:fixed;right:1rem;bottom:1rem;z-index:20;max-width:24rem;padding:.75rem 1rem;border-radius:12px;background:#172019;color:#fff;opacity:0;transform:translateY(.5rem);pointer-events:none;transition:.2s}.copy-toast[data-visible=true]{opacity:1;transform:none}
+a{color:#8b3d1c}@media(max-width:640px){.reader-header{padding-top:1.7rem}.book-spine-document,.pdf-page{border-radius:12px}.reader-nav{width:100%;padding-inline:1rem}.card-heading{display:block}.reader-surface{scroll-margin-top:4rem}}
+"""
+    script = """
+const toast=document.getElementById("copy-toast");
+function showToast(message){toast.textContent=message;toast.dataset.visible="true";window.clearTimeout(showToast.timer);showToast.timer=window.setTimeout(()=>{toast.dataset.visible="false"},2200)}
+async function copyText(value){if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);return}const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";document.body.appendChild(area);area.select();const copied=document.execCommand("copy");area.remove();if(!copied)throw new Error("clipboard_copy_failed")}
+document.addEventListener("click",async event=>{const button=event.target.closest("[data-copy-target]");if(!button||button.disabled)return;const target=document.getElementById(button.dataset.copyTarget);if(!target)return;try{await copyText(target.textContent.trim());showToast("Skopiowano do schowka")}catch{showToast("Nie udało się skopiować")}});
 """
     (staging / "index.html").write_text(index_html, encoding="utf-8")
     (staging / "styles.css").write_text(styles.strip() + "\n", encoding="utf-8")
+    (staging / "reader.js").write_text(script.strip() + "\n", encoding="utf-8")
     summary = {
         "full_publication": True,
         "spine_document_count": len(spine_documents),
+        "pdf_page_count": page_layout["page_count"],
+        "page_facsimile_count": page_layout["facsimile_count"],
+        "diagram_overlay_count": page_layout["overlay_count"],
+        "diagram_overlay_missing_bbox_count": page_layout["missing_bbox_count"],
+        "page_facsimile_cache_hit_count": page_layout["cache_hit_count"],
+        "page_facsimile_render_count": page_layout["render_count"],
+        "page_facsimile_render_seconds": page_layout["render_seconds"],
         "reader_visible_text_characters": visible_chars,
         "fen_accepted": full_fen_count,
         "fen_placement_verified": placement_count,
         "accepted_pgn": accepted_pgn_count,
+        "notation_fragment_count": len(notation_cards),
+        "notation_blocker_count": notation_blocker_count,
+        "notation_question_mark_count": notation_question_mark_count,
         "diagrams_total": full_fen_count + placement_count + source_diagram_count,
         "empty_img_src_count": 0,
     }
@@ -655,7 +789,10 @@ pre,.chess-notation-page{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#8b
         "decision": "pass",
         "artifact_type": FINAL_READER_ARTIFACT_TYPE,
         "blockers": [],
-        "warnings": ([] if accepted_pgn_count else ["no_parser_accepted_pgn"]),
+        "warnings": [
+            *([] if accepted_pgn_count else ["no_parser_accepted_pgn"]),
+            *([] if page_layout["page_count"] else ["page_facsimile_unavailable"]),
+        ],
         "summary": summary,
     }
     _atomic_write_json(staging / "data" / "artifact_manifest.json", manifest)
@@ -670,6 +807,381 @@ pre,.chess-notation-page{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#8b
     else:
         os.replace(staging, reader_dir)
     return summary
+
+
+def _notation_quality(text: str) -> dict[str, Any]:
+    normalized = str(text or "")
+    reasons: list[str] = []
+    if "\ufffd" in normalized:
+        reasons.append("Znak zastępczy Unicode wskazuje utracony glif.")
+    if any(
+        ord(character) < 32 and character not in "\n\r\t"
+        for character in normalized
+    ):
+        reasons.append("Tekst zawiera niedrukowalny znak kontrolny.")
+    if re.search(r"(?:[\"']?t!;>|[\"'][^\s]{0,10}[;>])", normalized):
+        reasons.append("Wykryto token charakterystyczny dla niezmapowanego fontu szachowego.")
+    if re.search(r"(?:@|£|[a-h][1-8][t†‡¢](?=\s|[!?.,;:)]|$))", normalized):
+        reasons.append(
+            "Wykryto znak spoza poprawnego SAN, prawdopodobnie z fontu szachowego."
+        )
+    reasons.append(
+        "Fragment nie ma jeszcze jednoznacznego powiązania z PGN zaakceptowanym przez parser i replay."
+    )
+    question_mark_count = normalized.count("?")
+    return {
+        "blocked": True,
+        "status": "blocked",
+        "label": "Niezweryfikowana",
+        "reasons": reasons,
+        "question_mark_count": question_mark_count,
+    }
+
+
+def _notation_text_candidates(node: Any) -> list[str]:
+    classes = {
+        str(value).strip()
+        for value in (node.get("class") or [])
+        if str(value).strip()
+    }
+    text = node.get_text("\n", strip=True)
+    if not text:
+        return []
+    if "chess-notation-page" not in classes:
+        return [text]
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    strong_indices = {
+        index for index, line in enumerate(lines) if _looks_like_notation_line(line)
+    }
+    selected_indices = set(strong_indices)
+    for index in strong_indices:
+        for neighbor in (index - 1, index + 1):
+            if 0 <= neighbor < len(lines) and _has_move_marker(lines[neighbor]):
+                selected_indices.add(neighbor)
+    candidates = [
+        line for index, line in enumerate(lines) if index in selected_indices
+    ]
+    return ["\n".join(candidates)] if candidates else []
+
+
+def _looks_like_notation_line(line: str) -> bool:
+    markers = re.findall(r"(?<![\d.])\d{1,3}\.(?:\.\.)?\s*\S+", line)
+    if not markers:
+        return False
+    move_like_tokens = re.findall(
+        r"(?:O-O(?:-O)?|[A-Za-z@&£]?[a-h][1-8](?:[+#t†‡¢])?)",
+        line,
+    )
+    return len(markers) >= 2 or len(move_like_tokens) >= 2
+
+
+def _has_move_marker(line: str) -> bool:
+    return bool(re.search(r"(?<![\d.])\d{1,3}\.(?:\.\.)?\s*\S+", line))
+
+
+def _notation_page_number(node: Any) -> int:
+    current = node
+    while current is not None:
+        for key in ("data-page", "data-source-page"):
+            value = str(current.get(key) or "").strip() if hasattr(current, "get") else ""
+            if value.isdigit():
+                return int(value)
+        current = getattr(current, "parent", None)
+    if hasattr(node, "find_previous"):
+        previous = node.find_previous(attrs={"data-source-page": True})
+        value = str(previous.get("data-source-page") or "").strip() if previous else ""
+        if value.isdigit():
+            return int(value)
+    return 0
+
+
+def _notation_diagram_context(
+    *,
+    page_number: int,
+    records: Sequence[Mapping[str, Any]],
+    diagram_assets: Mapping[str, str],
+) -> str:
+    if not page_number:
+        return (
+            '<aside class="notation-evidence"><p>Brak numeru strony źródłowej, '
+            "więc fragmentu nie można bezpiecznie powiązać z diagramem.</p></aside>"
+        )
+    cards: list[str] = []
+    for record in sorted(records, key=_record_source_order):
+        diagram_id = str(record.get("diagram_id") or record.get("id") or "").strip()
+        if not diagram_id:
+            continue
+        asset = diagram_assets.get(diagram_id)
+        full_fen = str(record.get("full_fen") or "").strip()
+        fen_verified = bool(
+            full_fen
+            and (
+                record.get("fen_human_verified") is True
+                or record.get("human_verified") is True
+            )
+        )
+        side_to_move = ""
+        if fen_verified:
+            parts = full_fen.split()
+            if len(parts) > 1:
+                side_to_move = "Białe na ruchu" if parts[1] == "w" else "Czarne na ruchu"
+        image = (
+            f'<img loading="lazy" src="{html.escape(asset, quote=True)}" '
+            f'alt="Diagram {html.escape(diagram_id, quote=True)}">'
+            if asset
+            else ""
+        )
+        fen = (
+            f'<code title="{html.escape(full_fen, quote=True)}">'
+            f"{html.escape(full_fen)}</code>"
+            if fen_verified
+            else "<span>FEN niezweryfikowany</span>"
+        )
+        cards.append(
+            f'<div class="notation-diagram" data-diagram-id="{html.escape(diagram_id, quote=True)}">'
+            f"{image}<div><strong>{html.escape(diagram_id)}</strong>"
+            f"{fen}<small>{html.escape(side_to_move)}</small></div></div>"
+        )
+    body = (
+        f'<div class="notation-evidence-grid">{"".join(cards)}</div>'
+        if cards
+        else "<p>Na tej stronie nie ma potwierdzonego diagramu.</p>"
+    )
+    return (
+        '<aside class="notation-evidence"><p class="eyebrow">Kontekst pozycji</p>'
+        f"<h4>Diagramy ze strony {page_number}</h4>"
+        f'<p><a href="#pdf-page-{page_number:04d}">Pokaż stronę PDF i położenie diagramu</a></p>'
+        f"{body}</aside>"
+    )
+
+
+def _reader_pgn_cards(payload: bytes) -> str:
+    text = payload.decode("utf-8", errors="replace").strip()
+    if not text:
+        return (
+            '<div class="empty-state"><p>Brak PGN ruchów zaakceptowanego przez parser i replay.</p>'
+            '<button type="button" class="copy-button" disabled>Kopiuj PGN</button></div>'
+        )
+    games: list[str] = []
+    try:
+        import chess.pgn
+
+        stream = io.StringIO(text)
+        while True:
+            game = chess.pgn.read_game(stream)
+            if game is None:
+                break
+            serialized = str(game).strip()
+            if serialized:
+                games.append(serialized)
+    except ImportError:
+        games = [text]
+    cards = []
+    for index, game in enumerate(games, start=1):
+        target = f"pgn-record-{index:04d}"
+        cards.append(
+            f'<article class="pgn-card"><div class="card-heading"><div><p class="eyebrow">'
+            f"PGN {index}</p><h3>Zaakceptowany zapis</h3></div>"
+            f'<span class="quality-badge">Parser + replay</span></div>'
+            f'<pre class="pgn-source" id="{target}"><code>{html.escape(game)}</code></pre>'
+            f'<div class="copy-actions"><button type="button" class="copy-button primary" '
+            f'data-copy-target="{target}">Kopiuj PGN</button></div></article>'
+        )
+    all_target = "pgn-all"
+    return (
+        f'<div class="copy-actions"><button type="button" class="copy-button primary" '
+        f'data-copy-target="{all_target}">Kopiuj wszystkie PGN</button></div>'
+        f'<pre id="{all_target}" hidden>{html.escape(text)}</pre>'
+        f'<div class="pgn-list">{"".join(cards)}</div>'
+    )
+
+
+def _reader_diagram_assets(
+    *,
+    spine_documents: Sequence[str],
+    member_bytes: Mapping[str, bytes],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for document_path in spine_documents:
+        soup = BeautifulSoup(
+            member_bytes[document_path].decode("utf-8", errors="replace"),
+            "html.parser",
+        )
+        for image in soup.select("img[data-diagram-id][src]"):
+            diagram_id = str(image.get("data-diagram-id") or "").strip()
+            raw_src = str(image.get("src") or "").split("?", 1)[0].split("#", 1)[0]
+            if not diagram_id or not raw_src:
+                continue
+            member_path = posixpath.normpath(
+                posixpath.join(posixpath.dirname(document_path), raw_src)
+            )
+            if member_path in member_bytes:
+                result[diagram_id] = f"epub/{member_path}"
+    return result
+
+
+def _build_reader_page_layout(
+    *,
+    staging: Path,
+    artifact_root: Path,
+    records: Sequence[Mapping[str, Any]],
+    diagram_assets: Mapping[str, str],
+) -> dict[str, Any]:
+    pdf_candidates = sorted((artifact_root / "input").glob("*.pdf"))
+    if not pdf_candidates:
+        return {
+            "html": '<p class="empty-state">Brak trwałego PDF do odtworzenia układu stron.</p>',
+            "page_count": 0,
+            "facsimile_count": 0,
+            "overlay_count": 0,
+            "missing_bbox_count": len(diagram_assets),
+            "cache_hit_count": 0,
+            "render_count": 0,
+            "render_seconds": 0.0,
+        }
+    try:
+        import fitz
+        from PIL import Image
+    except ImportError:
+        return {
+            "html": '<p class="empty-state">Renderer stron PDF jest niedostępny.</p>',
+            "page_count": 0,
+            "facsimile_count": 0,
+            "overlay_count": 0,
+            "missing_bbox_count": len(diagram_assets),
+            "cache_hit_count": 0,
+            "render_count": 0,
+            "render_seconds": 0.0,
+        }
+
+    pages_dir = staging / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    cache_version = "webp-v1-scale135-q78-m2"
+    pdf_digest = _file_sha256(pdf_candidates[0])
+    cache_dir = (
+        artifact_root
+        / "assets"
+        / "pdf_page_facsimiles"
+        / f"{pdf_digest[:16]}-{cache_version}"
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    records_by_page: dict[int, list[Mapping[str, Any]]] = {}
+    for record in records:
+        if _record_is_confirmed_diagram(record):
+            records_by_page.setdefault(_diagram_page(record), []).append(record)
+    page_cards: list[str] = []
+    overlay_count = 0
+    missing_bbox_count = 0
+    cache_hit_count = 0
+    render_count = 0
+    render_seconds = 0.0
+    with fitz.open(pdf_candidates[0]) as document:
+        for page_index, page in enumerate(document):
+            page_number = page_index + 1
+            page_name = f"page-{page_number:04d}.webp"
+            cached_page = cache_dir / page_name
+            if cached_page.is_file() and cached_page.stat().st_size > 32:
+                cache_hit_count += 1
+            else:
+                render_started = time.perf_counter()
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(1.35, 1.35),
+                    alpha=False,
+                )
+                image = Image.frombytes(
+                    "RGB",
+                    (pixmap.width, pixmap.height),
+                    pixmap.samples,
+                )
+                image.save(cached_page, "WEBP", quality=78, method=2)
+                render_seconds += time.perf_counter() - render_started
+                render_count += 1
+            shutil.copy2(cached_page, pages_dir / page_name)
+            overlays: list[str] = []
+            for record in sorted(
+                records_by_page.get(page_number, []),
+                key=_record_source_order,
+            ):
+                diagram_id = str(
+                    record.get("diagram_id") or record.get("id") or ""
+                ).strip()
+                asset = diagram_assets.get(diagram_id)
+                bbox = _record_layout_bbox(record)
+                if not asset or bbox is None:
+                    missing_bbox_count += 1
+                    continue
+                x0, y0, x1, y1 = bbox
+                width = float(page.rect.width)
+                height = float(page.rect.height)
+                if width <= 0 or height <= 0 or x1 <= x0 or y1 <= y0:
+                    missing_bbox_count += 1
+                    continue
+                style = (
+                    f"--x:{max(0.0, min(100.0, x0 / width * 100)):.5f}%;"
+                    f"--y:{max(0.0, min(100.0, y0 / height * 100)):.5f}%;"
+                    f"--w:{max(0.0, min(100.0, (x1 - x0) / width * 100)):.5f}%;"
+                    f"--h:{max(0.0, min(100.0, (y1 - y0) / height * 100)):.5f}%"
+                )
+                overlays.append(
+                    f'<img class="verified-diagram-overlay" src="{html.escape(asset, quote=True)}" '
+                    f'alt="Zweryfikowany diagram, strona {page_number}" '
+                    f'data-diagram-id="{html.escape(diagram_id, quote=True)}" style="{style}">'
+                )
+                overlay_count += 1
+            warning = (
+                '<div class="page-layout-warning">Nie wszystkie diagramy na tej stronie mają '
+                "wystarczające współrzędne do bezpiecznej nakładki.</div>"
+                if records_by_page.get(page_number)
+                and len(overlays) < len(records_by_page[page_number])
+                else ""
+            )
+            page_cards.append(
+                f'<article class="pdf-page" id="pdf-page-{page_number:04d}" data-page="{page_number}">'
+                f'<div class="pdf-page-header"><span>Strona {page_number}</span>'
+                f"<span>{len(overlays)} zweryfikowanych nakładek</span></div>"
+                f'<div class="page-canvas"><img class="page-image" loading="lazy" '
+                f'src="pages/{page_name}" alt="Strona PDF {page_number}">{"".join(overlays)}</div>'
+                f"{warning}</article>"
+            )
+    return {
+        "html": "".join(page_cards),
+        "page_count": len(page_cards),
+        "facsimile_count": len(page_cards),
+        "overlay_count": overlay_count,
+        "missing_bbox_count": missing_bbox_count,
+        "cache_hit_count": cache_hit_count,
+        "render_count": render_count,
+        "render_seconds": round(render_seconds, 4),
+    }
+
+
+def _record_layout_bbox(
+    record: Mapping[str, Any],
+) -> tuple[float, float, float, float] | None:
+    for key in ("bbox", "board_bbox", "source_bbox", "crop_bbox"):
+        value = record.get(key)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            continue
+        if len(value) < 4:
+            continue
+        try:
+            x0, y0, x1, y1 = (float(value[index]) for index in range(4))
+        except (TypeError, ValueError):
+            continue
+        return x0, y0, x1, y1
+    return None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validated_pgn_payload(path: str | Path | None) -> bytes:

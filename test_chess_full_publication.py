@@ -9,17 +9,41 @@ from bs4 import BeautifulSoup
 
 from chess_full_publication import (
     FullChessPublicationError,
+    _notation_text_candidates,
     publish_full_chess_publication,
 )
 
 
 class ChessFullPublicationTests(unittest.TestCase):
+    def test_notation_section_excludes_non_chess_page_prose(self) -> None:
+        soup = BeautifulSoup(
+            """
+            <pre class="chess-notation-page" data-page="10">
+            German edition
+            All sales or enquiries should be directed to the publisher.
+            22.Bd5+
+            23.Rxe6+! fxe6 24.Qxe6+
+            White wins after the forced variation.
+            33...e3! 34.Qxe3
+            </pre>
+            """,
+            "html.parser",
+        )
+
+        self.assertEqual(
+            _notation_text_candidates(soup.pre),
+            [
+                "22.Bd5+\n23.Rxe6+! fxe6 24.Qxe6+\n33...e3! 34.Qxe3",
+            ],
+        )
+
     def test_enriches_diagram_without_losing_book_text_or_notation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "output" / "source.epub"
             source.parent.mkdir(parents=True)
             self._write_epub(source)
+            self._write_pdf(root / "input" / "source.pdf", page_count=10)
             render = root / "semantic_chess_html" / "assets" / "verified_fen" / "board.svg"
             render.parent.mkdir(parents=True)
             render.write_text(
@@ -31,7 +55,6 @@ class ChessFullPublicationTests(unittest.TestCase):
             pgn.write_text(
                 "\n".join(
                     [
-                        '[Event "Example"]',
                         '[Site "?"]',
                         '[Date "2026.07.23"]',
                         '[Round "?"]',
@@ -53,6 +76,8 @@ class ChessFullPublicationTests(unittest.TestCase):
                     {
                         "id": "layout-chess-p010-d01",
                         "page_number": 10,
+                        "bbox": [72.0, 96.0, 216.0, 240.0],
+                        "confirmed_diagram": True,
                         "board_crop_path": (
                             "review/chess_fen/two_crop/"
                             "notation_layout_p010_01_board.png"
@@ -97,7 +122,25 @@ class ChessFullPublicationTests(unittest.TestCase):
             self.assertIn("23.Rxe6+! fxe6 24.Qxe6+", reader)
             self.assertIn('id="doc-001-lesson"', reader)
             self.assertIn('href="#doc-001-lesson"', reader)
+            self.assertIn('id="pdf-pages"', reader)
+            self.assertIn('id="book-text"', reader)
+            self.assertIn('id="notation"', reader)
+            self.assertIn('id="pgn"', reader)
+            self.assertIn("Kopiuj tekst notacji", reader)
+            self.assertIn("Kopiuj wszystkie PGN", reader)
+            self.assertIn("Pokaż stronę PDF i położenie diagramu", reader)
+            self.assertIn('href="#pdf-page-0010"', reader)
+            self.assertIn('data-diagram-id="layout-chess-p010-d01"', reader)
+            self.assertTrue(
+                (root / "semantic_chess_html" / "pages" / "page-0010.webp").is_file()
+            )
             reader_soup = BeautifulSoup(reader, "html.parser")
+            notation_pgn = reader_soup.select_one("#notation .copy-pgn")
+            accepted_pgn_copy = reader_soup.select_one("#pgn [data-copy-target]")
+            self.assertIsNotNone(notation_pgn)
+            self.assertTrue(notation_pgn.has_attr("disabled"))
+            self.assertIsNotNone(accepted_pgn_copy)
+            self.assertFalse(accepted_pgn_copy.has_attr("disabled"))
             reader_ids = [
                 str(node.get("id"))
                 for node in reader_soup.select("[id]")
@@ -122,6 +165,9 @@ class ChessFullPublicationTests(unittest.TestCase):
                 manifest["pipeline_mode"],
                 "full_epub_enriched_reader",
             )
+            self.assertEqual(manifest["summary"]["pdf_page_count"], 10)
+            self.assertEqual(manifest["summary"]["diagram_overlay_count"], 1)
+            self.assertEqual(manifest["summary"]["notation_blocker_count"], 1)
 
     def test_blocks_incomplete_mapping_instead_of_publishing_partial_book(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -361,6 +407,26 @@ class ChessFullPublicationTests(unittest.TestCase):
             archive.writestr("META-INF/container.xml", container)
             archive.writestr("EPUB/package.opf", package)
             archive.writestr("EPUB/chapter_001.xhtml", chapter)
+
+    @staticmethod
+    def _write_pdf(path: Path, *, page_count: int) -> None:
+        import fitz
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = fitz.open()
+        try:
+            for page_number in range(1, page_count + 1):
+                page = document.new_page(width=468, height=678)
+                page.insert_text((36, 42), f"Source page {page_number}")
+                if page_number == page_count:
+                    page.draw_rect(
+                        fitz.Rect(72, 96, 216, 240),
+                        color=(0, 0, 0),
+                        width=1,
+                    )
+            document.save(path)
+        finally:
+            document.close()
 
 
 if __name__ == "__main__":

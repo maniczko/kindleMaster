@@ -1638,10 +1638,9 @@ describe("Premium React shell", () => {
       "href",
       "/convert/artifact/job-chess/chess_fen_review",
     );
-    expect(diagnostics.getByRole("link", { name: "Oznaczanie figur i markerów" })).toHaveAttribute(
-      "target",
-      "_blank",
-    );
+    expect(
+      diagnostics.getByRole("link", { name: "Oznaczanie figur i markerów" }),
+    ).not.toHaveAttribute("target");
   });
 
   it("keeps Chess Reader visible when legacy HTML PGN/FEN is blocked by mass side unknown", async () => {

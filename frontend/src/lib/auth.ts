@@ -1,5 +1,7 @@
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 
+export const FEN_REVIEW_SESSION_TOKEN_KEY = "kindlemaster.fen-review.access-token";
+
 export interface AuthConfigPayload {
   enabled?: boolean;
   configured?: boolean;
@@ -47,6 +49,20 @@ export async function accessTokenFromClient(client: SupabaseClient | null): Prom
   if (!client) return "";
   const { data } = await client.auth.getSession();
   return data.session?.access_token ?? "";
+}
+
+export function storeFenReviewSessionToken(token: string | null | undefined): void {
+  if (typeof window === "undefined") return;
+  const normalized = String(token ?? "").trim();
+  try {
+    if (normalized) {
+      window.sessionStorage?.setItem(FEN_REVIEW_SESSION_TOKEN_KEY, normalized);
+    } else {
+      window.sessionStorage?.removeItem(FEN_REVIEW_SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // Some privacy modes disable storage; the authenticated API still remains usable.
+  }
 }
 
 export function maskEmail(email: string): string {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,9 @@ from supabase_fen_review import (
     SupabaseFenReviewOwnershipError,
     SupabaseFenReviewSessionClosedError,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ChessFenReviewRepository:
@@ -105,6 +109,7 @@ class ChessFenReviewRepository:
                 source_digest=source_digest,
             )
 
+        prepared: dict[str, Any] | None = None
         try:
             existing = self.cloud_client.load_review(
                 artifact_id=self.artifact_id,
@@ -142,7 +147,35 @@ class ChessFenReviewRepository:
             raise
         except Exception as error:
             if action != "save":
-                raise FenReviewStoreError("Nie udało się zapisać stanu zestawu w bazie danych.") from error
+                recovery_saved = False
+                if prepared is not None:
+                    try:
+                        persist_fen_review_progress_snapshot(
+                            self.review_dir,
+                            prepared["rows"],
+                            artifact_id=self.artifact_id,
+                            source_digest=str(prepared["source_document_sha256"]),
+                            saved_at=str(prepared["saved_at"]),
+                            submitted_count=int(prepared["submitted_count"]),
+                        )
+                        recovery_saved = True
+                    except OSError:
+                        LOGGER.exception(
+                            "FEN review recovery snapshot failed for artifact %s", self.artifact_id
+                        )
+                # Keep the database error out of the browser response, but retain
+                # a compact operational trace that can be used to repair the RPC.
+                LOGGER.warning(
+                    "FEN review database action failed: artifact=%s action=%s recovery_saved=%s error=%s",
+                    self.artifact_id,
+                    action,
+                    recovery_saved,
+                    str(error)[:500],
+                )
+                message = "Nie udało się zamknąć zestawu w bazie danych."
+                if recovery_saved:
+                    message += " Oznaczenia zapisano bezpiecznie jako aktywny snapshot odzyskiwania."
+                raise FenReviewStoreError(message) from error
             fallback = save_fen_review_progress(
                 self.review_dir,
                 submitted_rows,

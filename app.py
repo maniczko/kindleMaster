@@ -1029,6 +1029,14 @@ def _diagram_record_to_reader_position(record: Mapping[str, object], index: int)
         "verification_source": str(record.get("verification_source") or ""),
         "verified_by": str(record.get("verified_by") or ""),
         "verified_at": str(record.get("verified_at") or ""),
+        "rendered_svg": str(record.get("rendered_svg") or ""),
+        "rendered_png": str(record.get("rendered_png") or ""),
+        "rendered_diagram": str(
+            record.get("rendered_diagram")
+            or record.get("rendered_svg")
+            or record.get("rendered_png")
+            or ""
+        ),
         "warnings": list(warnings),
         "review_reason": review_reason,
     }
@@ -5386,7 +5394,26 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
         and (local_root / "review" / "fen_manual_review.html").is_file()
         and (local_root / "semantic_chess_html" / "index.html").is_file()
     ):
-        return _get_conversion_job(safe_job_id) or dict(job)
+        try:
+            _materialize_cloud_source_input(
+                _supabase_library_client(),
+                artifacts=artifacts,
+                destination=local_root,
+            )
+        except Exception as error:
+            app.logger.warning("Cloud source input restore failed for %s: %s", safe_job_id, error)
+            return None
+        rebuilt = _rebuild_job_from_local_artifact_dir(local_root)
+        if not rebuilt:
+            return None
+        current = _get_conversion_job(safe_job_id)
+        return _merge_materialized_cloud_job(
+            safe_job_id,
+            job=job,
+            cloud_artifacts=artifacts,
+            rebuilt=rebuilt,
+            restore_report=dict((current or job).get("cloud_rebuild", {}) or {"status": "already_restored"}),
+        )
     bundle = artifacts.get("chess_rebuild_bundle")
     if not isinstance(bundle, Mapping):
         return None
@@ -5422,6 +5449,11 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
             destination_root=destination,
             expected_job_id=safe_job_id,
         )
+        _materialize_cloud_source_input(
+            client,
+            artifacts=artifacts,
+            destination=destination,
+        )
         rebuilt = _rebuild_job_from_local_artifact_dir(destination)
     except Exception as error:
         app.logger.warning("Cloud rebuild bundle restore failed for %s: %s", safe_job_id, error)
@@ -5429,28 +5461,81 @@ def _materialize_cloud_rebuild_bundle(job_id: str, job: Mapping[str, object]) ->
     if not rebuilt:
         return None
 
+    return _merge_materialized_cloud_job(
+        safe_job_id,
+        job=job,
+        cloud_artifacts=artifacts,
+        rebuilt=rebuilt,
+        restore_report=restore_report,
+    )
+
+
+def _merge_materialized_cloud_job(
+    job_id: str,
+    *,
+    job: Mapping[str, object],
+    cloud_artifacts: Mapping[str, object],
+    rebuilt: Mapping[str, object],
+    restore_report: Mapping[str, object],
+) -> dict | None:
     rebuilt_artifacts = dict(rebuilt.get("artifacts", {}) or {})
-    merged_artifacts = dict(artifacts)
+    merged_artifacts = dict(cloud_artifacts)
     for key, artifact in rebuilt_artifacts.items():
         if key in {"input", "output"} and key in merged_artifacts:
             continue
         merged_artifacts[key] = artifact
-    current = _get_conversion_job(safe_job_id)
+    current = _get_conversion_job(job_id)
     if current is None:
         restored_job = dict(job)
         restored_job["artifacts"] = merged_artifacts
-        restored_job["cloud_rebuild"] = restore_report
+        restored_job["cloud_rebuild"] = dict(restore_report)
         try:
             _CONVERSION_JOB_STORE.create(restored_job)
         except Exception:
             return None
     else:
         _set_conversion_job(
-            safe_job_id,
+            job_id,
             artifacts=merged_artifacts,
-            cloud_rebuild=restore_report,
+            cloud_rebuild=dict(restore_report),
         )
-    return _get_conversion_job(safe_job_id) or {**dict(job), "artifacts": merged_artifacts}
+    return _get_conversion_job(job_id) or {**dict(job), "artifacts": merged_artifacts}
+
+
+def _materialize_cloud_source_input(
+    client: SupabaseLibraryClient,
+    *,
+    artifacts: Mapping[str, object],
+    destination: Path,
+) -> Path | None:
+    input_artifact = artifacts.get("input")
+    if not isinstance(input_artifact, Mapping):
+        return None
+    storage_path = str(input_artifact.get("storage_path") or "").strip()
+    if not storage_path:
+        return None
+
+    input_dir = destination / "input"
+    existing = sorted(path for path in input_dir.iterdir() if path.is_file()) if input_dir.is_dir() else []
+    expected_size = int(input_artifact.get("size_bytes") or 0)
+    if len(existing) == 1:
+        if expected_size > 0 and existing[0].stat().st_size != expected_size:
+            raise ValueError("cloud_source_input_size_mismatch")
+        return existing[0]
+    if existing:
+        raise ValueError("cloud_source_input_ambiguous")
+
+    raw_filename = Path(str(input_artifact.get("filename") or "source.pdf")).name
+    filename = secure_filename(raw_filename) or "source.pdf"
+    target = input_dir / filename
+    input_dir.mkdir(parents=True, exist_ok=True)
+    payload = client.download_artifact_bytes(storage_path=storage_path)
+    if expected_size > 0 and len(payload) != expected_size:
+        raise ValueError("cloud_source_input_size_mismatch")
+    temporary = target.with_suffix(f"{target.suffix}.tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(target)
+    return target
 
 
 def _active_conversion_job_count() -> int:

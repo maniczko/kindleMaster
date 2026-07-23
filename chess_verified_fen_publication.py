@@ -160,6 +160,10 @@ def publish_verified_fen_artifacts(
     candidate_without_full_fen = len(records) - accepted
     confirmed_without_full_fen = len(publication_records) - accepted
     placement_or_fen = accepted + status_counts["placement_verified"]
+    verified_board_render_count = _render_human_verified_boards(
+        publication_records,
+        artifact_root=root,
+    )
     summary = {
         "diagram_candidates_total": len(records),
         "diagrams_total": len(publication_records),
@@ -173,6 +177,7 @@ def publish_verified_fen_artifacts(
         "candidate_without_full_fen": candidate_without_full_fen,
         "fen_automatic_before_override": automatic_before,
         "fen_accepted": accepted,
+        "verified_board_render_count": verified_board_render_count,
         "full_fen_coverage": _safe_ratio(accepted, len(publication_records)),
         "placement_or_fen_coverage": _safe_ratio(
             placement_or_fen,
@@ -481,12 +486,37 @@ def _build_verified_positions_epub(
         articles: list[str] = []
         for offset, record in enumerate(page_records, start=start + 1):
             diagram_id = _diagram_id(record)
-            crop_path = _resolve_artifact_path(artifact_root, record.get("board_crop_path"))
+            rendered_path = _resolve_artifact_path(
+                artifact_root / "semantic_chess_html",
+                record.get("rendered_svg"),
+            )
+            crop_path = (
+                rendered_path
+                if rendered_path is not None
+                and rendered_path.is_file()
+                and (
+                    record.get("fen_human_verified") is True
+                    or record.get("placement_human_verified") is True
+                )
+                else _resolve_artifact_path(artifact_root, record.get("board_crop_path"))
+            )
             image_href = ""
             if crop_path is not None and crop_path.is_file():
-                suffix = crop_path.suffix.lower() if crop_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+                suffix = (
+                    crop_path.suffix.lower()
+                    if crop_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+                    else ".png"
+                )
                 image_href = f"images/diagram-{offset:04d}{suffix}"
-                image_entries.append((image_href, crop_path, mimetypes.guess_type(image_href)[0] or "image/png"))
+                image_entries.append(
+                    (
+                        image_href,
+                        crop_path,
+                        "image/svg+xml"
+                        if suffix == ".svg"
+                        else mimetypes.guess_type(image_href)[0] or "image/png",
+                    )
+                )
             human_verified = record.get("fen_human_verified") is True
             automatic = record.get("full_fen_allowed") is True and not human_verified
             fen = str(record.get("full_fen") or "") if human_verified or automatic else ""
@@ -563,6 +593,56 @@ def _build_verified_positions_epub(
         for href, path, _media_type in image_entries:
             archive.write(path, f"EPUB/{href}")
     os.replace(temporary, output_path)
+
+
+def _render_human_verified_boards(
+    records: Sequence[dict[str, Any]],
+    *,
+    artifact_root: Path,
+) -> int:
+    try:
+        import chess
+        import chess.svg
+    except ImportError as error:
+        raise VerifiedFenPublicationError("python_chess_renderer_unavailable") from error
+
+    target_dir = artifact_root / "semantic_chess_html" / "assets" / "verified_fen"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    rendered_count = 0
+    for record in records:
+        human_fen = record.get("fen_human_verified") is True
+        human_placement = record.get("placement_human_verified") is True
+        if not human_fen and not human_placement:
+            continue
+        fen = str(record.get("full_fen") or "").strip()
+        placement = str(record.get("placement") or record.get("placement_fen") or "").strip()
+        render_fen = fen if human_fen else f"{placement} w - - 0 1"
+        if not render_fen.strip():
+            raise VerifiedFenPublicationError(f"verified_board_placement_missing:{_diagram_id(record)}")
+        try:
+            board = chess.Board(render_fen)
+        except ValueError as error:
+            raise VerifiedFenPublicationError(
+                f"verified_board_render_invalid:{_diagram_id(record)}"
+            ) from error
+        filename = f"{hashlib.sha256(_diagram_id(record).encode('utf-8')).hexdigest()[:20]}.svg"
+        target = target_dir / filename
+        svg = chess.svg.board(
+            board=board,
+            coordinates=True,
+            size=640,
+        )
+        _atomic_write_text(target, svg)
+        relative = str(Path("assets") / "verified_fen" / filename).replace("\\", "/")
+        record["machine_rendered_svg_evidence"] = str(record.get("rendered_svg") or "")
+        record["rendered_svg"] = relative
+        record["rendered_diagram"] = relative
+        record["verified_render_path"] = relative
+        record["verified_render_source"] = (
+            "human_verified_fen" if human_fen else "human_verified_placement"
+        )
+        rendered_count += 1
+    return rendered_count
 
 
 def _xhtml_document(title: str, body: str, *, epub_prefix: bool = False) -> str:

@@ -326,21 +326,42 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     const publishFen = document.getElementById('publish-fen');
     reviewer.value = localStorage.getItem(reviewerKey) || '';
 
+    function nestedAccessToken(value,depth=0) {
+      if (depth > 5 || value == null) return '';
+      if (typeof value === 'string') {
+        if (value.split('.').length === 3) return value;
+        try { return nestedAccessToken(JSON.parse(value),depth + 1); } catch { return ''; }
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const token = nestedAccessToken(item,depth + 1);
+          if (token) return token;
+        }
+        return '';
+      }
+      if (typeof value !== 'object') return '';
+      if (typeof value.access_token === 'string' && value.access_token) return value.access_token;
+      for (const key of ['currentSession','session','data']) {
+        const token = nestedAccessToken(value[key],depth + 1);
+        if (token) return token;
+      }
+      return '';
+    }
     function storedAccessToken() {
+      let bridgedToken = '';
+      try {
+        bridgedToken = sessionStorage.getItem('kindlemaster.fen-review.access-token') || '';
+      } catch {}
+      if (bridgedToken) return bridgedToken;
       for (let index = 0; index < localStorage.length; index += 1) {
         const key = localStorage.key(index) || '';
-        if (!key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
+        if (
+          key !== 'supabase.auth.token'
+          && !(key.startsWith('sb-') && key.includes('-auth-token'))
+        ) continue;
         try {
-          const value = JSON.parse(localStorage.getItem(key) || '{}');
-          const candidates = [
-            value,
-            Array.isArray(value) ? value[0] : null,
-            value && value.currentSession,
-            value && value.session
-          ];
-          for (const candidate of candidates) {
-            if (candidate && typeof candidate.access_token === 'string') return candidate.access_token;
-          }
+          const token = nestedAccessToken(JSON.parse(localStorage.getItem(key) || '{}'));
+          if (token) return token;
         } catch {}
       }
       return '';

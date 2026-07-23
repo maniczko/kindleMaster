@@ -39,6 +39,7 @@ import {
   accountFromSession,
   anonymousAccount,
   createKindleMasterAuthClient,
+  storeFenReviewSessionToken,
   type AccountState,
   type AuthConfigPayload,
 } from "./lib/auth";
@@ -328,16 +329,20 @@ function App() {
       const client = createKindleMasterAuthClient(config);
       authClientRef.current = client;
       if (!client) {
+        storeFenReviewSessionToken("");
         setAccount(anonymousAccount);
         return;
       }
       const { data } = await client.auth.getSession();
+      storeFenReviewSessionToken(data.session?.access_token);
       setAccount(accountFromSession(data.session));
       const subscription = client.auth.onAuthStateChange((_event, session) => {
+        storeFenReviewSessionToken(session?.access_token);
         setAccount(accountFromSession(session));
       });
       authSubscriptionRef.current = subscription.data.subscription;
     } catch {
+      storeFenReviewSessionToken("");
       setAuthConfig({});
       setAccount(anonymousAccount);
     } finally {
@@ -492,6 +497,7 @@ function App() {
   async function signOut() {
     setAuthStatus("");
     await authClientRef.current?.auth.signOut();
+    storeFenReviewSessionToken("");
     setAccount(anonymousAccount);
     setGuestMode(false);
     window.localStorage?.removeItem(startGuestModeStorageKey());
@@ -3979,7 +3985,7 @@ function buildArtifactSections(
       label: artifactLabel(key, artifact),
       href,
       fetchDownload: !["pdf_layout_preview", "chess_fen_review"].includes(key),
-      targetBlank: ["pdf_layout_preview", "chess_fen_review"].includes(key),
+      targetBlank: key === "pdf_layout_preview",
     });
   }
   for (const [label, href] of Object.entries(quality.reports)) {

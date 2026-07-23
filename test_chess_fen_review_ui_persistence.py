@@ -54,6 +54,9 @@ class ChessFenReviewUiPersistenceTests(unittest.TestCase):
         self.assertIn("error.authRequired", rendered)
         self.assertIn("response.status === 401", rendered)
         self.assertIn("if (!storedAccessToken()) { authenticationRequired(false); return; }", rendered)
+        self.assertIn("sessionStorage.getItem('kindlemaster.fen-review.access-token')", rendered)
+        self.assertIn("let bridgedToken = ''", rendered)
+        self.assertIn("function nestedAccessToken(value,depth=0)", rendered)
         self.assertIn("window.addEventListener('storage'", rendered)
 
     def test_closed_session_does_not_keep_stale_local_save_pending(self) -> None:

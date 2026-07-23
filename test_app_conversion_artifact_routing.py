@@ -548,6 +548,40 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         )
         response.close()
 
+    def test_legacy_ownerless_job_refreshes_only_from_owner_bound_cloud_record(self) -> None:
+        job_id = "d" * 32
+        local_job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="legacy-study.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        local_job["status"] = "ready"
+        local_job["artifacts"] = {"chess_pgn_html": {"provider": "local", "location": "reader/index.html"}}
+        app_module._CONVERSION_JOB_STORE.create(local_job)
+        cloud_client = MagicMock()
+        cloud_client.get_job_by_id.return_value = {
+            "job_id": job_id,
+            "user_id": "user-1",
+            "cloud": True,
+            "status": "ready",
+            "artifacts": {
+                "chess_verified_fen_publication": {
+                    "provider": "supabase",
+                    "storage_path": "user-1/job/report/current.json",
+                }
+            },
+        }
+
+        with patch("app._supabase_library_client", return_value=cloud_client):
+            refreshed = app_module._refresh_owned_cloud_job_artifacts(job_id, local_job)
+
+        self.assertEqual(refreshed["user_id"], "user-1")
+        self.assertIn("chess_verified_fen_publication", refreshed["artifacts"])
+        self.assertIn("chess_pgn_html", refreshed["artifacts"])
+        cloud_client.get_job_by_id.assert_called_once_with(job_id=job_id)
+
     def test_history_exposes_restorable_fen_review_route(self) -> None:
         job_id = "cloud-fen-review-bundle"
         item = app_module._build_conversion_job_history_item(

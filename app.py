@@ -5384,17 +5384,25 @@ def _upload_durable_job_artifacts(
 def _refresh_owned_cloud_job_artifacts(job_id: str, job: Mapping[str, object]) -> dict:
     local_job = dict(job)
     user_id = str(local_job.get("user_id") or "").strip()
-    if not user_id or str(local_job.get("status") or "") in ACTIVE_CONVERSION_JOB_STATUSES:
+    if str(local_job.get("status") or "") in ACTIVE_CONVERSION_JOB_STATUSES:
         return local_job
     try:
-        cloud_job = _supabase_library_client().get_user_job(user_id=user_id, job_id=job_id)
+        client = _supabase_library_client()
+        if user_id:
+            cloud_job = client.get_user_job(user_id=user_id, job_id=job_id)
+        elif _is_conversion_job_id(job_id):
+            cloud_job = client.get_job_by_id(job_id=job_id)
+        else:
+            return local_job
     except Exception as error:
         app.logger.warning("Owned cloud artifact refresh failed for %s: %s", job_id, error)
         return local_job
+    cloud_user_id = str(cloud_job.get("user_id") or "").strip() if isinstance(cloud_job, Mapping) else ""
     if (
         not isinstance(cloud_job, Mapping)
         or str(cloud_job.get("job_id") or "").strip() != job_id
-        or str(cloud_job.get("user_id") or "").strip() != user_id
+        or not cloud_user_id
+        or (user_id and cloud_user_id != user_id)
     ):
         return local_job
     cloud_artifacts = dict(cloud_job.get("artifacts", {}) or {})
@@ -5406,7 +5414,7 @@ def _refresh_owned_cloud_job_artifacts(job_id: str, job: Mapping[str, object]) -
         job_id,
         artifacts=merged_artifacts,
         cloud=True,
-        user_id=user_id,
+        user_id=cloud_user_id,
     )
     return refreshed or {**local_job, "artifacts": merged_artifacts, "cloud": True}
 

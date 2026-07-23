@@ -362,6 +362,112 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         cloud_client.get_job_by_id.assert_not_called()
         response.close()
 
+    def test_existing_artifact_route_refreshes_authenticated_cloud_metadata(self) -> None:
+        job_id = "a" * 32
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        local_job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="study.pdf",
+            created_at=created_at,
+        )
+        local_job.update(
+            {
+                "user_id": "user-1",
+                "cloud": True,
+                "status": "ready",
+                "updated_at": created_at,
+                "artifacts": {
+                    "chess_verified_fen_publication": {
+                        "provider": "local",
+                        "location": "stale/publication.json",
+                    }
+                },
+            }
+        )
+        refreshed_job = dict(local_job)
+        refreshed_job["artifacts"] = {
+            "chess_verified_fen_publication": {
+                "provider": "supabase",
+                "storage_path": "user-1/job/report/current.json",
+            }
+        }
+
+        with (
+            patch("app._mark_timed_out_conversion_jobs", return_value={}),
+            patch("app._cleanup_expired_conversion_jobs", return_value={}),
+            patch("app._get_conversion_job", side_effect=[local_job, refreshed_job]),
+            patch(
+                "app._merge_cloud_jobs_into_store_for_request",
+                return_value={"status": "synced", "refreshed": 1},
+            ) as refresh_cloud,
+            patch("app._materialize_cloud_rebuild_bundle", return_value=None),
+            patch("app._send_remote_artifact_proxy", return_value=("current-cloud", 200)) as remote_proxy,
+        ):
+            response = self.client.get(
+                f"/convert/artifact/{job_id}/chess_verified_fen_publication",
+                base_url="https://api.example.com",
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_data(as_text=True), "current-cloud")
+        refresh_cloud.assert_called_once_with(limit=app_module.MAX_CONVERSION_JOB_HISTORY_LIMIT)
+        self.assertEqual(
+            remote_proxy.call_args.args[0]["storage_path"],
+            "user-1/job/report/current.json",
+        )
+        response.close()
+
+    def test_cloud_merge_refreshes_artifacts_when_job_timestamp_is_unchanged(self) -> None:
+        job_id = "cloud-artifact-same-timestamp"
+        created_at = "2026-07-23T10:00:00Z"
+        local_reader = {"provider": "local", "location": "reader/index.html"}
+        app_module._CONVERSION_JOB_STORE.create(
+            {
+                "job_id": job_id,
+                "user_id": "user-1",
+                "cloud": True,
+                "status": "ready",
+                "filename": "study.pdf",
+                "source_type": "pdf",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "artifacts": {
+                    "chess_pgn_html": local_reader,
+                    "chess_verified_positions_epub": {
+                        "provider": "local",
+                        "location": "stale.epub",
+                    },
+                },
+                "metadata": {},
+            }
+        )
+        cloud_epub = {
+            "provider": "supabase",
+            "storage_path": "user-1/job/verified/current.epub",
+        }
+        cloud_job = {
+            "job_id": job_id,
+            "user_id": "user-1",
+            "cloud": True,
+            "status": "ready",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "artifacts": {"chess_verified_positions_epub": cloud_epub},
+        }
+
+        with (
+            patch("app._authenticated_request_context", return_value=({"id": "user-1"}, "token")),
+            patch("app._load_supabase_conversion_jobs", return_value={job_id: cloud_job}),
+        ):
+            result = app_module._merge_cloud_jobs_into_store_for_request(limit=25)
+
+        refreshed = app_module._CONVERSION_JOB_STORE.get(job_id)
+        self.assertEqual(result["refreshed"], 1)
+        self.assertEqual(refreshed["artifacts"]["chess_verified_positions_epub"], cloud_epub)
+        self.assertEqual(refreshed["artifacts"]["chess_pgn_html"], local_reader)
+
     def test_history_exposes_restorable_fen_review_route(self) -> None:
         job_id = "cloud-fen-review-bundle"
         item = app_module._build_conversion_job_history_item(

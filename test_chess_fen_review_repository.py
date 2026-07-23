@@ -192,19 +192,19 @@ class ChessFenReviewRepositoryTests(unittest.TestCase):
 
             self.assertFalse((review_dir / FEN_REVIEW_PROGRESS_FILENAME).exists())
 
-    def test_close_does_not_fall_back_when_database_write_fails(self) -> None:
+    def test_close_failure_preserves_recovery_snapshot_without_closing_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             review_dir = Path(temp_dir) / "review"
             seed = self._write_seed(review_dir)
 
-            with self.assertRaises(FenReviewStoreError):
+            with self.assertRaisesRegex(FenReviewStoreError, "snapshot odzyskiwania"):
                 ChessFenReviewRepository(
                     review_dir,
                     artifact_id="artifact-1",
                     cloud_client=FakeCloudClient(fail_save=True),
                 ).save([self._verified_row(seed)], source_digest="a" * 64, action="close")
 
-            self.assertFalse((review_dir / FEN_REVIEW_PROGRESS_FILENAME).exists())
+            self.assertTrue((review_dir / FEN_REVIEW_PROGRESS_FILENAME).is_file())
 
     def test_save_writes_database_first_and_refreshes_file_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

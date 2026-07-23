@@ -4444,6 +4444,7 @@ def _merge_cloud_jobs_into_store_for_request(*, limit: int | None = None) -> dic
         limit=limit or MAX_CONVERSION_JOB_HISTORY_LIMIT,
     )
     imported = 0
+    refreshed = 0
     for job_id, cloud_job in cloud_jobs.items():
         local_job = _get_conversion_job(job_id)
         if local_job and local_job.get("status") in ACTIVE_CONVERSION_JOB_STATUSES:
@@ -4451,10 +4452,27 @@ def _merge_cloud_jobs_into_store_for_request(*, limit: int | None = None) -> dic
         local_updated = _conversion_job_sort_timestamp(local_job) if local_job else None
         cloud_updated = _conversion_job_sort_timestamp(cloud_job)
         if local_job and local_updated and local_updated >= cloud_updated:
+            local_artifacts = dict(local_job.get("artifacts", {}) or {})
+            cloud_artifacts = dict(cloud_job.get("artifacts", {}) or {})
+            if cloud_artifacts:
+                local_artifacts.update(cloud_artifacts)
+                _set_conversion_job(
+                    job_id,
+                    artifacts=local_artifacts,
+                    cloud=True,
+                    user_id=user_id,
+                )
+                refreshed += 1
             continue
         _CONVERSION_JOB_STORE.create(cloud_job)
         imported += 1
-    return {"status": "synced", "provider": "supabase", "imported": imported, "user_id": user_id}
+    return {
+        "status": "synced",
+        "provider": "supabase",
+        "imported": imported,
+        "refreshed": refreshed,
+        "user_id": user_id,
+    }
 
 
 def _restore_cloud_job_for_signed_access(job_id: str) -> dict | None:
@@ -7563,12 +7581,13 @@ def convert_artifact_download(job_id: str, artifact_key: str):
     if not job:
         _ensure_local_artifact_history_loaded()
         job = _get_conversion_job(job_id)
-    if not job:
-        # Details views may survive a local server restart while the durable job
-        # history lives in Supabase. If the browser sends auth, rehydrate the
-        # local store before deciding the artifact is missing.
-        _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
-        job = _get_conversion_job(job_id)
+    # Refresh durable artifact metadata even when a completed local snapshot
+    # exists. Publication can update Supabase objects without changing the
+    # conversion job timestamp.
+    _merge_cloud_jobs_into_store_for_request(limit=MAX_CONVERSION_JOB_HISTORY_LIMIT)
+    refreshed_job = _get_conversion_job(job_id)
+    if refreshed_job is not None:
+        job = refreshed_job
     if not job:
         job = _restore_cloud_job_for_signed_access(job_id)
     if not job:

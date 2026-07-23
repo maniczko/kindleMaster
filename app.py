@@ -505,7 +505,8 @@ def _render_pdf_layout_preview_shell(job_id: str, job: dict, artifact: dict, art
 
 def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: str):
     signed_url = _signed_artifact_url(artifact) or str(artifact.get("download_url") or "").strip()
-    if not signed_url:
+    storage_path = str(artifact.get("storage_path") or "").strip()
+    if not signed_url and not storage_path:
         response = _json_error(
             "Artefakt zdalny nie ma aktywnego podpisanego URL.",
             error_code="source_artifact_unavailable" if artifact_key == "input" else ERROR_MISSING_OUTPUT,
@@ -516,9 +517,13 @@ def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: st
         response.headers["X-KindleMaster-Artifact-Source"] = "missing"
         return response
     try:
-        with urllib.request.urlopen(signed_url, timeout=20) as remote_response:
-            data = remote_response.read()
-            remote_status = int(getattr(remote_response, "status", 200) or 200)
+        if signed_url:
+            with urllib.request.urlopen(signed_url, timeout=20) as remote_response:
+                data = remote_response.read()
+                remote_status = int(getattr(remote_response, "status", 200) or 200)
+        else:
+            data = _supabase_library_client().download_artifact_bytes(storage_path=storage_path)
+            remote_status = 200
     except urllib.error.HTTPError as error:
         response = _json_error(
             "Nie udało się pobrać zdalnego artefaktu źródłowego.",
@@ -547,7 +552,12 @@ def _send_remote_artifact_proxy(artifact: dict, *, job_id: str, artifact_key: st
     response.headers["X-KindleMaster-Artifact-Proxy"] = "remote"
     response.headers["X-KindleMaster-Artifact-Source"] = "remote"
     response.headers["X-KindleMaster-Remote-Status"] = str(remote_status)
-    filename = str(artifact.get("filename") or Path(str(urllib.parse.urlparse(signed_url).path)).name or "artifact")
+    filename = str(
+        artifact.get("filename")
+        or Path(str(urllib.parse.urlparse(signed_url).path)).name
+        or Path(storage_path).name
+        or "artifact"
+    )
     if _artifact_should_download_as_attachment(artifact_key, artifact):
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
@@ -5371,6 +5381,36 @@ def _upload_durable_job_artifacts(
     return uploaded
 
 
+def _refresh_owned_cloud_job_artifacts(job_id: str, job: Mapping[str, object]) -> dict:
+    local_job = dict(job)
+    user_id = str(local_job.get("user_id") or "").strip()
+    if not user_id or str(local_job.get("status") or "") in ACTIVE_CONVERSION_JOB_STATUSES:
+        return local_job
+    try:
+        cloud_job = _supabase_library_client().get_user_job(user_id=user_id, job_id=job_id)
+    except Exception as error:
+        app.logger.warning("Owned cloud artifact refresh failed for %s: %s", job_id, error)
+        return local_job
+    if (
+        not isinstance(cloud_job, Mapping)
+        or str(cloud_job.get("job_id") or "").strip() != job_id
+        or str(cloud_job.get("user_id") or "").strip() != user_id
+    ):
+        return local_job
+    cloud_artifacts = dict(cloud_job.get("artifacts", {}) or {})
+    if not cloud_artifacts:
+        return local_job
+    merged_artifacts = dict(local_job.get("artifacts", {}) or {})
+    merged_artifacts.update(cloud_artifacts)
+    refreshed = _set_conversion_job(
+        job_id,
+        artifacts=merged_artifacts,
+        cloud=True,
+        user_id=user_id,
+    )
+    return refreshed or {**local_job, "artifacts": merged_artifacts, "cloud": True}
+
+
 def _materialize_cloud_job_for_local_processing(job_id: str, cloud_job: dict) -> dict | None:
     if not cloud_job.get("cloud"):
         return cloud_job
@@ -7600,6 +7640,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
             phase="download",
             job_id=job_id,
         )
+    job = _refresh_owned_cloud_job_artifacts(job_id, job)
     key = _safe_artifact_key(artifact_key)
     if key in {
         "chess_reader",

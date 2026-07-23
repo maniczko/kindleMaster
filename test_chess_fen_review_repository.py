@@ -117,7 +117,7 @@ class ChessFenReviewRepositoryTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["verified"], 1)
         self.assertEqual(payload["rows"][0]["manual_fen"], "4k3/8/8/8/8/8/8/4K3 w - - 0 1")
 
-    def test_source_bound_reuse_preserves_complete_session_for_publication(self) -> None:
+    def test_source_bound_reuse_starts_an_active_session_for_current_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             review_dir = Path(temp_dir) / "review"
             seed = self._write_seed(review_dir)
@@ -142,8 +142,9 @@ class ChessFenReviewRepositoryTests(unittest.TestCase):
                 cloud_client=cloud,
             ).load()
 
-        self.assertEqual(payload["session_status"], "complete")
-        self.assertEqual(payload["closed_at"], "2026-07-16T12:00:00Z")
+        self.assertEqual(payload["session_status"], "active")
+        self.assertEqual(payload["closed_at"], "")
+        self.assertEqual(payload["inherited_session_status"], "complete")
         self.assertEqual(payload["revision"], 0)
         self.assertEqual(payload["reused_from_artifact_id"], "source-artifact")
 

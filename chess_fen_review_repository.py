@@ -77,11 +77,17 @@ class ChessFenReviewRepository:
             storage="database",
         )
         reused_from_artifact_id = str(database_payload.get("reused_from_artifact_id") or "")
+        inherited_session_status = str(database_payload.get("session_status") or "active")
+        # Source-bound labels are valid input for a new conversion, but they do
+        # not create a review session for its artifact. Keep that session active
+        # so the first close creates an artifact-scoped database record.
+        session_status = "active" if reused_from_artifact_id else inherited_session_status
         payload.update(
             {
                 "revision": 0 if reused_from_artifact_id else int(database_payload.get("revision") or 0),
-                "session_status": str(database_payload.get("session_status") or "active"),
-                "closed_at": str(database_payload.get("closed_at") or ""),
+                "session_status": session_status,
+                "closed_at": "" if reused_from_artifact_id else str(database_payload.get("closed_at") or ""),
+                "inherited_session_status": inherited_session_status if reused_from_artifact_id else "",
                 "reused_from_artifact_id": reused_from_artifact_id,
             }
         )

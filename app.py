@@ -7704,6 +7704,7 @@ def convert_fen_manual_review_progress(job_id: str):
             job_id=job_id,
         )
     except FenReviewStoreError as exc:
+        app.logger.warning("FEN review progress rejected for job %s: %s", job_id, exc)
         return _json_error(
             str(exc),
             error_code=ERROR_UPLOAD_FAILED,

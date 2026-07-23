@@ -596,7 +596,30 @@ def _sanitize_chess_reader_html(html_text: str) -> str:
         html_text = html_text.replace(raw, replacement)
     html_text = html_text.replace('src=""', 'data-empty-src="true"')
     html_text = html_text.replace("src=''", "data-empty-src='true'")
+    html_text = re.sub(
+        r"<img\b(?P<attrs>[^>]*)>",
+        _defer_chess_reader_image,
+        html_text,
+        flags=re.IGNORECASE,
+    )
     return html_text
+
+
+def _defer_chess_reader_image(match: re.Match[str]) -> str:
+    tag = match.group(0)
+    attributes: list[str] = []
+    if not re.search(r"\bloading\s*=", tag, flags=re.IGNORECASE):
+        attributes.append('loading="lazy"')
+    if not re.search(r"\bdecoding\s*=", tag, flags=re.IGNORECASE):
+        attributes.append('decoding="async"')
+    if not attributes:
+        return tag
+    body = tag[:-1]
+    self_closing = body.rstrip().endswith("/")
+    if self_closing:
+        body = body.rstrip()[:-1].rstrip()
+    suffix = " /" if self_closing else ""
+    return f"{body} {' '.join(attributes)}{suffix}>"
 
 
 def _render_chess_pgn_semantic_artifact(

@@ -32,6 +32,7 @@ class ProductionGuardrailPolicy:
     guest_retry_per_minute: int = 3
     mutation_per_minute: int = 30
     polling_per_minute: int = 180
+    artifact_asset_per_minute: int = 2_400
     authenticated_active_jobs: int = 3
     guest_active_jobs: int = 1
     global_active_jobs: int = 4
@@ -68,6 +69,7 @@ class ProductionGuardrailPolicy:
             guest_retry_per_minute=integer("KINDLEMASTER_GUEST_RETRIES_PER_MINUTE", 3),
             mutation_per_minute=integer("KINDLEMASTER_MUTATIONS_PER_MINUTE", 30),
             polling_per_minute=integer("KINDLEMASTER_POLLING_PER_MINUTE", 180),
+            artifact_asset_per_minute=integer("KINDLEMASTER_ARTIFACT_ASSETS_PER_MINUTE", 2_400),
             authenticated_active_jobs=integer("KINDLEMASTER_AUTH_ACTIVE_JOBS", 3),
             guest_active_jobs=integer("KINDLEMASTER_GUEST_ACTIVE_JOBS", 1),
             global_active_jobs=integer("KINDLEMASTER_GLOBAL_ACTIVE_JOBS", 4),
@@ -315,6 +317,12 @@ def _route_policy(path: str, method: str, authenticated: bool, policy: Productio
         return "retry", policy.authenticated_retry_per_minute if authenticated else policy.guest_retry_per_minute
     if normalized_method in {"POST", "PUT", "DELETE"} and normalized_path.startswith("/convert/"):
         return "mutation", policy.mutation_per_minute
+    if (
+        normalized_method == "GET"
+        and normalized_path.startswith("/convert/artifact/")
+        and "_asset/" in normalized_path
+    ):
+        return "asset", policy.artifact_asset_per_minute
     if normalized_path.startswith("/convert/") or normalized_path == "/convert/jobs":
         return "poll", policy.polling_per_minute
     return None

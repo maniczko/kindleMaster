@@ -17,6 +17,7 @@ from production_guardrails import (
     InputPolicyError,
     ProductionGuardrailPolicy,
     SQLiteFixedWindowRateLimiter,
+    _route_policy,
     install_production_guardrails,
     pseudonymous_owner_key,
     validate_upload_bytes,
@@ -164,6 +165,23 @@ class ProductionGuardrailTests(unittest.TestCase):
                 (time.time() - 2, "owner:start"),
             )
         self.assertTrue(limiter.consume("owner:start", limit=1, window_seconds=1).allowed)
+
+    def test_artifact_assets_use_a_separate_browser_burst_limit(self) -> None:
+        policy = ProductionGuardrailPolicy(polling_per_minute=3, artifact_asset_per_minute=2_400)
+
+        self.assertEqual(
+            _route_policy(
+                "/convert/artifact/job/chess_pgn_html_asset/assets/verified_fen/board.svg",
+                "GET",
+                False,
+                policy,
+            ),
+            ("asset", 2_400),
+        )
+        self.assertEqual(
+            _route_policy("/convert/status/job", "GET", False, policy),
+            ("poll", 3),
+        )
 
     def test_unverified_tokens_never_receive_authenticated_limits(self) -> None:
         owner, authenticated = pseudonymous_owner_key(

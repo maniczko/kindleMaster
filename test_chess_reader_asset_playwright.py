@@ -216,6 +216,34 @@ class ChessReaderAssetPlaywrightTests(unittest.TestCase):
         images = page.locator("article.card img")
         self.assertEqual(cards.count(), DIAGRAM_COUNT)
         self.assertEqual(images.count(), DIAGRAM_COUNT * 2)
+        loading_hints = images.evaluate_all(
+            "nodes => nodes.map(node => ({loading: node.loading, decoding: node.decoding}))"
+        )
+        self.assertTrue(all(item["loading"] == "lazy" for item in loading_hints))
+        self.assertTrue(all(item["decoding"] == "async" for item in loading_hints))
+
+        image_results = images.evaluate_all(
+            """async nodes => {
+                for (const node of nodes) {
+                    node.loading = "eager";
+                }
+                await Promise.all(nodes.map(node => {
+                    if (node.complete) {
+                        return Promise.resolve();
+                    }
+                    return new Promise((resolve, reject) => {
+                        node.addEventListener("load", resolve, {once: true});
+                        node.addEventListener("error", () => reject(new Error(node.src)), {once: true});
+                    });
+                }));
+                return nodes.map(node => ({
+                    src: node.src,
+                    complete: node.complete,
+                    width: node.naturalWidth,
+                    height: node.naturalHeight,
+                }));
+            }"""
+        )
 
         for index in (0, DIAGRAM_COUNT // 2, DIAGRAM_COUNT - 1):
             card_images = cards.nth(index).locator("img")
@@ -226,9 +254,6 @@ class ChessReaderAssetPlaywrightTests(unittest.TestCase):
             self.assertTrue(all(item["complete"] for item in dimensions))
             self.assertTrue(all(item["width"] > 0 and item["height"] > 0 for item in dimensions))
 
-        image_results = images.evaluate_all(
-            "nodes => nodes.map(node => ({src: node.src, complete: node.complete, width: node.naturalWidth, height: node.naturalHeight}))"
-        )
         self.assertEqual(len(image_results), DIAGRAM_COUNT * 2)
         self.assertTrue(all(item["complete"] for item in image_results))
         self.assertTrue(all(item["width"] > 0 and item["height"] > 0 for item in image_results))

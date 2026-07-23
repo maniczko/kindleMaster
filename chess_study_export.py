@@ -9397,10 +9397,30 @@ def _position_card_html(item: dict[str, Any]) -> str:
     marker_attr = f' data-side-marker-status="{html.escape(marker_status, quote=True)}"' if marker_status else ""
     has_board_crop = bool(crop.strip())
     has_side_marker_crop = bool(marker_crop.strip())
-    crop_html = f'<img src="{html.escape(crop, quote=True)}" alt="{safe_id} source crop">' if crop else "<p>No source crop</p>"
-    marker_html = f'<hr><img src="{html.escape(marker_crop, quote=True)}" alt="{safe_id} side marker crop">' if marker_crop else ""
-    overlay_html = f'<hr><img src="{html.escape(debug_overlay, quote=True)}" alt="{safe_id} debug overlay">' if debug_overlay else ""
-    rendered_html = f'<img src="{html.escape(rendered, quote=True)}" alt="{safe_id} rendered FEN">' if rendered else "<p>No rendered FEN diagram</p>"
+    crop_html = (
+        f'<img loading="lazy" decoding="async" src="{html.escape(crop, quote=True)}" '
+        f'alt="{safe_id} source crop">'
+        if crop
+        else "<p>No source crop</p>"
+    )
+    marker_html = (
+        f'<hr><img loading="lazy" decoding="async" src="{html.escape(marker_crop, quote=True)}" '
+        f'alt="{safe_id} side marker crop">'
+        if marker_crop
+        else ""
+    )
+    overlay_html = (
+        f'<hr><img loading="lazy" decoding="async" src="{html.escape(debug_overlay, quote=True)}" '
+        f'alt="{safe_id} debug overlay">'
+        if debug_overlay
+        else ""
+    )
+    rendered_html = (
+        f'<img loading="lazy" decoding="async" src="{html.escape(rendered, quote=True)}" '
+        f'alt="{safe_id} rendered FEN">'
+        if rendered
+        else "<p>No rendered FEN diagram</p>"
+    )
     fen_html = (
         f'<p><button data-copy-target="fen-{safe_id}" aria-label="Copy FEN for {safe_id}">Copy FEN</button></p><pre id="fen-{safe_id}">{html.escape(fen)}</pre>'
         if fen and status == "accepted"

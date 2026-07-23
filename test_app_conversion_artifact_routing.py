@@ -54,6 +54,15 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(self.TEST_PNG)
 
+    def test_chess_reader_sanitizer_defers_legacy_images_without_overriding_explicit_hints(self) -> None:
+        rendered = app_module._sanitize_chess_reader_html(
+            '<img src="one.png"><img loading="eager" src="two.png" /><img decoding="sync" src="three.png">'
+        )
+
+        self.assertIn('<img src="one.png" loading="lazy" decoding="async">', rendered)
+        self.assertIn('<img loading="eager" src="two.png" decoding="async" />', rendered)
+        self.assertIn('<img decoding="sync" src="three.png" loading="lazy">', rendered)
+
     def _register_chess_html_job(
         self,
         job_id: str,

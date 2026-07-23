@@ -402,6 +402,7 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
                 "app._merge_cloud_jobs_into_store_for_request",
                 return_value={"status": "synced", "refreshed": 1},
             ) as refresh_cloud,
+            patch("app._refresh_owned_cloud_job_artifacts", return_value=refreshed_job),
             patch("app._materialize_cloud_rebuild_bundle", return_value=None),
             patch("app._send_remote_artifact_proxy", return_value=("current-cloud", 200)) as remote_proxy,
         ):
@@ -467,6 +468,85 @@ class AppConversionArtifactRoutingTests(unittest.TestCase):
         self.assertEqual(result["refreshed"], 1)
         self.assertEqual(refreshed["artifacts"]["chess_verified_positions_epub"], cloud_epub)
         self.assertEqual(refreshed["artifacts"]["chess_pgn_html"], local_reader)
+
+    def test_owned_cloud_refresh_requires_matching_owner_and_preserves_local_reader(self) -> None:
+        job_id = "b" * 32
+        local_reader = {"provider": "local", "location": "reader/index.html"}
+        local_job = app_module.build_conversion_job_record(
+            job_id=job_id,
+            source_path="",
+            source_type="pdf",
+            filename="study.pdf",
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        local_job.update(
+            {
+                "user_id": "user-1",
+                "status": "ready",
+                "artifacts": {"chess_pgn_html": local_reader},
+            }
+        )
+        app_module._CONVERSION_JOB_STORE.create(local_job)
+        cloud_epub = {
+            "provider": "supabase",
+            "storage_path": "user-1/job/verified/current.epub",
+        }
+        cloud_client = MagicMock()
+        cloud_client.get_user_job.return_value = {
+            "job_id": job_id,
+            "user_id": "user-2",
+            "cloud": True,
+            "status": "ready",
+            "artifacts": {"chess_verified_positions_epub": cloud_epub},
+        }
+        with patch("app._supabase_library_client", return_value=cloud_client):
+            rejected = app_module._refresh_owned_cloud_job_artifacts(job_id, local_job)
+
+        self.assertNotIn("chess_verified_positions_epub", rejected["artifacts"])
+
+        cloud_client.reset_mock()
+        cloud_client.get_user_job.return_value = {
+            "job_id": job_id,
+            "user_id": "user-1",
+            "cloud": True,
+            "status": "ready",
+            "artifacts": {"chess_verified_positions_epub": cloud_epub},
+        }
+
+        with patch("app._supabase_library_client", return_value=cloud_client):
+            refreshed = app_module._refresh_owned_cloud_job_artifacts(job_id, local_job)
+
+        self.assertEqual(refreshed["artifacts"]["chess_verified_positions_epub"], cloud_epub)
+        self.assertEqual(refreshed["artifacts"]["chess_pgn_html"], local_reader)
+        cloud_client.get_user_job.assert_called_once_with(user_id="user-1", job_id=job_id)
+
+    def test_remote_artifact_proxy_downloads_known_storage_path_server_side(self) -> None:
+        cloud_client = MagicMock()
+        cloud_client.download_artifact_bytes.return_value = b"current-cloud-artifact"
+        artifact = {
+            "provider": "supabase",
+            "filename": "current.json",
+            "content_type": "application/json",
+            "storage_path": "user-1/job/report/current.json",
+        }
+
+        with (
+            app.test_request_context(),
+            patch("app._supabase_library_client", return_value=cloud_client),
+        ):
+            response = app_module._send_remote_artifact_proxy(
+                artifact,
+                job_id="c" * 32,
+                artifact_key="chess_verified_fen_publication",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(), b"current-cloud-artifact")
+        self.assertEqual(response.headers["X-KindleMaster-Artifact-Source"], "remote")
+        cloud_client.download_artifact_bytes.assert_called_once_with(
+            storage_path="user-1/job/report/current.json"
+        )
+        response.close()
 
     def test_history_exposes_restorable_fen_review_route(self) -> None:
         job_id = "cloud-fen-review-bundle"

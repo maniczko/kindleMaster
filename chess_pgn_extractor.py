@@ -463,10 +463,13 @@ def extract_chess_pgn_records_from_text(
         warnings = sorted(set(candidate_warnings + list(reconstruction_warnings)))
         if re.search(r"(?im)^\s*(?:The position is|Weighted Error Value:)", raw):
             warnings.append("book_comment_excluded_from_strict_movetext")
-        if _detect_unmapped_pgn_glyphs(raw) or _detect_unmapped_pgn_glyphs(body):
+        candidate_has_unmapped_glyphs = (
+            _detect_unmapped_pgn_glyphs(raw)
+            or _detect_unmapped_pgn_glyphs(body)
+        )
+        if candidate_has_unmapped_glyphs:
             warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
-        if glyph_rows and UNMAPPED_CHESS_GLYPH_WARNING not in warnings:
-            warnings.append(UNMAPPED_CHESS_GLYPH_WARNING)
+        candidate_glyph_rows = glyph_rows if candidate_has_unmapped_glyphs else []
         force_review = bool(candidate.get("force_review"))
         status = (
             "accepted"
@@ -491,7 +494,7 @@ def extract_chess_pgn_records_from_text(
                 token_source=tokens,
                 ocr_confidence_source=float(ocr_confidence or 0.0),
                 pgn_extract=_pgn_extract_audit_payload(pgn),
-                glyph_diagnostics=glyph_rows,
+                glyph_diagnostics=candidate_glyph_rows,
             )
         )
     return records

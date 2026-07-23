@@ -654,7 +654,9 @@ _PAGE_TEMPLATE = r"""<!doctype html>
       return error;
     }
     function scheduleServerSave() {
-      if (sessionStatus === 'complete') return;
+      // A closed review is immutable; discard stale local save intent instead of
+      // leaving the toolbar in a permanent loading state.
+      if (sessionStatus === 'complete') { serverSavePending = false; return; }
       serverSavePending = true;
       if (!serverProgressUrl) { setSaveState('local','Zapis lokalny; serwer niedostępny'); return; }
       if (!storedAccessToken()) { authenticationRequired(false); return; }
@@ -731,8 +733,11 @@ _PAGE_TEMPLATE = r"""<!doctype html>
         const serverSavedAt = Date.parse(payload.saved_at || '') || 0;
         serverRevision = Number(payload.revision || 0);
         applySessionStatus(payload.session_status || 'active');
-        const keepLocal = Object.keys(state).length > 0 && localModifiedAt > serverSavedAt;
+        // A completed server session is canonical. Local state may have a newer
+        // timestamp from an earlier browser session, but it can no longer be saved.
+        const keepLocal = sessionStatus !== 'complete' && Object.keys(state).length > 0 && localModifiedAt > serverSavedAt;
         if (!keepLocal) {
+          serverSavePending = false;
           state = {};
           for (const row of payload.rows) {
             const card=cards.find(item=>item.dataset.fingerprint===row.diagram_fingerprint);

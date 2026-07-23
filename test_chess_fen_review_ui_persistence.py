@@ -52,6 +52,22 @@ class ChessFenReviewUiPersistenceTests(unittest.TestCase):
         self.assertIn("if (!storedAccessToken()) { authenticationRequired(false); return; }", rendered)
         self.assertIn("window.addEventListener('storage'", rendered)
 
+    def test_closed_session_does_not_keep_stale_local_save_pending(self) -> None:
+        row = {
+            "artifact_id": "artifact-1",
+            "diagram_id": "p001-d1",
+            "diagram_fingerprint": "1" * 64,
+            "source_document_sha256": "a" * 64,
+            "square_labels": [""] * 64,
+            "label_status": "needs_piece_labels",
+        }
+
+        rendered = render_fen_manual_review_html([row], source_identity=row, artifact_id="artifact-1")
+
+        self.assertIn("if (sessionStatus === 'complete') { serverSavePending = false; return; }", rendered)
+        self.assertIn("const keepLocal = sessionStatus !== 'complete'", rendered)
+        self.assertIn("if (!keepLocal) {\n          serverSavePending = false;", rendered)
+
     def test_review_ui_supports_placement_only_close_guard_and_image_retry(self) -> None:
         row = {
             "artifact_id": "artifact-1",

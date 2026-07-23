@@ -1126,6 +1126,46 @@ def _reader_sidecar_summary(positions: list[dict[str, object]]) -> dict[str, obj
     }
 
 
+def _materialize_primary_epub_for_chess_publication(
+    job_id: str,
+    job: Mapping[str, object],
+    *,
+    artifact_root: Path,
+) -> Path:
+    artifacts = dict(job.get("artifacts", {}) or {})
+    output_artifact = artifacts.get("output")
+    if not isinstance(output_artifact, Mapping):
+        raise ValueError("full_publication_epub_artifact_missing")
+    local_path = _resolve_local_artifact_path(dict(output_artifact))
+    if local_path is not None and local_path.is_file():
+        return local_path
+    storage_path = str(output_artifact.get("storage_path") or "").strip()
+    if not storage_path:
+        raise ValueError("full_publication_epub_storage_path_missing")
+    payload = _supabase_library_client().download_artifact_bytes(
+        storage_path=storage_path
+    )
+    if not payload.startswith(b"PK"):
+        raise ValueError("full_publication_epub_download_invalid")
+    filename = secure_filename(
+        str(
+            output_artifact.get("filename")
+            or job.get("download_name")
+            or f"{job_id}.epub"
+        )
+    )
+    if not filename.lower().endswith(".epub"):
+        filename = f"{Path(filename).stem or job_id}.epub"
+    target = (artifact_root / "output" / filename).resolve()
+    if not _is_path_under(target, artifact_root):
+        raise ValueError("full_publication_epub_target_invalid")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    os.replace(temporary, target)
+    return target
+
+
 def _publish_verified_fen_review_artifacts(
     job_id: str,
     job: Mapping[str, object],
@@ -1209,22 +1249,54 @@ def _publish_verified_fen_review_artifacts(
     html_path = _resolve_local_artifact_path(html_artifact if isinstance(html_artifact, dict) else None)
     if html_path is None:
         raise ValueError("chess_reader_artifact_missing")
-    from chess_study_export import render_study_html
-
-    render_study_html(
-        job_root / "semantic_chess_html",
-        structure={"chapters": [{"chapter_no": 1, "title": "Chess diagrams"}]},
-        positions={"positions": positions},
-        qa_report=qa_report,
-        source_pdf=_job_input_path(dict(effective_job)),
-        source_html=html_path,
-        source_gate={
-            "decision": "use_source_bound_verified_positions_as_final_reader",
-            "source_html_evidence_only": False,
-            "used_as_final_reader": True,
-            "reasons": [],
-        },
+    source_epub = _materialize_primary_epub_for_chess_publication(
+        job_id,
+        effective_job,
+        artifact_root=job_root,
     )
+    accepted_pgn_artifact = artifacts.get("chess_pgn")
+    accepted_pgn_path = _resolve_local_artifact_path(
+        accepted_pgn_artifact if isinstance(accepted_pgn_artifact, dict) else None
+    )
+    if (
+        accepted_pgn_path is not None
+        and accepted_pgn_path.name.lower() == "chess_verified_positions.pgn"
+    ):
+        accepted_pgn_path = None
+    from chess_full_publication import publish_full_chess_publication
+
+    full_publication = publish_full_chess_publication(
+        source_epub=source_epub,
+        output_epub=source_epub,
+        reader_dir=job_root / "semantic_chess_html",
+        verified_records=diagram_records,
+        artifact_root=job_root,
+        accepted_pgn_path=accepted_pgn_path,
+    )
+    report["full_publication"] = full_publication
+    full_summary = dict(full_publication.get("summary") or {})
+    qa_report["summary"].update(full_summary)
+    output_metadata = _local_artifact_metadata(
+        job_id,
+        ArtifactKind.OUTPUT,
+        source_epub,
+    )
+    output_metadata["download_url"] = f"/convert/download/{job_id}"
+    output_metadata["label"] = "Pełny EPUB z diagramami i treścią"
+    artifacts["output"] = output_metadata
+    full_report_path = Path(str(full_publication.get("report_path") or ""))
+    if not full_report_path.is_file() or not _is_path_under(full_report_path, job_root):
+        raise ValueError("full_publication_report_missing")
+    full_report_metadata = _local_artifact_metadata(
+        job_id,
+        ArtifactKind.REPORT,
+        full_report_path,
+    )
+    full_report_metadata["download_url"] = (
+        f"/convert/artifact/{job_id}/chess_full_publication"
+    )
+    full_report_metadata["label"] = "Raport pełnej publikacji szachowej"
+    artifacts["chess_full_publication"] = full_report_metadata
     artifacts["chess_pgn_html"] = _enrich_chess_reader_artifact_metadata(
         job_id,
         dict(html_artifact),
@@ -1234,6 +1306,8 @@ def _publish_verified_fen_review_artifacts(
         job_id,
         artifacts=artifacts,
         verified_fen_publication=report,
+        output_path=str(source_epub),
+        output_size_bytes=source_epub.stat().st_size,
     )
     if updated is None:
         raise ValueError("conversion_job_update_failed")
@@ -2524,6 +2598,7 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
     chess_diagrams_verified_file = _first_file(job_dir / "report", "chess_diagrams_verified.json")
     chess_verified_positions_pgn_file = _first_file(job_dir / "report", "chess_verified_positions.pgn")
     chess_verified_fen_publication_file = _first_file(job_dir / "report", "chess_verified_fen_publication.json")
+    chess_full_publication_file = _first_file(job_dir / "report", "chess_full_publication.json")
     chess_fen_two_crop_review_artifacts_file = _first_file(
         job_dir / "report",
         _TWO_CROP_REVIEW_ZIP_NAME,
@@ -2676,6 +2751,18 @@ def _rebuild_job_from_local_artifact_dir(job_dir: Path) -> dict | None:
         )
         artifacts["chess_verified_fen_publication"]["download_url"] = f"/convert/artifact/{job_id}/chess_verified_fen_publication"
         artifacts["chess_verified_fen_publication"]["label"] = "Raport publikacji FEN"
+    if chess_full_publication_file is not None:
+        artifacts["chess_full_publication"] = _local_artifact_metadata(
+            job_id,
+            ArtifactKind.REPORT,
+            chess_full_publication_file,
+        )
+        artifacts["chess_full_publication"]["download_url"] = (
+            f"/convert/artifact/{job_id}/chess_full_publication"
+        )
+        artifacts["chess_full_publication"]["label"] = (
+            "Raport pełnej publikacji szachowej"
+        )
     if chess_fen_two_crop_review_artifacts_file is not None:
         artifacts["chess_fen_two_crop_review_artifacts"] = _local_artifact_metadata(
             job_id,
@@ -5283,6 +5370,7 @@ def _upload_durable_job_artifacts(
         "chess_verified_positions_pgn",
         "chess_verified_positions_epub",
         "chess_verified_fen_publication",
+        "chess_full_publication",
         "chess_diagrams_verified",
     )
     for key in direct_keys:
@@ -5597,6 +5685,7 @@ def _merge_materialized_cloud_job(
         "chess_verified_positions_pgn",
         "chess_verified_positions_epub",
         "chess_verified_fen_publication",
+        "chess_full_publication",
         "chess_diagrams_verified",
     }
     for key, artifact in rebuilt_artifacts.items():
@@ -7682,6 +7771,7 @@ def convert_artifact_download(job_id: str, artifact_key: str):
         "chess_verified_positions_pgn",
         "chess_verified_positions_epub",
         "chess_verified_fen_publication",
+        "chess_full_publication",
     }:
         restored_job = _materialize_cloud_rebuild_bundle(job_id, job)
         if restored_job is not None:

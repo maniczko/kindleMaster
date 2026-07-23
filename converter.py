@@ -207,10 +207,39 @@ def chess_fen_html_attrs(chess_img: dict) -> str:
     """Return safe data attributes for a recognized chess position."""
     side_payload = _chess_side_marker_payload(chess_img)
     fen = str(chess_img.get("fen") or "").strip()
-    if not fen and not side_payload:
+    diagram_id = str(
+        chess_img.get("diagram_id")
+        or chess_img.get("id")
+        or side_payload.get("diagram_id")
+        or ""
+    ).strip()
+    if not fen and not side_payload and not diagram_id:
         return ""
     confidence = chess_img.get("fen_confidence", "")
     attrs = []
+    if diagram_id:
+        attrs.append(
+            f'data-diagram-id="{html_module.escape(diagram_id, quote=True)}"'
+        )
+    source_page = chess_img.get(
+        "page_number",
+        chess_img.get("page_label", chess_img.get("page")),
+    )
+    if source_page not in (None, ""):
+        try:
+            attrs.append(f'data-source-page="{max(0, int(source_page))}"')
+        except (TypeError, ValueError):
+            pass
+    fingerprint = str(
+        chess_img.get("diagram_fingerprint")
+        or chess_img.get("verified_diagram_fingerprint")
+        or side_payload.get("diagram_fingerprint")
+        or ""
+    ).strip()
+    if fingerprint:
+        attrs.append(
+            f'data-diagram-fingerprint="{html_module.escape(fingerprint, quote=True)}"'
+        )
     if fen:
         attrs.append(f'data-fen="{html_module.escape(fen, quote=True)}"')
     try:

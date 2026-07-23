@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,6 +50,90 @@ class FakeDownloadClient:
 
 
 class AppDurableArtifactSyncTests(unittest.TestCase):
+    def test_materializes_primary_epub_from_exact_cloud_artifact(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr(
+                "mimetype",
+                "application/epub+zip",
+                compress_type=zipfile.ZIP_STORED,
+            )
+        payload = stream.getvalue()
+        storage_path = "owner/job-full/output/full-book.epub"
+        client = FakeDownloadClient({storage_path: payload})
+        job = {
+            "artifacts": {
+                "output": {
+                    "provider": "supabase",
+                    "filename": "full-book.epub",
+                    "storage_path": storage_path,
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "job-full"
+            root.mkdir()
+            with (
+                patch.object(
+                    app_module,
+                    "_resolve_local_artifact_path",
+                    return_value=None,
+                ),
+                patch.object(
+                    app_module,
+                    "_supabase_library_client",
+                    return_value=client,
+                ),
+            ):
+                materialized = app_module._materialize_primary_epub_for_chess_publication(
+                    "job-full",
+                    job,
+                    artifact_root=root,
+                )
+            materialized_payload = materialized.read_bytes()
+
+        self.assertEqual(materialized.name, "full-book.epub")
+        self.assertEqual(materialized_payload, payload)
+        self.assertEqual(client.download_count, 1)
+
+    def test_rejects_invalid_cloud_epub_without_persisting_output(self) -> None:
+        storage_path = "owner/job-invalid/output/broken.epub"
+        client = FakeDownloadClient({storage_path: b"not-an-epub"})
+        job = {
+            "artifacts": {
+                "output": {
+                    "provider": "supabase",
+                    "filename": "broken.epub",
+                    "storage_path": storage_path,
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "job-invalid"
+            root.mkdir()
+            with (
+                patch.object(
+                    app_module,
+                    "_resolve_local_artifact_path",
+                    return_value=None,
+                ),
+                patch.object(
+                    app_module,
+                    "_supabase_library_client",
+                    return_value=client,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "full_publication_epub_download_invalid",
+                ):
+                    app_module._materialize_primary_epub_for_chess_publication(
+                        "job-invalid",
+                        job,
+                        artifact_root=root,
+                    )
+            self.assertFalse((root / "output" / "broken.epub").exists())
+
     def test_uploads_source_outputs_reports_and_rebuild_bundle_as_distinct_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "job-1"

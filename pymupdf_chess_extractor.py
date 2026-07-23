@@ -2323,6 +2323,7 @@ def _notation_layout_diagrams_from_page(
             if review_artifact_files is not None:
                 review_artifact_files.extend(two_crop_files)
         chess_img = {
+            "diagram_id": diagram_id,
             "filename": filename,
             "data": png_data,
             "extension": "png",
@@ -2330,6 +2331,7 @@ def _notation_layout_diagrams_from_page(
             "height": height,
             "bbox": page_bbox,
             "page": page_num,
+            "page_number": page_num + 1,
             "is_chess": True,
             "inline": True,
             "fen_result": payload,

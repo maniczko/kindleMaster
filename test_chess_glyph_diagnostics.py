@@ -93,6 +93,28 @@ class ChessGlyphDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["diagnostic_count"], 1)
         self.assertEqual(payload["records"][0]["diagnostics"][0]["span_index"], 7)
 
+    def test_unrelated_page_glyph_diagnostic_does_not_poison_clean_candidate(self) -> None:
+        records = annotate_records_with_replayed_fens(
+            extract_chess_pgn_records_from_text(
+                "1. e4 e5 2. Nf3 Nc6 *",
+                page_num=0,
+                source_title="Clean candidate",
+                ocr_confidence=1.0,
+                glyph_diagnostics=[
+                    {
+                        "page": 20,
+                        "font_name": "CustomChess-Regular",
+                        "reasons": ["replacement_char"],
+                        "raw_text": "\ufffd",
+                    }
+                ],
+            )
+        )
+
+        self.assertEqual(records[0].status, "accepted")
+        self.assertNotIn("unmapped_chess_glyphs", records[0].warnings)
+        self.assertEqual(records[0].glyph_diagnostics, [])
+
     def test_chess_route_emits_glyph_diagnostics_json_artifact_for_review_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "glyph-diagnostics.pdf"

@@ -169,6 +169,46 @@ class ChessFullPublicationTests(unittest.TestCase):
             self.assertEqual(manifest["summary"]["diagram_overlay_count"], 1)
             self.assertEqual(manifest["summary"]["notation_blocker_count"], 1)
 
+            publish_full_chess_publication(
+                source_epub=source,
+                output_epub=source,
+                reader_dir=root / "semantic_chess_html",
+                verified_records=[
+                    {
+                        "id": "layout-chess-p010-d01",
+                        "page_number": 10,
+                        "bbox": [72.0, 96.0, 216.0, 240.0],
+                        "confirmed_diagram": True,
+                        "board_crop_path": (
+                            "review/chess_fen/two_crop/"
+                            "notation_layout_p010_01_board.png"
+                        ),
+                        "publication_included": True,
+                        "fen_human_verified": True,
+                        "placement_human_verified": True,
+                        "full_fen": (
+                            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/"
+                            "RNBQKBNR w KQkq - 0 2"
+                        ),
+                        "side_to_move": "w",
+                        "verified_render_path": (
+                            "semantic_chess_html/assets/verified_fen/board.svg"
+                        ),
+                    }
+                ],
+                artifact_root=root,
+                accepted_pgn_path=pgn,
+            )
+            with zipfile.ZipFile(source) as archive:
+                names = archive.namelist()
+                self.assertEqual(len(names), len(set(names)))
+                package = archive.read("EPUB/package.opf").decode("utf-8")
+                self.assertEqual(package.count('href="images/verified_fen/'), 1)
+                self.assertEqual(
+                    package.count('href="supplements/chess_games.pgn"'),
+                    1,
+                )
+
     def test_blocks_incomplete_mapping_instead_of_publishing_partial_book(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

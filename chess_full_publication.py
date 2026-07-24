@@ -52,8 +52,17 @@ def publish_full_chess_publication(
         raise FullChessPublicationError("publication_target_outside_artifact")
 
     with zipfile.ZipFile(source, "r") as archive:
-        members = archive.infolist()
-        member_bytes = {member.filename: archive.read(member.filename) for member in members}
+        member_order: list[str] = []
+        member_by_name: dict[str, zipfile.ZipInfo] = {}
+        for member in archive.infolist():
+            if member.filename not in member_by_name:
+                member_order.append(member.filename)
+            member_by_name[member.filename] = member
+        members = [member_by_name[name] for name in member_order]
+        member_bytes = {
+            name: archive.read(member_by_name[name])
+            for name in member_order
+        }
     if member_bytes.get("mimetype") != b"application/epub+zip":
         raise FullChessPublicationError("source_epub_mimetype_invalid")
 
@@ -156,6 +165,7 @@ def publish_full_chess_publication(
                     record,
                     root=root,
                     package_path=package_path,
+                    existing_assets=member_bytes,
                 )
             )
             package_asset_path = _join_package_path(package_path, package_asset_href)
@@ -241,6 +251,7 @@ def publish_full_chess_publication(
                     record,
                     root=root,
                     package_path=package_path,
+                    existing_assets=member_bytes,
                 )
                 generated_assets[package_asset_path] = asset_payload
                 generated_manifest_items.append(
@@ -348,16 +359,24 @@ def publish_full_chess_publication(
             member_bytes["mimetype"],
             compress_type=zipfile.ZIP_STORED,
         )
+        replaced_generated_assets: set[str] = set()
         for member in members:
             if member.filename == "mimetype":
                 continue
             payload = (
                 package_payload
                 if member.filename == package_path
-                else modified_documents.get(member.filename, member_bytes[member.filename])
+                else generated_assets.get(
+                    member.filename,
+                    modified_documents.get(member.filename, member_bytes[member.filename]),
+                )
             )
             target.writestr(member, payload)
+            if member.filename in generated_assets:
+                replaced_generated_assets.add(member.filename)
         for path, payload in sorted(generated_assets.items()):
+            if path in replaced_generated_assets:
+                continue
             target.writestr(path, payload, compress_type=zipfile.ZIP_DEFLATED)
     os.replace(temporary, output)
 
@@ -494,23 +513,29 @@ def _append_manifest_items(
     package_payload: bytes,
     items: Sequence[tuple[str, str, str]],
 ) -> bytes:
+    text = _deduplicate_manifest_item_hrefs(package_payload.decode("utf-8"))
     if not items:
-        return package_payload
-    text = package_payload.decode("utf-8")
+        return text.encode("utf-8")
     existing_ids = set(re.findall(r'\bid=["\']([^"\']+)["\']', text))
+    existing_hrefs = set(re.findall(r'\bhref=["\']([^"\']+)["\']', text))
     fragments: list[str] = []
     for raw_id, href, media_type in items:
+        if href in existing_hrefs:
+            continue
         item_id = raw_id
         suffix = 2
         while item_id in existing_ids:
             item_id = f"{raw_id}-{suffix}"
             suffix += 1
         existing_ids.add(item_id)
+        existing_hrefs.add(href)
         fragments.append(
             f'<item id="{html.escape(item_id, quote=True)}" '
             f'href="{html.escape(href, quote=True)}" '
             f'media-type="{html.escape(media_type, quote=True)}"/>'
         )
+    if not fragments:
+        return text.encode("utf-8")
     updated, count = re.subn(
         r"</(?P<prefix>[A-Za-z0-9_-]+:)?manifest\s*>",
         lambda match: "".join(fragments)
@@ -522,6 +547,47 @@ def _append_manifest_items(
     if count != 1:
         raise FullChessPublicationError("epub_manifest_missing")
     return updated.encode("utf-8")
+
+
+def _deduplicate_manifest_item_hrefs(text: str) -> str:
+    manifest_match = re.search(
+        r"<(?:(?P<prefix>[A-Za-z0-9_-]+):)?manifest\b[^>]*>(?P<body>.*?)"
+        r"</(?:(?P=prefix):)?manifest\s*>",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if manifest_match is None:
+        raise FullChessPublicationError("epub_manifest_missing")
+
+    body = manifest_match.group("body")
+    item_pattern = re.compile(
+        r"<(?:[A-Za-z0-9_-]+:)?item\b[^>]*?/?>",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    href_pattern = re.compile(
+        r"\bhref\s*=\s*[\"']([^\"']+)[\"']",
+        flags=re.IGNORECASE,
+    )
+    seen_hrefs: set[str] = set()
+    chunks: list[str] = []
+    cursor = 0
+    for item_match in item_pattern.finditer(body):
+        chunks.append(body[cursor:item_match.start()])
+        item = item_match.group(0)
+        href_match = href_pattern.search(item)
+        href = href_match.group(1) if href_match is not None else ""
+        if not href or href not in seen_hrefs:
+            chunks.append(item)
+            if href:
+                seen_hrefs.add(href)
+        cursor = item_match.end()
+    chunks.append(body[cursor:])
+    deduplicated_body = "".join(chunks)
+    return (
+        text[:manifest_match.start("body")]
+        + deduplicated_body
+        + text[manifest_match.end("body"):]
+    )
 
 
 def _build_full_reader(
@@ -1263,6 +1329,7 @@ def _record_publication_asset(
     *,
     root: Path,
     package_path: str,
+    existing_assets: Mapping[str, bytes] | None = None,
 ) -> tuple[str, str, bytes, str]:
     record_id = str(record.get("diagram_id") or record.get("id") or "").strip()
     if not record_id:
@@ -1272,27 +1339,45 @@ def _record_publication_asset(
         record.get("fen_human_verified") is True
         or record.get("placement_human_verified") is True
     ):
+        href = f"images/verified_fen/{digest}.svg"
+        package_asset_path = _join_package_path(package_path, href)
         source = _resolve_record_artifact_path(
             root,
             record.get("verified_render_path") or record.get("rendered_svg"),
         )
         if source is None or not source.is_file():
+            existing_payload = (existing_assets or {}).get(package_asset_path)
+            if existing_payload is not None:
+                return (
+                    href,
+                    package_asset_path,
+                    existing_payload,
+                    "image/svg+xml",
+                )
             raise FullChessPublicationError(f"verified_render_missing:{record_id}")
-        href = f"images/verified_fen/{digest}.svg"
         return (
             href,
-            _join_package_path(package_path, href),
+            package_asset_path,
             source.read_bytes(),
             "image/svg+xml",
         )
 
+    href = f"images/source_diagrams/{digest}.png"
+    package_asset_path = _join_package_path(package_path, href)
     source = _resolve_artifact_path(root, record.get("board_crop_path"))
     if source is None or not source.is_file():
+        existing_payload = (existing_assets or {}).get(package_asset_path)
+        if existing_payload is not None:
+            return (
+                href,
+                package_asset_path,
+                existing_payload,
+                "image/png",
+            )
         raise FullChessPublicationError(f"source_diagram_crop_missing:{record_id}")
-    href = f"images/source_diagrams/{digest}.png"
     return (
         href,
-        _join_package_path(package_path, href),
+        package_asset_path,
         source.read_bytes(),
         "image/png",
     )

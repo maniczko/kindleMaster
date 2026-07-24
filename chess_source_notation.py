@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -91,6 +91,12 @@ def load_source_glyph_maps(
                 for glyph_id, replacement in glyphs.items()
                 if str(glyph_id).isdigit()
             },
+            "sequences": _load_glyph_sequences(payload.get("sequences")),
+            "suspicious_decoded_patterns": tuple(
+                str(pattern)
+                for pattern in payload.get("suspicious_decoded_patterns") or ()
+                if str(pattern)
+            ),
         }
     return mappings
 
@@ -172,6 +178,10 @@ def extract_source_notation_pages(
                 for line in source_lines
                 if looks_like_decoded_notation_line(line.decoded_text)
             ]
+            notation_lines = _order_notation_lines_by_columns(
+                notation_lines,
+                page_width=float(page.rect.width),
+            )
             blockers = sorted(
                 {
                     blocker
@@ -303,10 +313,16 @@ def validate_san_line(fen: str, san_line: str) -> dict[str, Any]:
 
 def normalize_decoded_notation(value: str) -> str:
     text = str(value or "")
-    text = re.sub(r"\b(\d+)\s+\.\s*\.\s*\.", r"\1...", text)
+    text = re.sub(
+        r"\b(\d+)\s*\.\s*\.\s*\.\s*(?=[KQRBN])",
+        r"\1...",
+        text,
+    )
     text = re.sub(r"\b(\d+)\s+\.", r"\1.", text)
     text = re.sub(r"\b(\d+\.\.\.)\s+(?=[KQRBN])", r"\1", text)
     text = re.sub(r"\b([KQRBN])\s+([a-h][1-8])", r"\1\2", text)
+    text = re.sub(r"(?<=[a-h][1-8])(?=\d{1,3}\.)", " ", text)
+    text = re.sub(r"(?<=[+#?!])(?=\d{1,3}\.)", " ", text)
     text = re.sub(r"(?<=[a-h1-8])\s+([+#])", r"\1", text)
     text = re.sub(r"\s+([,.)])", r"\1", text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()
@@ -314,10 +330,14 @@ def normalize_decoded_notation(value: str) -> str:
 
 def looks_like_decoded_notation_line(value: str) -> bool:
     text = normalize_decoded_notation(value)
+    san_move = (
+        r"(?:O-O(?:-O)?|"
+        r"[KQRBN]?[a-h1-8]{0,2}x?[a-h][1-8](?:=[QRBN])?[+#]?)"
+    )
     return bool(
         re.search(
             r"(?<![\d.])\d{1,3}\.(?:\.\.)?\s*"
-            r"(?:\[\[gid:\d+\]\]|O-O(?:-O)?|[KQRBN]?[a-h][1-8])",
+            rf"(?:\[\[gid:\d+\]\]|{san_move})",
             text,
         )
         or re.search(
@@ -366,6 +386,7 @@ def _source_glyphs(
         mapping = mappings.get(fingerprint)
         strict = bool((mapping or {}).get("strict"))
         replacements = (mapping or {}).get("glyphs") or {}
+        span_start = len(result)
         previous_origin: tuple[float, float] | None = None
         previous_status = ""
         source_bound_origin: tuple[float, float] | None = None
@@ -440,6 +461,110 @@ def _source_glyphs(
                 source_bound_origin = origin
             elif glyph_id >= 0:
                 source_bound_origin = None
+        if mapping:
+            result[span_start:] = _apply_source_sequence_mappings(
+                result[span_start:],
+                mapping.get("sequences") or (),
+            )
+            result[span_start:] = _mark_suspicious_decoded_patterns(
+                result[span_start:],
+                mapping.get("suspicious_decoded_patterns") or (),
+            )
+    return result
+
+
+def _load_glyph_sequences(value: Any) -> tuple[tuple[tuple[int, ...], str], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    sequences: list[tuple[tuple[int, ...], str]] = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            continue
+        raw_ids = row.get("glyph_ids")
+        if (
+            not isinstance(raw_ids, Sequence)
+            or isinstance(raw_ids, (str, bytes))
+            or not raw_ids
+        ):
+            continue
+        try:
+            glyph_ids = tuple(int(glyph_id) for glyph_id in raw_ids)
+        except (TypeError, ValueError):
+            continue
+        if any(glyph_id < 0 for glyph_id in glyph_ids):
+            continue
+        sequences.append((glyph_ids, str(row.get("replacement") or "")))
+    return tuple(
+        sorted(sequences, key=lambda item: len(item[0]), reverse=True)
+    )
+
+
+def _apply_source_sequence_mappings(
+    glyphs: Sequence[SourceGlyph],
+    sequences: Sequence[tuple[tuple[int, ...], str]],
+) -> list[SourceGlyph]:
+    result = list(glyphs)
+    primary_indices = [
+        index for index, glyph in enumerate(result) if glyph.glyph_id >= 0
+    ]
+    claimed: set[int] = set()
+    for primary_offset in range(len(primary_indices)):
+        if primary_offset in claimed:
+            continue
+        for glyph_ids, replacement in sequences:
+            end_offset = primary_offset + len(glyph_ids)
+            if end_offset > len(primary_indices):
+                continue
+            actual = tuple(
+                result[primary_indices[offset]].glyph_id
+                for offset in range(primary_offset, end_offset)
+            )
+            if actual != glyph_ids:
+                continue
+            start_index = primary_indices[primary_offset]
+            end_index = (
+                primary_indices[end_offset]
+                if end_offset < len(primary_indices)
+                else len(result)
+            )
+            for index in range(start_index, end_index):
+                result[index] = replace(
+                    result[index],
+                    decoded_text=replacement if index == start_index else "",
+                    status=(
+                        "source_bound_mapping"
+                        if index == start_index
+                        else "synthetic_to_unicode_continuation"
+                    ),
+                )
+            claimed.update(range(primary_offset, end_offset))
+            break
+    return result
+
+
+def _mark_suspicious_decoded_patterns(
+    glyphs: Sequence[SourceGlyph],
+    patterns: Sequence[str],
+) -> list[SourceGlyph]:
+    result = list(glyphs)
+    decoded = "".join(glyph.decoded_text for glyph in result)
+    if not result or not decoded:
+        return result
+    for pattern in patterns:
+        if pattern not in decoded:
+            continue
+        index = next(
+            (
+                glyph_index
+                for glyph_index, glyph in enumerate(result)
+                if glyph.decoded_text
+            ),
+            0,
+        )
+        result[index] = replace(
+            result[index],
+            status=f"suspicious_decoded_ligature:{pattern}",
+        )
     return result
 
 
@@ -484,6 +609,13 @@ def _group_glyphs_into_lines(
                     for glyph in segment
                     if glyph.status == "unmapped_source_glyph"
                 }
+                | {
+                    glyph.status
+                    for glyph in segment
+                    if glyph.status.startswith(
+                        "suspicious_decoded_ligature:"
+                    )
+                }
             )
             lines.append(
                 SourceNotationLine(
@@ -506,7 +638,7 @@ def _group_glyphs_into_lines(
 def _split_glyph_row(
     glyphs: Sequence[SourceGlyph],
     *,
-    maximum_horizontal_gap: float = 36.0,
+    maximum_horizontal_gap: float = 12.0,
 ) -> list[list[SourceGlyph]]:
     segments: list[list[SourceGlyph]] = []
     for glyph in glyphs:
@@ -521,6 +653,33 @@ def _split_glyph_row(
             segments.append([])
         segments[-1].append(glyph)
     return [segment for segment in segments if segment]
+
+
+def _order_notation_lines_by_columns(
+    lines: Sequence[SourceNotationLine],
+    *,
+    page_width: float,
+) -> list[SourceNotationLine]:
+    ordered = sorted(lines, key=lambda line: (line.baseline, line.bbox[0]))
+    if page_width <= 0 or len(ordered) < 4:
+        return ordered
+    midpoint = page_width / 2.0
+    gutter = max(4.0, page_width * 0.015)
+    left = [
+        line for line in ordered if line.bbox[2] <= midpoint + gutter
+    ]
+    right = [
+        line for line in ordered if line.bbox[0] >= midpoint - gutter
+    ]
+    spanning = [
+        line for line in ordered if line not in left and line not in right
+    ]
+    if len(left) < 2 or len(right) < 2 or spanning:
+        return ordered
+    return sorted(left, key=lambda line: (line.baseline, line.bbox[0])) + sorted(
+        right,
+        key=lambda line: (line.baseline, line.bbox[0]),
+    )
 
 
 def _normalize_font_name(value: str) -> str:

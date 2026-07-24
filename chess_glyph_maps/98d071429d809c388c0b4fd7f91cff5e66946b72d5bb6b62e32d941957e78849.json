@@ -5,18 +5,47 @@
   "strict": false,
   "evidence": {
     "source_pdf_sha256": "9faf77bf6f38fe584fb0c191a0bd61c419e6ff3912ffe60a575749cf7493a1e5",
-    "verified_page_numbers": [9, 19, 21, 22, 33, 53, 57, 68, 77, 84, 85, 86],
+    "verified_page_numbers": [9, 16, 19, 21, 22, 33, 53, 57, 68, 77, 84, 85, 86],
     "method": "rendered_glyph_shape_plus_repeated_legal_chess_context",
-    "note": "Overrides cover chess-piece glyphs embedded in prose spans and require repeated independent move contexts."
+    "note": "Overrides cover chess-piece glyphs embedded in prose spans. Page 16 composite figurines were verified against the rendered source page; synthetic ToUnicode continuations are suppressed after the mapped primary GID."
   },
+  "suspicious_decoded_patterns": [
+    "Wix",
+    "Ii>",
+    "li>",
+    "c!LJ",
+    "ltJ",
+    "1\"l",
+    "l:!",
+    "U:!",
+    "j,",
+    "fS"
+  ],
   "glyphs": {
+    "55": "+",
+    "59": "1",
     "79": "B",
     "106": "Q",
     "112": "K",
+    "127": "+",
     "130": "K",
+    "165": "+",
     "235": "B",
     "269": "Q",
+    "341": "Q",
+    "407": "N",
+    "649": "R",
+    "719": "f8",
+    "984": "R",
+    "1165": "R",
+    "1224": "K",
+    "1225": "K",
+    "1273": "N",
+    "1342": "K",
+    "1343": "K",
     "2045": "R",
-    "2196": "R"
+    "2196": "R",
+    "2217": "K",
+    "2218": "K"
   }
 }

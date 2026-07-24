@@ -4,12 +4,46 @@ import unittest
 
 from chess_source_notation import (
     SourceGlyph,
+    SourceNotationLine,
     _group_glyphs_into_lines,
+    _order_notation_lines_by_columns,
+    _source_glyphs,
     load_source_glyph_maps,
     looks_like_decoded_notation_line,
     normalize_decoded_notation,
     validate_san_line,
 )
+
+
+class _TracePage:
+    def __init__(
+        self,
+        raw: list[tuple[int, str]],
+        *,
+        font_name: str = "Fd545813",
+    ) -> None:
+        self._raw = raw
+        self._font_name = font_name
+
+    def get_texttrace(self) -> list[dict[str, object]]:
+        chars = []
+        x = 10.0
+        source_origin = None
+        for glyph_id, value in self._raw:
+            if glyph_id >= 0:
+                source_origin = (x, 20.0)
+            origin = source_origin if glyph_id < 0 else (x, 20.0)
+            chars.append(
+                (
+                    ord(value),
+                    glyph_id,
+                    origin,
+                    (x, 10.0, x + 5.0, 22.0),
+                )
+            )
+            if glyph_id >= 0:
+                x += 6.0
+        return [{"font": self._font_name, "chars": chars}]
 
 
 class ChessSourceNotationTests(unittest.TestCase):
@@ -33,9 +67,16 @@ class ChessSourceNotationTests(unittest.TestCase):
         self.assertEqual(
             {
                 glyph: maps[prose_fingerprint]["glyphs"][glyph]
-                for glyph in (79, 106, 112, 235, 269)
+                for glyph in (55, 59, 341, 649, 1225, 1273)
             },
-            {79: "B", 106: "Q", 112: "K", 235: "B", 269: "Q"},
+            {
+                55: "+",
+                59: "1",
+                341: "Q",
+                649: "R",
+                1225: "K",
+                1273: "N",
+            },
         )
         self.assertEqual(
             {
@@ -43,6 +84,13 @@ class ChessSourceNotationTests(unittest.TestCase):
                 for glyph in (29, 31, 65, 102, 137)
             },
             {29: "K", 31: "Q", 65: "B", 102: "R", 137: "N"},
+        )
+        self.assertEqual(
+            maps[alternate_fingerprint]["sequences"],
+            (
+                ((618, 467, 275), "1.R"),
+                ((813, 826), ".K"),
+            ),
         )
 
     def test_groups_source_bound_glyphs_and_keeps_unknown_gid_blocking(self) -> None:
@@ -71,6 +119,49 @@ class ChessSourceNotationTests(unittest.TestCase):
                 + "a" * 64
                 + ":999",
             ),
+        )
+
+    def test_printable_but_corrupt_ligature_remains_blocking(self) -> None:
+        fingerprint = (
+            "98d071429d809c388c0b4fd7f91cff5e66946b72d5bb6b62e32d941957e78849"
+        )
+        page = _TracePage(
+            [
+                (1, "1"),
+                (2, "."),
+                (3, "."),
+                (4, "."),
+                (5, "K"),
+                (6, "g"),
+                (7, "7"),
+                (8, " "),
+                (9, "2"),
+                (10, "."),
+                (999, "l"),
+                (-1, "t"),
+                (-1, "J"),
+                (11, "x"),
+                (12, "f"),
+                (13, "8"),
+            ]
+        )
+        glyphs = _source_glyphs(
+            page,
+            font_fingerprints={"Fd545813": fingerprint},
+            mappings=load_source_glyph_maps(),
+            clip=None,
+        )
+
+        lines = _group_glyphs_into_lines(
+            glyphs,
+            page_number=16,
+            baseline_tolerance=3.2,
+        )
+
+        self.assertEqual(lines[0].status, "needs_review")
+        self.assertEqual(
+            lines[0].blockers,
+            ("suspicious_decoded_ligature:ltJ",),
         )
 
     def test_page_nine_lines_replay_from_the_reconstructed_positions(self) -> None:
@@ -125,6 +216,10 @@ class ChessSourceNotationTests(unittest.TestCase):
             ),
             "If 4...Kf6, then 5.Re6#. 3...Kh8 5.Rd4+",
         )
+        self.assertEqual(
+            normalize_decoded_notation("1...Kg82.Rxg7#"),
+            "1...Kg8 2.Rxg7#",
+        )
 
     def test_selects_moves_without_treating_board_coordinates_as_notation(
         self,
@@ -144,6 +239,14 @@ class ChessSourceNotationTests(unittest.TestCase):
                 "12...[[gid:999]]e7 13.Rxe7+"
             )
         )
+        for notation in (
+            "1.Qxh6+! gxh6",
+            "2.Rhxh6#",
+            "Or 2.gxh3 Qxh2#.",
+            "23...Rde8+!",
+        ):
+            with self.subTest(notation=notation):
+                self.assertTrue(looks_like_decoded_notation_line(notation))
         self.assertFalse(
             looks_like_decoded_notation_line("a b c d e f g h")
         )
@@ -168,6 +271,153 @@ class ChessSourceNotationTests(unittest.TestCase):
         self.assertEqual(
             [line.decoded_text for line in lines],
             ["5", "1.Rd8"],
+        )
+
+    def test_separates_adjacent_notation_columns_on_the_same_baseline(
+        self,
+    ) -> None:
+        glyphs = [
+            self._glyph(glyph_id=1, raw="1", decoded="1", x=10),
+            self._glyph(glyph_id=2, raw=".", decoded=".", x=16),
+            self._glyph(glyph_id=3, raw="e", decoded="e4", x=22),
+            self._glyph(glyph_id=4, raw="2", decoded="2", x=40),
+            self._glyph(glyph_id=5, raw=".", decoded=".", x=46),
+            self._glyph(glyph_id=6, raw="Q", decoded="Qh5", x=52),
+        ]
+
+        lines = _group_glyphs_into_lines(
+            glyphs,
+            page_number=16,
+            baseline_tolerance=3.2,
+        )
+
+        self.assertEqual(
+            [line.decoded_text for line in lines],
+            ["1.e4", "2.Qh5"],
+        )
+
+    def test_decodes_page_sixteen_composite_figurines_by_source_gid(
+        self,
+    ) -> None:
+        fingerprint = (
+            "98d071429d809c388c0b4fd7f91cff5e66946b72d5bb6b62e32d941957e78849"
+        )
+        raw = [
+            (59, "l"),
+            (87, "."),
+            (341, "W"),
+            (-1, "i"),
+            (204, "x"),
+            (61, "h"),
+            (42, "7"),
+            (55, "t"),
+            (202, "?"),
+            (2384, " "),
+            (1225, "I"),
+            (-1, "i"),
+            (-1, ">"),
+            (204, "x"),
+            (61, "h"),
+            (42, "7"),
+            (2384, " "),
+            (40, "2"),
+            (12, "."),
+            (649, "1"),
+            (-1, '"'),
+            (-1, "l"),
+            (61, "h"),
+            (59, "l"),
+            (55, "t"),
+            (2384, " "),
+            (1224, "I"),
+            (-1, "i"),
+            (-1, ">"),
+            (15, "g"),
+            (34, "6"),
+            (116, "!"),
+            (2384, " "),
+            (192, "3"),
+            (10, "."),
+            (1273, "c"),
+            (-1, "!"),
+            (-1, "L"),
+            (-1, "J"),
+            (7, "e"),
+            (42, "7"),
+            (55, "t"),
+            (2384, " "),
+            (1225, "I"),
+            (-1, "i"),
+            (-1, ">"),
+            (141, "f"),
+            (34, "6"),
+        ]
+        page = _TracePage(raw)
+        glyphs = _source_glyphs(
+            page,
+            font_fingerprints={"Fd545813": fingerprint},
+            mappings=load_source_glyph_maps(),
+            clip=None,
+        )
+        lines = _group_glyphs_into_lines(
+            glyphs,
+            page_number=16,
+            baseline_tolerance=3.2,
+        )
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            lines[0].decoded_text,
+            "1.Qxh7+? Kxh7 2.Rh1+ Kg6! 3.Ne7+ Kf6",
+        )
+        self.assertTrue(looks_like_decoded_notation_line(lines[0].decoded_text))
+        self.assertNotRegex(lines[0].decoded_text, r"Wix|Ii>|c!LJ|1\"l")
+
+    def test_decodes_multi_gid_rook_without_removing_global_punctuation(
+        self,
+    ) -> None:
+        fingerprint = (
+            "450ca9059c457586d7f06423620ec504c246b038a348eb279a9f03744d24276f"
+        )
+        page = _TracePage(
+            [
+                (618, "U"),
+                (467, ":"),
+                (275, "!"),
+                (26, "h"),
+                (17, "8"),
+                (18, "t"),
+                (20, "!"),
+            ],
+            font_name="Fd562974",
+        )
+        glyphs = _source_glyphs(
+            page,
+            font_fingerprints={"Fd562974": fingerprint},
+            mappings=load_source_glyph_maps(),
+            clip=None,
+        )
+
+        self.assertEqual(
+            "".join(glyph.decoded_text for glyph in glyphs),
+            "1.Rh8+!",
+        )
+        self.assertEqual(glyphs[0].status, "source_bound_mapping")
+        self.assertEqual(glyphs[1].status, "synthetic_to_unicode_continuation")
+
+    def test_orders_two_column_notation_in_reading_order(self) -> None:
+        lines = [
+            self._line("1.RightTop", x=260, baseline=20),
+            self._line("1.LeftTop", x=20, baseline=25),
+            self._line("2.RightBottom", x=260, baseline=40),
+            self._line("2.LeftBottom", x=20, baseline=45),
+        ]
+
+        ordered = _order_notation_lines_by_columns(lines, page_width=500)
+
+        self.assertEqual(
+            [line.decoded_text for line in ordered],
+            ["1.LeftTop", "2.LeftBottom", "1.RightTop", "2.RightBottom"],
         )
 
     @staticmethod
@@ -195,6 +445,23 @@ class ChessSourceNotationTests(unittest.TestCase):
                     else "source_bound_mapping"
                 )
             ),
+        )
+
+    @staticmethod
+    def _line(
+        text: str,
+        *,
+        x: float,
+        baseline: float,
+    ) -> SourceNotationLine:
+        return SourceNotationLine(
+            page_number=16,
+            baseline=baseline,
+            bbox=(x, baseline - 10, x + 120, baseline + 2),
+            raw_text=text,
+            decoded_text=text,
+            glyphs=(),
+            blockers=(),
         )
 
 

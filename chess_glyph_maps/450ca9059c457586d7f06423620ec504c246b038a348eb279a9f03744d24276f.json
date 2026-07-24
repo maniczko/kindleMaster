@@ -1,0 +1,19 @@
+{
+  "schema": "kindlemaster.source_bound_chess_notation.v1",
+  "font_name": "Fd562974",
+  "font_sha256": "450ca9059c457586d7f06423620ec504c246b038a348eb279a9f03744d24276f",
+  "strict": false,
+  "evidence": {
+    "source_pdf_sha256": "9faf77bf6f38fe584fb0c191a0bd61c419e6ff3912ffe60a575749cf7493a1e5",
+    "verified_page_numbers": [11, 16, 17, 19, 20, 21, 24, 28, 33, 68, 75, 76, 77, 81, 85, 100],
+    "method": "repeated_legal_chess_context",
+    "note": "Only glyphs confirmed by multiple independent SAN contexts are mapped."
+  },
+  "glyphs": {
+    "29": "K",
+    "31": "Q",
+    "65": "B",
+    "102": "R",
+    "137": "N"
+  }
+}

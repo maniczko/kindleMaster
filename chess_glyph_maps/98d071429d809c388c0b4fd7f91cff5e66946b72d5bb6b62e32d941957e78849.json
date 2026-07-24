@@ -1,0 +1,22 @@
+{
+  "schema": "kindlemaster.source_bound_chess_notation.v1",
+  "font_name": "Fd545813",
+  "font_sha256": "98d071429d809c388c0b4fd7f91cff5e66946b72d5bb6b62e32d941957e78849",
+  "strict": false,
+  "evidence": {
+    "source_pdf_sha256": "9faf77bf6f38fe584fb0c191a0bd61c419e6ff3912ffe60a575749cf7493a1e5",
+    "verified_page_numbers": [9, 19, 21, 22, 33, 53, 57, 68, 77, 84, 85, 86],
+    "method": "rendered_glyph_shape_plus_repeated_legal_chess_context",
+    "note": "Overrides cover chess-piece glyphs embedded in prose spans and require repeated independent move contexts."
+  },
+  "glyphs": {
+    "79": "B",
+    "106": "Q",
+    "112": "K",
+    "130": "K",
+    "235": "B",
+    "269": "Q",
+    "2045": "R",
+    "2196": "R"
+  }
+}

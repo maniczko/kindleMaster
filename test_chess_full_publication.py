@@ -4,6 +4,7 @@ import unittest
 import zipfile
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 
@@ -220,6 +221,80 @@ class ChessFullPublicationTests(unittest.TestCase):
                     package.count('href="supplements/chess_games.pgn"'),
                     1,
                 )
+
+    def test_reader_prefers_complete_source_bound_notation_and_keeps_epub_audit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "output" / "source.epub"
+            source.parent.mkdir(parents=True)
+            self._write_text_only_epub(source)
+            self._write_pdf(root / "input" / "source.pdf", page_count=10)
+            source_decode = {
+                "schema": "kindlemaster.source_bound_chess_notation.v1",
+                "source_pdf": str(root / "input" / "source.pdf"),
+                "source_pdf_sha256": "a" * 64,
+                "pages": {
+                    "10": {
+                        "page_number": 10,
+                        "status": "decoded",
+                        "decoded_text": "1.Rd8+ Kg7 2.R1d7+ Kf6",
+                        "blockers": [],
+                        "lines": [],
+                    }
+                },
+            }
+
+            with patch(
+                "chess_full_publication.extract_source_notation_pages",
+                return_value=source_decode,
+            ):
+                report = publish_full_chess_publication(
+                    source_epub=source,
+                    output_epub=source,
+                    reader_dir=root / "semantic_chess_html",
+                    verified_records=[],
+                    artifact_root=root,
+                )
+
+            reader = (root / "semantic_chess_html" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("1.Rd8+ Kg7 2.R1d7+ Kf6", reader)
+            self.assertIn('data-decoding-source="source_font_sha_gid"', reader)
+            reader_soup = BeautifulSoup(reader, "html.parser")
+            notation_pgn = reader_soup.select_one("#notation .copy-pgn")
+            self.assertIsNotNone(notation_pgn)
+            self.assertTrue(notation_pgn.has_attr("disabled"))
+            audit = json.loads(
+                (
+                    root
+                    / "semantic_chess_html"
+                    / "reports"
+                    / "source_notation_decode.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                audit["epub_fragments"][0]["epub_text"],
+                "23.Rxe6+! fxe6 24.Qxe6+",
+            )
+            self.assertEqual(
+                report["summary"]["source_decoded_notation_fragments"],
+                1,
+            )
+            health = json.loads(
+                (
+                    root
+                    / "semantic_chess_html"
+                    / "reports"
+                    / "final_reader_health_gate.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertNotIn(
+                "source_notation_review_required",
+                health["warnings"],
+            )
 
     def test_blocks_incomplete_mapping_instead_of_publishing_partial_book(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -17,6 +17,8 @@ from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup
 
+from chess_source_notation import extract_source_notation_pages
+
 
 PUBLICATION_SCHEMA = "kindlemaster.chess_full_publication.v1"
 FINAL_READER_ARTIFACT_TYPE = "final_pdf_two_crop_reader"
@@ -632,6 +634,16 @@ def _build_full_reader(
     notation_seen: set[str] = set()
     notation_blocker_count = 0
     notation_question_mark_count = 0
+    source_decoded_notation_fragments = 0
+    source_notation_review_fragments = 0
+    source_notation_audit_rows: list[dict[str, Any]] = []
+    source_notation_pages = _reader_source_notation_pages(
+        artifact_root=artifact_root,
+        spine_documents=spine_documents,
+        member_bytes=member_bytes,
+    )
+    source_notation_page_rows = source_notation_pages.get("pages", {})
+    source_notation_consumed_pages: set[int] = set()
     visible_chars = 0
     spine_index = {
         document_path: index
@@ -700,15 +712,52 @@ def _build_full_reader(
                 _notation_text_candidates(node),
                 start=1,
             ):
+                source_page_row = (
+                    source_notation_page_rows.get(str(page_number), {})
+                    if page_number
+                    else {}
+                )
+                source_status = str(source_page_row.get("status") or "")
+                source_decoded_text = str(
+                    source_page_row.get("decoded_text") or ""
+                ).strip()
+                source_notation_audit_rows.append(
+                    {
+                        "document_path": document_path,
+                        "page_number": page_number,
+                        "fragment_index": fragment_index,
+                        "epub_text": notation_text,
+                        "source_status": source_status or "unavailable",
+                        "source_decoded_text": source_decoded_text,
+                        "source_blockers": list(
+                            source_page_row.get("blockers") or []
+                        ),
+                    }
+                )
+                if (
+                    source_status == "decoded"
+                    and source_decoded_text
+                    and page_number in source_notation_consumed_pages
+                ):
+                    continue
+                display_notation_text = notation_text
+                decoding_source = "epub_text_layer"
+                if source_status == "decoded" and source_decoded_text:
+                    display_notation_text = source_decoded_text
+                    decoding_source = "source_font_sha_gid"
+                    source_notation_consumed_pages.add(page_number)
+                    source_decoded_notation_fragments += 1
+                elif source_status == "needs_review":
+                    source_notation_review_fragments += 1
                 notation_key = hashlib.sha256(
                     (
-                        f"{document_path}\0{page_number}\0{notation_text}"
+                        f"{document_path}\0{page_number}\0{display_notation_text}"
                     ).encode("utf-8")
                 ).hexdigest()
-                if not notation_text or notation_key in notation_seen:
+                if not display_notation_text or notation_key in notation_seen:
                     continue
                 notation_seen.add(notation_key)
-                quality = _notation_quality(notation_text)
+                quality = _notation_quality(display_notation_text)
                 notation_blocker_count += int(quality["blocked"])
                 notation_question_mark_count += int(quality["question_mark_count"])
                 diagram_context = _notation_diagram_context(
@@ -728,12 +777,13 @@ def _build_full_reader(
                 )
                 notation_cards.append(
                     f'<article class="notation-card" data-status="{quality["status"]}" '
-                    f'data-source-page="{page_number or ""}">'
+                    f'data-source-page="{page_number or ""}" '
+                    f'data-decoding-source="{decoding_source}">'
                     f'<div class="card-heading"><div><p class="eyebrow">{html.escape(source_label)}</p>'
                     f"<h3>Notacja źródłowa</h3></div>"
                     f'<span class="quality-badge">{html.escape(quality["label"])}</span></div>'
                     f'<pre id="{notation_id}" class="notation-source"><code>'
-                    f"{html.escape(notation_text)}</code></pre>"
+                    f"{html.escape(display_notation_text)}</code></pre>"
                     f'<div class="copy-actions"><button type="button" class="copy-button" '
                     f'data-copy-target="{notation_id}">Kopiuj tekst notacji</button>'
                     f'<button type="button" class="copy-button copy-pgn" disabled '
@@ -835,6 +885,8 @@ document.addEventListener("click",async event=>{const button=event.target.closes
         "notation_fragment_count": len(notation_cards),
         "notation_blocker_count": notation_blocker_count,
         "notation_question_mark_count": notation_question_mark_count,
+        "source_decoded_notation_fragments": source_decoded_notation_fragments,
+        "source_notation_review_fragments": source_notation_review_fragments,
         "diagrams_total": full_fen_count + placement_count + source_diagram_count,
         "empty_img_src_count": 0,
     }
@@ -857,12 +909,34 @@ document.addEventListener("click",async event=>{const button=event.target.closes
         "blockers": [],
         "warnings": [
             *([] if accepted_pgn_count else ["no_parser_accepted_pgn"]),
+            *(
+                []
+                if not source_notation_review_fragments
+                else ["source_notation_review_required"]
+            ),
             *([] if page_layout["page_count"] else ["page_facsimile_unavailable"]),
         ],
         "summary": summary,
     }
+    source_notation_audit = {
+        **source_notation_pages,
+        "epub_fragments": source_notation_audit_rows,
+        "summary": {
+            "source_decoded_notation_fragments": (
+                source_decoded_notation_fragments
+            ),
+            "source_notation_review_fragments": (
+                source_notation_review_fragments
+            ),
+            "epub_fragment_count": len(source_notation_audit_rows),
+        },
+    }
     _atomic_write_json(staging / "data" / "artifact_manifest.json", manifest)
     _atomic_write_json(staging / "reports" / "final_reader_health_gate.json", health)
+    _atomic_write_json(
+        staging / "reports" / "source_notation_decode.json",
+        source_notation_audit,
+    )
     if reader_dir.exists():
         backup = reader_dir.with_name(reader_dir.name + ".previous")
         if backup.exists():
@@ -873,6 +947,56 @@ document.addEventListener("click",async event=>{const button=event.target.closes
     else:
         os.replace(staging, reader_dir)
     return summary
+
+
+def _reader_source_notation_pages(
+    *,
+    artifact_root: Path,
+    spine_documents: Sequence[str],
+    member_bytes: Mapping[str, bytes],
+) -> dict[str, Any]:
+    pdf_candidates = sorted((artifact_root / "input").glob("*.pdf"))
+    if not pdf_candidates:
+        return {
+            "schema": "kindlemaster.source_bound_chess_notation.v1",
+            "source_pdf": "",
+            "source_pdf_sha256": "",
+            "pages": {},
+            "error": "source_pdf_unavailable",
+        }
+    page_numbers: set[int] = set()
+    for document_path in spine_documents:
+        soup = BeautifulSoup(
+            member_bytes[document_path].decode("utf-8", errors="replace"),
+            "html.parser",
+        )
+        for node in soup.select(
+            ".chess-notation-page, .chess-notation-text, .notation-heavy"
+        ):
+            page_number = _notation_page_number(node)
+            if page_number:
+                page_numbers.add(page_number)
+    if not page_numbers:
+        return {
+            "schema": "kindlemaster.source_bound_chess_notation.v1",
+            "source_pdf": str(pdf_candidates[0]),
+            "source_pdf_sha256": "",
+            "pages": {},
+            "error": "source_notation_pages_unavailable",
+        }
+    try:
+        return extract_source_notation_pages(
+            pdf_candidates[0],
+            page_numbers=page_numbers,
+        )
+    except Exception as error:
+        return {
+            "schema": "kindlemaster.source_bound_chess_notation.v1",
+            "source_pdf": str(pdf_candidates[0]),
+            "source_pdf_sha256": "",
+            "pages": {},
+            "error": f"source_notation_decode_failed:{type(error).__name__}",
+        }
 
 
 def _notation_quality(text: str) -> dict[str, Any]:

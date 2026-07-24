@@ -17,7 +17,11 @@ from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup
 
-from chess_source_notation import extract_source_notation_pages
+from chess_source_notation import (
+    assign_source_exercise_labels_to_diagrams,
+    extract_source_notation_pages,
+    replay_source_notation_blocks,
+)
 
 
 PUBLICATION_SCHEMA = "kindlemaster.chess_full_publication.v1"
@@ -393,7 +397,6 @@ def publish_full_chess_publication(
         full_fen_count=full_fen_count,
         placement_count=placement_count,
         source_diagram_count=source_crop_count,
-        accepted_pgn_count=_pgn_game_count(accepted_pgn),
     )
     report = {
         "schema": PUBLICATION_SCHEMA,
@@ -604,7 +607,6 @@ def _build_full_reader(
     full_fen_count: int,
     placement_count: int,
     source_diagram_count: int,
-    accepted_pgn_count: int,
 ) -> dict[str, Any]:
     staging = reader_dir.with_name(reader_dir.name + ".tmp")
     if staging.exists():
@@ -625,9 +627,15 @@ def _build_full_reader(
         member_bytes=member_bytes,
     )
     diagram_records_by_page: dict[int, list[Mapping[str, Any]]] = {}
+    diagram_records_by_id: dict[str, Mapping[str, Any]] = {}
     for record in verified_records:
         if _record_is_confirmed_diagram(record):
             diagram_records_by_page.setdefault(_diagram_page(record), []).append(record)
+            diagram_id = str(
+                record.get("diagram_id") or record.get("id") or ""
+            ).strip()
+            if diagram_id:
+                diagram_records_by_id[diagram_id] = record
 
     sections: list[str] = []
     notation_cards: list[str] = []
@@ -636,11 +644,15 @@ def _build_full_reader(
     notation_question_mark_count = 0
     source_decoded_notation_fragments = 0
     source_notation_review_fragments = 0
+    source_solution_block_count = 0
+    source_solution_replay_accepted = 0
+    source_accepted_pgn_records: list[str] = []
     source_notation_audit_rows: list[dict[str, Any]] = []
     source_notation_pages = _reader_source_notation_pages(
         artifact_root=artifact_root,
         spine_documents=spine_documents,
         member_bytes=member_bytes,
+        diagram_records=verified_records,
     )
     source_notation_page_rows = source_notation_pages.get("pages", {})
     source_notation_consumed_pages: set[int] = set()
@@ -734,6 +746,158 @@ def _build_full_reader(
                         ),
                     }
                 )
+                solution_blocks = [
+                    dict(block)
+                    for block in source_page_row.get("solution_blocks") or []
+                    if isinstance(block, Mapping)
+                ]
+                if (
+                    solution_blocks
+                    and page_number not in source_notation_consumed_pages
+                ):
+                    source_notation_consumed_pages.add(page_number)
+                    source_solution_block_count += len(solution_blocks)
+                    for block in solution_blocks:
+                        display_notation_text = str(
+                            block.get("decoded_text")
+                            or block.get("notation_text")
+                            or ""
+                        ).strip()
+                        if not display_notation_text:
+                            continue
+                        source_decoded_notation_fragments += int(
+                            block.get("status") == "decoded"
+                        )
+                        replay_accepted = bool(
+                            block.get("replay_status") == "accepted"
+                            and block.get("accepted_pgn")
+                        )
+                        source_solution_replay_accepted += int(
+                            replay_accepted
+                        )
+                        if replay_accepted:
+                            source_accepted_pgn_records.append(
+                                str(block.get("accepted_pgn") or "").strip()
+                            )
+                        block_reasons = sorted(
+                            {
+                                *[
+                                    str(reason)
+                                    for reason in block.get("blockers") or []
+                                    if str(reason)
+                                ],
+                                *[
+                                    str(reason)
+                                    for reason in block.get(
+                                        "replay_warnings"
+                                    )
+                                    or []
+                                    if str(reason)
+                                ],
+                            }
+                        )
+                        source_notation_review_fragments += int(
+                            bool(block_reasons) or not replay_accepted
+                        )
+                        quality = _notation_quality(
+                            display_notation_text
+                        )
+                        card_status = (
+                            "accepted" if replay_accepted else "blocked"
+                        )
+                        notation_blocker_count += int(
+                            card_status == "blocked"
+                        )
+                        notation_question_mark_count += int(
+                            quality["question_mark_count"]
+                        )
+                        exercise_id = str(
+                            block.get("exercise_id") or ""
+                        )
+                        diagram_id = str(block.get("diagram_id") or "")
+                        diagram_record = diagram_records_by_id.get(
+                            diagram_id
+                        )
+                        diagram_page = int(
+                            block.get("diagram_page")
+                            or (
+                                _diagram_page(diagram_record)
+                                if diagram_record
+                                else 0
+                            )
+                        )
+                        diagram_context = _notation_diagram_context(
+                            page_number=diagram_page or page_number,
+                            records=(
+                                [diagram_record]
+                                if diagram_record is not None
+                                else []
+                            ),
+                            diagram_assets=diagram_assets,
+                        )
+                        notation_id = (
+                            f"notation-{len(notation_cards) + 1:04d}"
+                        )
+                        pgn_id = f"{notation_id}-pgn"
+                        accepted_pgn = str(
+                            block.get("accepted_pgn") or ""
+                        ).strip()
+                        reasons = [
+                            *quality["reasons"],
+                            *block_reasons,
+                        ]
+                        blocker_list = "".join(
+                            f"<li>{html.escape(reason)}</li>"
+                            for reason in dict.fromkeys(reasons)
+                        )
+                        pgn_markup = ""
+                        if accepted_pgn:
+                            pgn_markup = (
+                                '<details class="accepted-pgn">'
+                                "<summary>PGN po parserze i replayu</summary>"
+                                f'<pre id="{pgn_id}" class="pgn-source"><code>'
+                                f"{html.escape(accepted_pgn)}</code></pre>"
+                                "</details>"
+                            )
+                        copy_pgn_button = (
+                            '<button type="button" '
+                            'class="copy-button copy-pgn primary" '
+                            f'data-copy-target="{pgn_id}">Kopiuj PGN</button>'
+                            if accepted_pgn
+                            else (
+                                '<button type="button" '
+                                'class="copy-button copy-pgn" disabled '
+                                'title="PGN jest dostepny dopiero po pelnym replayu">'
+                                "Kopiuj PGN</button>"
+                            )
+                        )
+                        notation_cards.append(
+                            f'<article class="notation-card" '
+                            f'data-status="{card_status}" '
+                            f'data-source-page="{page_number or ""}" '
+                            f'data-exercise-id="{html.escape(exercise_id, quote=True)}" '
+                            f'data-diagram-id="{html.escape(diagram_id, quote=True)}" '
+                            'data-decoding-source="source_font_sha_gid">'
+                            '<div class="card-heading"><div>'
+                            f'<p class="eyebrow">Ex. {html.escape(exercise_id)} '
+                            f"- strona PDF {page_number}</p>"
+                            "<h3>Notacja zrodlowa</h3></div>"
+                            '<span class="quality-badge">'
+                            f'{"Parser + replay" if replay_accepted else "Wymaga weryfikacji"}'
+                            "</span></div>"
+                            f'<pre id="{notation_id}" class="notation-source"><code>'
+                            f"{html.escape(display_notation_text)}</code></pre>"
+                            f"{pgn_markup}"
+                            '<div class="copy-actions"><button type="button" '
+                            'class="copy-button" '
+                            f'data-copy-target="{notation_id}">'
+                            "Kopiuj tekst notacji</button>"
+                            f"{copy_pgn_button}</div>"
+                            f"{diagram_context}"
+                            f'{f"<ul class=quality-reasons>{blocker_list}</ul>" if blocker_list else ""}'
+                            "</article>"
+                        )
+                    continue
                 if (
                     source_status == "decoded"
                     and source_decoded_text
@@ -806,7 +970,16 @@ def _build_full_reader(
         records=verified_records,
         diagram_assets=diagram_assets,
     )
-    pgn_cards = _reader_pgn_cards(accepted_pgn_payload)
+    combined_pgn_payload = b"\n\n".join(
+        payload
+        for payload in (
+            accepted_pgn_payload.strip(),
+            "\n\n".join(source_accepted_pgn_records).encode("utf-8"),
+        )
+        if payload
+    )
+    reader_accepted_pgn_count = _pgn_game_count(combined_pgn_payload)
+    pgn_cards = _reader_pgn_cards(combined_pgn_payload)
     safe_title = html.escape(title or "Chess publication")
     index_html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -814,7 +987,7 @@ def _build_full_reader(
 <body><header class="reader-header"><p>KindleMaster full publication</p><h1>{safe_title}</h1>
 <div class="reader-stats"><span>{page_layout["page_count"]} PDF pages</span><span>{len(spine_documents)} text sections</span><span>{full_fen_count} verified FEN</span>
 <span>{placement_count} verified placements</span><span>{source_diagram_count} unreadable source diagrams</span>
-<span>{accepted_pgn_count} accepted PGN</span></div>
+<span>{reader_accepted_pgn_count} accepted PGN</span></div>
 <p>Source prose and notation are preserved. Only parser-approved PGN can be copied as PGN.</p></header>
 <nav class="reader-nav" aria-label="Publication views">
 <a href="#pdf-pages">Strony PDF</a><a href="#book-text">Treść książki</a>
@@ -881,12 +1054,17 @@ document.addEventListener("click",async event=>{const button=event.target.closes
         "reader_visible_text_characters": visible_chars,
         "fen_accepted": full_fen_count,
         "fen_placement_verified": placement_count,
-        "accepted_pgn": accepted_pgn_count,
+        "accepted_pgn": reader_accepted_pgn_count,
         "notation_fragment_count": len(notation_cards),
         "notation_blocker_count": notation_blocker_count,
         "notation_question_mark_count": notation_question_mark_count,
         "source_decoded_notation_fragments": source_decoded_notation_fragments,
         "source_notation_review_fragments": source_notation_review_fragments,
+        "source_solution_block_count": source_solution_block_count,
+        "source_solution_replay_accepted": source_solution_replay_accepted,
+        "source_solution_replay_review": (
+            source_solution_block_count - source_solution_replay_accepted
+        ),
         "diagrams_total": full_fen_count + placement_count + source_diagram_count,
         "empty_img_src_count": 0,
     }
@@ -908,7 +1086,11 @@ document.addEventListener("click",async event=>{const button=event.target.closes
         "artifact_type": FINAL_READER_ARTIFACT_TYPE,
         "blockers": [],
         "warnings": [
-            *([] if accepted_pgn_count else ["no_parser_accepted_pgn"]),
+            *(
+                []
+                if reader_accepted_pgn_count
+                else ["no_parser_accepted_pgn"]
+            ),
             *(
                 []
                 if not source_notation_review_fragments
@@ -927,6 +1109,14 @@ document.addEventListener("click",async event=>{const button=event.target.closes
             ),
             "source_notation_review_fragments": (
                 source_notation_review_fragments
+            ),
+            "source_solution_block_count": source_solution_block_count,
+            "source_solution_replay_accepted": (
+                source_solution_replay_accepted
+            ),
+            "source_solution_replay_review": (
+                source_solution_block_count
+                - source_solution_replay_accepted
             ),
             "epub_fragment_count": len(source_notation_audit_rows),
         },
@@ -954,6 +1144,7 @@ def _reader_source_notation_pages(
     artifact_root: Path,
     spine_documents: Sequence[str],
     member_bytes: Mapping[str, bytes],
+    diagram_records: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     pdf_candidates = sorted((artifact_root / "input").glob("*.pdf"))
     if not pdf_candidates:
@@ -985,10 +1176,26 @@ def _reader_source_notation_pages(
             "error": "source_notation_pages_unavailable",
         }
     try:
-        return extract_source_notation_pages(
+        source_payload = extract_source_notation_pages(
             pdf_candidates[0],
             page_numbers=page_numbers,
         )
+        diagram_binding = assign_source_exercise_labels_to_diagrams(
+            pdf_candidates[0],
+            diagram_records,
+        )
+        replayed = replay_source_notation_blocks(
+            source_payload,
+            diagram_binding["records"],
+        )
+        return {
+            **replayed,
+            "diagram_binding": {
+                "schema": diagram_binding["schema"],
+                "summary": diagram_binding["summary"],
+                "assignments": diagram_binding["assignments"],
+            },
+        }
     except Exception as error:
         return {
             "schema": "kindlemaster.source_bound_chess_notation.v1",

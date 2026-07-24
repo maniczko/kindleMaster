@@ -296,6 +296,101 @@ class ChessFullPublicationTests(unittest.TestCase):
                 health["warnings"],
             )
 
+    def test_reader_renders_exercise_blocks_and_enables_only_replayed_pgn(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "output" / "source.epub"
+            source.parent.mkdir(parents=True)
+            self._write_text_only_epub(source)
+            source_payload = {
+                "schema": "kindlemaster.source_bound_chess_notation.v1",
+                "source_pdf": str(root / "input" / "source.pdf"),
+                "source_pdf_sha256": "a" * 64,
+                "pages": {
+                    "10": {
+                        "page_number": 10,
+                        "status": "decoded",
+                        "decoded_text": "1.e4 e5 2.Nf3 Nc6",
+                        "blockers": [],
+                        "lines": [],
+                        "solution_blocks": [
+                            {
+                                "exercise_id": "1-1",
+                                "page_number": 10,
+                                "status": "decoded",
+                                "decoded_text": "1.e4 e5 2.Nf3 Nc6",
+                                "notation_text": "1.e4 e5 2.Nf3 Nc6",
+                                "diagram_id": "",
+                                "diagram_page": 0,
+                                "replay_status": "accepted",
+                                "accepted_pgn": (
+                                    '[Event "Exercise 1-1"]\n'
+                                    '[Result "*"]\n\n'
+                                    "1. e4 e5 2. Nf3 Nc6 *"
+                                ),
+                                "blockers": [],
+                                "replay_warnings": [],
+                            }
+                        ],
+                    }
+                },
+                "replay_summary": {
+                    "solution_block_count": 1,
+                    "accepted_count": 1,
+                    "review_count": 0,
+                },
+            }
+
+            with patch(
+                "chess_full_publication._reader_source_notation_pages",
+                return_value=source_payload,
+            ):
+                report = publish_full_chess_publication(
+                    source_epub=source,
+                    output_epub=source,
+                    reader_dir=root / "semantic_chess_html",
+                    verified_records=[],
+                    artifact_root=root,
+                )
+
+            reader = BeautifulSoup(
+                (
+                    root / "semantic_chess_html" / "index.html"
+                ).read_text(encoding="utf-8"),
+                "html.parser",
+            )
+            card = reader.select_one(
+                '#notation [data-exercise-id="1-1"]'
+            )
+            self.assertIsNotNone(card)
+            copy_pgn = card.select_one(".copy-pgn")
+            self.assertIsNotNone(copy_pgn)
+            self.assertFalse(copy_pgn.has_attr("disabled"))
+            self.assertEqual(len(reader.select("#pgn .pgn-card")), 1)
+            self.assertEqual(
+                report["summary"]["source_solution_block_count"],
+                1,
+            )
+            self.assertEqual(
+                report["summary"]["source_solution_replay_accepted"],
+                1,
+            )
+            self.assertEqual(report["summary"]["accepted_pgn"], 1)
+            health = json.loads(
+                (
+                    root
+                    / "semantic_chess_html"
+                    / "reports"
+                    / "final_reader_health_gate.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertNotIn(
+                "no_parser_accepted_pgn",
+                health["warnings"],
+            )
+
     def test_blocks_incomplete_mapping_instead_of_publishing_partial_book(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

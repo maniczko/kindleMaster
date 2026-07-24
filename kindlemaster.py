@@ -65,6 +65,7 @@ QUICK_TESTS = [
     "test_chess_diagram_visual_quality.py",
     "test_chess_notation_regression.py",
     "test_chess_notation_reflow.py",
+    "test_chess_source_notation.py",
     "test_chess_pgn_extraction.py",
     "test_chess_html_audit.py",
     "test_chess_diagram_detection.py",

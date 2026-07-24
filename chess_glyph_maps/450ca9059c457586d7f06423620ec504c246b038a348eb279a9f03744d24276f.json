@@ -6,14 +6,48 @@
   "evidence": {
     "source_pdf_sha256": "9faf77bf6f38fe584fb0c191a0bd61c419e6ff3912ffe60a575749cf7493a1e5",
     "verified_page_numbers": [11, 16, 17, 19, 20, 21, 24, 28, 33, 68, 75, 76, 77, 81, 85, 100],
-    "method": "repeated_legal_chess_context",
-    "note": "Only glyphs confirmed by multiple independent SAN contexts are mapped."
+    "method": "rendered_glyph_shape_plus_repeated_legal_chess_context",
+    "note": "Page 16 composite figurines and move symbols were verified against the rendered source page. Multi-GID sequences are decoded atomically."
   },
+  "suspicious_decoded_patterns": [
+    "Wix",
+    "Ii>",
+    "li>",
+    "c!LJ",
+    "ltJ",
+    "1\"l",
+    "l:!",
+    "U:!",
+    "j,",
+    "fS"
+  ],
   "glyphs": {
+    "18": "+",
     "29": "K",
     "31": "Q",
+    "35": "1",
     "65": "B",
+    "101": "1",
     "102": "R",
-    "137": "N"
-  }
+    "137": "N",
+    "143": "f8",
+    "161": "Q",
+    "378": "B",
+    "484": "N",
+    "578": "R",
+    "839": "R",
+    "1091": "B",
+    "1128": "R",
+    "1129": "R"
+  },
+  "sequences": [
+    {
+      "glyph_ids": [618, 467, 275],
+      "replacement": "1.R"
+    },
+    {
+      "glyph_ids": [813, 826],
+      "replacement": ".K"
+    }
+  ]
 }

@@ -11,6 +11,8 @@ from chess_source_notation import (
     load_source_glyph_maps,
     looks_like_decoded_notation_line,
     normalize_decoded_notation,
+    replay_source_notation_blocks,
+    segment_source_notation_blocks,
     validate_san_line,
 )
 
@@ -419,6 +421,121 @@ class ChessSourceNotationTests(unittest.TestCase):
             [line.decoded_text for line in ordered],
             ["1.LeftTop", "2.LeftBottom", "1.RightTop", "2.RightBottom"],
         )
+
+    def test_segments_exercises_and_carries_notation_to_next_column(self) -> None:
+        lines = [
+            self._line("Ex. 1-1", x=20, baseline=20),
+            self._line("1.e4 e5", x=20, baseline=35),
+            self._line("Ex. 1-2", x=20, baseline=100),
+            self._line("1.d4 d5", x=20, baseline=115),
+            self._line("2.c4 e6", x=280, baseline=20),
+            self._line("Ex. 1-3", x=280, baseline=70),
+            self._line("1.Nf3 Nf6", x=280, baseline=85),
+        ]
+
+        blocks = segment_source_notation_blocks(lines, page_width=500)
+
+        self.assertEqual(
+            [block.exercise_id for block in blocks],
+            ["1-1", "1-2", "1-3"],
+        )
+        self.assertEqual(blocks[0].notation_text, "1.e4 e5")
+        self.assertEqual(
+            blocks[1].notation_text,
+            "1.d4 d5\n2.c4 e6",
+        )
+        self.assertEqual(blocks[2].notation_text, "1.Nf3 Nf6")
+
+    def test_replay_accepts_only_exact_human_verified_fen_binding(
+        self,
+    ) -> None:
+        source_payload = {
+            "schema": "kindlemaster.source_bound_chess_notation.v1",
+            "pages": {
+                "16": {
+                    "page_number": 16,
+                    "solution_blocks": [
+                        {
+                            "exercise_id": "1-1",
+                            "page_number": 16,
+                            "status": "decoded",
+                            "decoded_text": "1.e4 e5 2.Nf3 Nc6",
+                            "notation_text": "1.e4 e5 2.Nf3 Nc6",
+                            "blockers": [],
+                        }
+                    ],
+                }
+            },
+        }
+        diagrams = [
+            {
+                "id": "diagram-1-1",
+                "exercise_id": "1-1",
+                "page_number": 14,
+                "full_fen": (
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/"
+                    "RNBQKBNR w KQkq - 0 1"
+                ),
+                "fen_human_verified": True,
+            }
+        ]
+
+        payload = replay_source_notation_blocks(
+            source_payload,
+            diagrams,
+        )
+        block = payload["pages"]["16"]["solution_blocks"][0]
+
+        self.assertEqual(block["replay_status"], "accepted")
+        self.assertEqual(block["diagram_id"], "diagram-1-1")
+        self.assertTrue(block["accepted_pgn"])
+        self.assertTrue(block["final_fen"])
+        self.assertEqual(
+            payload["replay_summary"]["accepted_count"],
+            1,
+        )
+        self.assertFalse(
+            payload["replay_summary"]["model_policy"]["ai_may_auto_accept"]
+        )
+
+    def test_replay_blocks_untrusted_fen(self) -> None:
+        source_payload = {
+            "pages": {
+                "16": {
+                    "solution_blocks": [
+                        {
+                            "exercise_id": "1-1",
+                            "page_number": 16,
+                            "decoded_text": "1.e4 e5",
+                            "notation_text": "1.e4 e5",
+                            "blockers": [],
+                        }
+                    ]
+                }
+            }
+        }
+        diagrams = [
+            {
+                "id": "diagram-1-1",
+                "exercise_id": "1-1",
+                "full_fen": (
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/"
+                    "RNBQKBNR w KQkq - 0 1"
+                ),
+            }
+        ]
+
+        payload = replay_source_notation_blocks(
+            source_payload,
+            diagrams,
+        )
+        block = payload["pages"]["16"]["solution_blocks"][0]
+
+        self.assertEqual(block["replay_status"], "review")
+        self.assertIn("missing_trusted_full_fen", block["blockers"])
+        self.assertFalse(block["accepted_pgn"])
+        self.assertEqual(block["model_route"]["route"], "fen_review")
+        self.assertEqual(block["model_route"]["model_tier"], "none")
 
     @staticmethod
     def _glyph(

@@ -812,7 +812,7 @@ a{color:#8b3d1c}@media(max-width:640px){.reader-header{padding-top:1.7rem}.book-
     script = """
 const toast=document.getElementById("copy-toast");
 function showToast(message){toast.textContent=message;toast.dataset.visible="true";window.clearTimeout(showToast.timer);showToast.timer=window.setTimeout(()=>{toast.dataset.visible="false"},2200)}
-async function copyText(value){if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(value);return}const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";document.body.appendChild(area);area.select();const copied=document.execCommand("copy");area.remove();if(!copied)throw new Error("clipboard_copy_failed")}
+async function copyText(value){if(navigator.clipboard&&window.isSecureContext){try{await navigator.clipboard.writeText(value);return}catch{}}const area=document.createElement("textarea");area.value=value;area.setAttribute("readonly","");area.style.position="fixed";area.style.opacity="0";document.body.appendChild(area);area.focus({preventScroll:true});area.select();area.setSelectionRange(0,area.value.length);const copied=document.execCommand("copy");area.remove();if(!copied)throw new Error("clipboard_copy_failed")}
 document.addEventListener("click",async event=>{const button=event.target.closest("[data-copy-target]");if(!button||button.disabled)return;const target=document.getElementById(button.dataset.copyTarget);if(!target)return;try{await copyText(target.textContent.trim());showToast("Skopiowano do schowka")}catch{showToast("Nie udało się skopiować")}});
 """
     (staging / "index.html").write_text(index_html, encoding="utf-8")

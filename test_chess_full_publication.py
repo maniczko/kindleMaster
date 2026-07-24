@@ -128,6 +128,18 @@ class ChessFullPublicationTests(unittest.TestCase):
             self.assertIn('id="pgn"', reader)
             self.assertIn("Kopiuj tekst notacji", reader)
             self.assertIn("Kopiuj wszystkie PGN", reader)
+            reader_script = (
+                root / "semantic_chess_html" / "reader.js"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "try{await navigator.clipboard.writeText(value);return}catch{}",
+                reader_script,
+            )
+            self.assertIn("area.focus({preventScroll:true})", reader_script)
+            self.assertIn(
+                "area.setSelectionRange(0,area.value.length)",
+                reader_script,
+            )
             self.assertIn("Pokaż stronę PDF i położenie diagramu", reader)
             self.assertIn('href="#pdf-page-0010"', reader)
             self.assertIn('data-diagram-id="layout-chess-p010-d01"', reader)

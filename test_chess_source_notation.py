@@ -7,6 +7,8 @@ from chess_source_notation import (
     SourceNotationLine,
     _group_glyphs_into_lines,
     _order_notation_lines_by_columns,
+    _printed_exercise_label,
+    _resolve_unambiguous_label_candidates,
     _source_glyphs,
     load_source_glyph_maps,
     looks_like_decoded_notation_line,
@@ -49,6 +51,92 @@ class _TracePage:
 
 
 class ChessSourceNotationTests(unittest.TestCase):
+    def test_printed_exercise_label_rejects_results_and_references(
+        self,
+    ) -> None:
+        self.assertEqual(_printed_exercise_label("> Ex. 3-2-("), "3-2")
+        self.assertEqual(
+            _printed_exercise_label("[[gid:519]]Ex.18-1<'"),
+            "18-1",
+        )
+        self.assertEqual(_printed_exercise_label("0-1"), "")
+        self.assertEqual(_printed_exercise_label("1-0"), "")
+        self.assertEqual(_printed_exercise_label("Diagram Ex. 3-2"), "")
+        self.assertEqual(_printed_exercise_label("See also Ex. 4-2"), "")
+
+    def test_vision_label_requires_independent_deterministic_consensus(
+        self,
+    ) -> None:
+        assignments = [
+            {
+                "exercise_id": "1-1",
+                "source_page": 14,
+                "status": "exact",
+                "diagram_id": "diagram-1",
+                "source": "source_text_geometry",
+                "auto_accepted": True,
+            },
+            {
+                "exercise_id": "1-2",
+                "source_page": 14,
+                "status": "candidate",
+                "diagram_id": "diagram-2",
+                "source": "tesseract_label_crop",
+                "confidence": 0.94,
+                "auto_accepted": False,
+                "blockers": [
+                    "vision_candidate_requires_deterministic_consensus"
+                ],
+            },
+        ]
+        diagrams = [
+            {"id": "diagram-1", "bbox": [10, 40, 120, 150]},
+            {"id": "diagram-2", "bbox": [10, 180, 120, 290]},
+        ]
+
+        _resolve_unambiguous_label_candidates(
+            assignments,
+            diagrams,
+            page_widths={14: 600.0},
+            known_exercise_ids={"1-1", "1-2"},
+        )
+
+        candidate = assignments[1]
+        self.assertEqual(candidate["status"], "consensus")
+        self.assertTrue(candidate["auto_accepted"])
+        self.assertNotIn(
+            "vision_candidate_requires_deterministic_consensus",
+            candidate["blockers"],
+        )
+
+    def test_vision_label_without_source_chapter_anchor_stays_candidate(
+        self,
+    ) -> None:
+        assignments = [
+            {
+                "exercise_id": "1-2",
+                "source_page": 14,
+                "status": "candidate",
+                "diagram_id": "diagram-2",
+                "source": "tesseract_label_crop",
+                "confidence": 0.99,
+                "auto_accepted": False,
+                "blockers": [
+                    "vision_candidate_requires_deterministic_consensus"
+                ],
+            }
+        ]
+
+        _resolve_unambiguous_label_candidates(
+            assignments,
+            [{"id": "diagram-2", "bbox": [10, 180, 120, 290]}],
+            page_widths={14: 600.0},
+            known_exercise_ids={"1-2"},
+        )
+
+        self.assertEqual(assignments[0]["status"], "candidate")
+        self.assertFalse(assignments[0]["auto_accepted"])
+
     def test_default_source_map_is_font_fingerprinted_and_fail_closed(self) -> None:
         maps = load_source_glyph_maps()
         fingerprint = (

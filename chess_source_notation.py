@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -14,6 +15,11 @@ SOURCE_NOTATION_SCHEMA = "kindlemaster.source_bound_chess_notation.v1"
 UNKNOWN_GLYPH_PREFIX = "[[gid:"
 EXERCISE_LABEL_RE = re.compile(
     r"(?i)\bEx(?:ercise)?\.?\s*(?P<chapter>\d{1,3})\s*[-.\u2013\u2014]\s*"
+    r"(?P<number>\d{1,3})\b"
+)
+PRINTED_EXERCISE_LABEL_RE = re.compile(
+    r"(?i)^[^A-Za-z0-9]*Ex(?:ercise)?\.?\s*"
+    r"(?P<chapter>\d{1,3})\s*[-.\u2013\u2014]\s*"
     r"(?P<number>\d{1,3})\b"
 )
 
@@ -275,7 +281,12 @@ def segment_source_notation_blocks(
 
     source_lines = list(lines)
     labels = [
-        (line, _exercise_label(line.decoded_text or line.raw_text))
+        (
+            line,
+            _printed_exercise_label(
+                line.decoded_text or line.raw_text
+            ),
+        )
         for line in source_lines
     ]
     labels = [(line, label) for line, label in labels if label]
@@ -311,7 +322,9 @@ def segment_source_notation_blocks(
         label_indexes = [
             index
             for index, line in enumerate(ordered)
-            if _exercise_label(line.decoded_text or line.raw_text)
+            if _printed_exercise_label(
+                line.decoded_text or line.raw_text
+            )
         ]
         if not label_indexes:
             continue
@@ -331,7 +344,7 @@ def segment_source_notation_blocks(
                 else len(ordered)
             )
             label_line = ordered[start_index]
-            label = _exercise_label(
+            label = _printed_exercise_label(
                 label_line.decoded_text or label_line.raw_text
             )
             if not label:
@@ -462,8 +475,11 @@ def assign_source_exercise_labels_to_diagrams(
     diagram_records: Iterable[Mapping[str, Any]],
     *,
     mapping_paths: Iterable[str | Path] | None = None,
+    enable_vision_ocr: bool = True,
+    scan_all_diagram_pages: bool = False,
+    known_exercise_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Attach exact printed exercise labels to nearby source diagrams."""
+    """Attach printed labels and keep OCR/vision evidence review-safe."""
 
     source = Path(pdf_path)
     records = [dict(record) for record in diagram_records]
@@ -478,11 +494,13 @@ def assign_source_exercise_labels_to_diagrams(
     assignments: list[dict[str, Any]] = []
     used_diagram_ids: set[str] = set()
     mappings = load_source_glyph_maps(mapping_paths)
+    page_widths: dict[int, float] = {}
     with fitz.open(source) as document:
         for page_number, page_records in sorted(by_page.items()):
             if page_number > document.page_count:
                 continue
             page = document[page_number - 1]
+            page_widths[page_number] = float(page.rect.width)
             glyphs = _source_glyphs(
                 page,
                 font_fingerprints=_page_font_fingerprints(document, page),
@@ -497,10 +515,17 @@ def assign_source_exercise_labels_to_diagrams(
             label_lines = [
                 line
                 for line in source_lines
-                if _exercise_label(line.decoded_text or line.raw_text)
+                if _printed_exercise_label(
+                    line.decoded_text or line.raw_text
+                )
             ]
+            is_exercise_page = bool(label_lines) or any(
+                "exercises"
+                in str(line.decoded_text or line.raw_text).strip().lower()
+                for line in source_lines
+            )
             for label_line in label_lines:
-                exercise_id = _exercise_label(
+                exercise_id = _printed_exercise_label(
                     label_line.decoded_text or label_line.raw_text
                 )
                 ranked: list[tuple[float, str, dict[str, Any]]] = []
@@ -544,6 +569,21 @@ def assign_source_exercise_labels_to_diagrams(
                                 "ambiguous" if ambiguous else "orphan_label"
                             ),
                             "diagram_id": "",
+                            "raw_label": (
+                                label_line.decoded_text
+                                or label_line.raw_text
+                            ).strip(),
+                            "source": "source_text_geometry",
+                            "confidence": 1.0,
+                            "auto_accepted": False,
+                            "decision_evidence": [
+                                "printed_source_label",
+                                (
+                                    "geometry_ambiguous"
+                                    if ambiguous
+                                    else "diagram_not_detected"
+                                ),
+                            ],
                         }
                     )
                     continue
@@ -560,21 +600,110 @@ def assign_source_exercise_labels_to_diagrams(
                         "label_bbox": list(label_line.bbox),
                         "status": "exact",
                         "diagram_id": diagram_id,
+                        "diagram_fingerprint": _record_fingerprint(record),
+                        "diagram_bbox": list(_bbox4(record.get("bbox")) or ()),
+                        "raw_label": (
+                            label_line.decoded_text
+                            or label_line.raw_text
+                        ).strip(),
+                        "source": "source_text_geometry",
+                        "confidence": 1.0,
+                        "auto_accepted": True,
+                        "decision_evidence": [
+                            "printed_source_label",
+                            "unique_geometry_match",
+                        ],
                     }
                 )
+            if enable_vision_ocr and (
+                is_exercise_page or scan_all_diagram_pages
+            ):
+                assignments.extend(
+                    _ocr_exercise_label_candidates(
+                        page,
+                        page_records,
+                        used_diagram_ids=used_diagram_ids,
+                    )
+                )
+
+    _resolve_unambiguous_label_candidates(
+        assignments,
+        records,
+        page_widths=page_widths,
+        known_exercise_ids=known_exercise_ids,
+    )
+    resolved_by_diagram = {
+        str(item.get("diagram_id") or ""): item
+        for item in assignments
+        if item.get("status") in {"exact", "consensus"}
+        and item.get("auto_accepted")
+        and item.get("diagram_id")
+    }
+    for record in records:
+        diagram_id = _record_id(record)
+        assignment = resolved_by_diagram.get(diagram_id)
+        if assignment is None:
+            continue
+        exercise_id = str(assignment.get("exercise_id") or "")
+        record["exercise_id"] = exercise_id
+        record["diagram_number"] = exercise_id
+        record["exercise_label_source"] = str(
+            assignment.get("source") or ""
+        )
+        record["exercise_label_bbox"] = list(
+            assignment.get("label_bbox") or []
+        )
+        record["exercise_label_confidence"] = float(
+            assignment.get("confidence") or 0.0
+        )
+        record["exercise_label_status"] = str(
+            assignment.get("status") or ""
+        )
     exact_count = len(
         [item for item in assignments if item["status"] == "exact"]
     )
+    consensus_count = len(
+        [item for item in assignments if item["status"] == "consensus"]
+    )
+    candidate_count = len(
+        [item for item in assignments if item["status"] == "candidate"]
+    )
+    conflict_count = len(
+        [
+            item
+            for item in assignments
+            if item["status"] in {"ambiguous", "conflict"}
+        ]
+    )
+    resolved_count = exact_count + consensus_count
+    assignment_sources = Counter(
+        str(item.get("source") or "unknown") for item in assignments
+    )
     return {
-        "schema": "kindlemaster.source_exercise_diagram_binding.v1",
+        "schema": "kindlemaster.source_exercise_diagram_binding.v2",
         "records": records,
         "assignments": assignments,
         "summary": {
             "diagram_count": len(records),
             "label_count": len(assignments),
             "exact_assignment_count": exact_count,
-            "review_assignment_count": len(assignments) - exact_count,
-            "unassigned_diagram_count": len(records) - exact_count,
+            "consensus_assignment_count": consensus_count,
+            "candidate_assignment_count": candidate_count,
+            "conflict_assignment_count": conflict_count,
+            "review_assignment_count": len(assignments) - resolved_count,
+            "unassigned_diagram_count": len(records) - resolved_count,
+            "assignment_source_counts": dict(
+                sorted(assignment_sources.items())
+            ),
+            "vision_policy": "candidate_generation_only",
+            "vision_scan_scope": (
+                "all_diagram_pages"
+                if scan_all_diagram_pages
+                else "source_labeled_exercise_pages"
+            ),
+            "auto_accept_policy": (
+                "source_exact_or_independent_deterministic_consensus"
+            ),
         },
     }
 
@@ -582,6 +711,8 @@ def assign_source_exercise_labels_to_diagrams(
 def replay_source_notation_blocks(
     source_payload: Mapping[str, Any],
     diagram_records: Iterable[Mapping[str, Any]],
+    *,
+    exercise_index: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay exact exercise/diagram bindings and keep uncertainty review-only."""
 
@@ -590,19 +721,36 @@ def replay_source_notation_blocks(
         extract_chess_pgn_records_from_text,
     )
 
-    diagrams_by_exercise: dict[str, list[dict[str, Any]]] = {}
-    for record in diagram_records:
-        row = dict(record)
-        exercise_id = _exercise_label(
-            str(
-                row.get("exercise_id")
-                or row.get("diagram_number")
-                or row.get("printed_exercise_number")
-                or ""
-            )
+    diagram_rows = [dict(record) for record in diagram_records]
+    exercise_resolution: dict[str, str] = {}
+    if exercise_index is not None:
+        from chess_exercise_index import resolved_diagrams_by_exercise
+
+        diagrams_by_exercise = resolved_diagrams_by_exercise(
+            exercise_index,
+            diagram_rows,
         )
-        if exercise_id:
-            diagrams_by_exercise.setdefault(exercise_id, []).append(row)
+        exercise_resolution = {
+            _exercise_label(str(record.get("exercise_id") or "")): str(
+                record.get("resolution_status") or ""
+            )
+            for record in exercise_index.get("records") or []
+            if isinstance(record, Mapping)
+            and _exercise_label(str(record.get("exercise_id") or ""))
+        }
+    else:
+        diagrams_by_exercise: dict[str, list[dict[str, Any]]] = {}
+        for row in diagram_rows:
+            exercise_id = _exercise_label(
+                str(
+                    row.get("exercise_id")
+                    or row.get("diagram_number")
+                    or row.get("printed_exercise_number")
+                    or ""
+                )
+            )
+            if exercise_id:
+                diagrams_by_exercise.setdefault(exercise_id, []).append(row)
 
     accepted = 0
     review = 0
@@ -627,11 +775,17 @@ def replay_source_notation_blocks(
             diagram_page = 0
             fen = ""
             if len(matches) != 1:
-                blockers.append(
-                    "ambiguous_diagram_binding"
-                    if matches
-                    else "missing_diagram_binding"
-                )
+                resolution_status = exercise_resolution.get(exercise_id, "")
+                if exercise_index is not None and resolution_status:
+                    blockers.append(
+                        f"exercise_index_{resolution_status}"
+                    )
+                else:
+                    blockers.append(
+                        "ambiguous_diagram_binding"
+                        if matches
+                        else "missing_diagram_binding"
+                    )
             else:
                 diagram = matches[0]
                 diagram_id = str(
@@ -724,6 +878,11 @@ def replay_source_notation_blocks(
                 "ai_role": "candidate_generation_only",
                 "ai_may_auto_accept": False,
             },
+            "exercise_index_summary": (
+                dict(exercise_index.get("summary") or {})
+                if exercise_index is not None
+                else {}
+            ),
         },
     }
 
@@ -811,6 +970,18 @@ def _exercise_label(value: str) -> str:
     return ""
 
 
+def _printed_exercise_label(value: str) -> str:
+    text = re.sub(
+        rf"{re.escape(UNKNOWN_GLYPH_PREFIX)}\d+\]\]",
+        "",
+        str(value or "").strip(),
+    )
+    match = PRINTED_EXERCISE_LABEL_RE.search(text)
+    if not match:
+        return ""
+    return f"{int(match.group('chapter'))}-{int(match.group('number'))}"
+
+
 def _meaningful_solution_line(value: str) -> bool:
     text = normalize_decoded_notation(value)
     if not text:
@@ -832,6 +1003,375 @@ def _bbox4(value: Any) -> tuple[float, float, float, float] | None:
     if x1 <= x0 or y1 <= y0:
         return None
     return (x0, y0, x1, y1)
+
+
+def _ocr_exercise_label_candidates(
+    page: fitz.Page,
+    page_records: Sequence[Mapping[str, Any]],
+    *,
+    used_diagram_ids: set[str],
+) -> list[dict[str, Any]]:
+    candidate_records = [
+        dict(record)
+        for record in page_records
+        if _record_id(record)
+        and _record_id(record) not in used_diagram_ids
+        and _record_is_confirmed(record)
+        and _bbox4(record.get("bbox")) is not None
+    ]
+    if not candidate_records:
+        return []
+    try:
+        import pytesseract
+        from PIL import Image, ImageEnhance, ImageOps
+
+        from ocr_module import configure_tesseract
+
+        configure_tesseract(pytesseract)
+    except Exception:
+        return []
+
+    scale = 4.0
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(scale, scale),
+        alpha=False,
+    )
+    mode = "RGB" if pixmap.n >= 3 else "L"
+    page_image = Image.frombytes(
+        mode,
+        (pixmap.width, pixmap.height),
+        pixmap.samples,
+    )
+    bands: list[dict[str, Any]] = []
+    for record in sorted(
+        candidate_records,
+        key=lambda item: _record_id(item),
+    ):
+        bbox = _bbox4(record.get("bbox"))
+        if bbox is None:
+            continue
+        label_bbox = (
+            max(0.0, bbox[0] - 16.0),
+            max(0.0, bbox[1] - 28.0),
+            min(float(page.rect.width), bbox[2] + 8.0),
+            min(float(page.rect.height), bbox[1] + 2.0),
+        )
+        crop_box = tuple(int(round(value * scale)) for value in label_bbox)
+        crop = page_image.crop(crop_box)
+        prepared = ImageEnhance.Contrast(
+            ImageOps.grayscale(crop)
+        ).enhance(2.0)
+        bands.append(
+            {
+                "record": record,
+                "label_bbox": label_bbox,
+                "image": prepared,
+            }
+        )
+    if not bands:
+        return []
+
+    width = max(band["image"].width for band in bands)
+    gap = 24
+    height = sum(band["image"].height + gap for band in bands)
+    montage = Image.new("L", (width, height), 255)
+    cursor = 0
+    for band in bands:
+        image = band["image"]
+        montage.paste(image, (0, cursor))
+        band["montage_y0"] = cursor
+        band["montage_y1"] = cursor + image.height
+        cursor += image.height + gap
+
+    try:
+        data = pytesseract.image_to_data(
+            montage,
+            lang="eng",
+            config="--psm 6",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return []
+
+    assignments: list[dict[str, Any]] = []
+    for band in bands:
+        raw_label, confidence = _ocr_band_text(
+            data,
+            y0=int(band["montage_y0"]),
+            y1=int(band["montage_y1"]),
+        )
+        exercise_id = _exercise_label(raw_label)
+        if not exercise_id or confidence < 0.72:
+            try:
+                individual_data = pytesseract.image_to_data(
+                    band["image"],
+                    lang="eng",
+                    config="--psm 7",
+                    output_type=pytesseract.Output.DICT,
+                )
+                individual_label, individual_confidence = _ocr_band_text(
+                    individual_data,
+                    y0=0,
+                    y1=band["image"].height,
+                )
+                individual_id = _exercise_label(individual_label)
+                if individual_id:
+                    raw_label = individual_label
+                    exercise_id = individual_id
+                    confidence = individual_confidence
+            except Exception:
+                pass
+        if not exercise_id:
+            continue
+        record = band["record"]
+        diagram_bbox = _bbox4(record.get("bbox")) or ()
+        assignments.append(
+            {
+                "exercise_id": exercise_id,
+                "source_page": int(page.number) + 1,
+                "label_bbox": list(band["label_bbox"]),
+                "diagram_bbox": list(diagram_bbox),
+                "status": "candidate",
+                "diagram_id": _record_id(record),
+                "diagram_fingerprint": _record_fingerprint(record),
+                "raw_label": raw_label,
+                "source": "tesseract_label_crop",
+                "confidence": round(confidence, 6),
+                "auto_accepted": False,
+                "decision_evidence": [
+                    "source_bound_label_crop",
+                    "vision_ocr_candidate",
+                ],
+                "blockers": [
+                    "vision_candidate_requires_deterministic_consensus"
+                ],
+                "model_route": {
+                    "route": "exercise_label_vision_candidate",
+                    "model_tier": "medium_vision",
+                    "fallback_model_tier": "high_vision",
+                    "purpose": "read_printed_exercise_label_from_crop",
+                    "auto_accept": False,
+                },
+            }
+        )
+    return assignments
+
+
+def _ocr_band_text(
+    data: Mapping[str, Sequence[Any]],
+    *,
+    y0: int,
+    y1: int,
+) -> tuple[str, float]:
+    words: list[str] = []
+    confidences: list[float] = []
+    texts = list(data.get("text") or [])
+    tops = list(data.get("top") or [])
+    raw_confidences = list(data.get("conf") or [])
+    for index, raw_text in enumerate(texts):
+        text = str(raw_text or "").strip()
+        if not text:
+            continue
+        try:
+            top = int(tops[index])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if top < y0 - 3 or top >= y1 + 3:
+            continue
+        words.append(text)
+        try:
+            confidence = float(raw_confidences[index])
+        except (IndexError, TypeError, ValueError):
+            confidence = -1.0
+        if confidence >= 0.0:
+            confidences.append(confidence)
+    score = (
+        sum(confidences) / len(confidences) / 100.0
+        if confidences
+        else 0.0
+    )
+    return " ".join(words).strip(), max(0.0, min(1.0, score))
+
+
+def _resolve_unambiguous_label_candidates(
+    assignments: list[dict[str, Any]],
+    records: Sequence[Mapping[str, Any]],
+    *,
+    page_widths: Mapping[int, float],
+    known_exercise_ids: Iterable[str] | None,
+) -> None:
+    known = {
+        _exercise_label(str(value or ""))
+        for value in (known_exercise_ids or ())
+    }
+    known.discard("")
+    if not known:
+        return
+    diagrams_by_id = {
+        _record_id(record): dict(record)
+        for record in records
+        if _record_id(record)
+    }
+    resolved_ids = {
+        str(item.get("exercise_id") or "")
+        for item in assignments
+        if item.get("status") == "exact"
+        and item.get("auto_accepted")
+    }
+    candidate_id_counts = Counter(
+        str(item.get("exercise_id") or "")
+        for item in assignments
+        if item.get("status") == "candidate"
+    )
+    candidate_diagram_counts = Counter(
+        str(item.get("diagram_id") or "")
+        for item in assignments
+        if item.get("status") == "candidate"
+    )
+    assignments_by_page: dict[int, list[dict[str, Any]]] = {}
+    for assignment in assignments:
+        assignments_by_page.setdefault(
+            int(assignment.get("source_page") or 0), []
+        ).append(assignment)
+
+    for page_number, page_assignments in assignments_by_page.items():
+        anchored_chapters = {
+            exercise_id.split("-", 1)[0]
+            for item in page_assignments
+            if item.get("source") == "source_text_geometry"
+            for exercise_id in [
+                _exercise_label(str(item.get("exercise_id") or ""))
+            ]
+            if exercise_id
+        }
+        if len(anchored_chapters) != 1:
+            continue
+        page_width = float(page_widths.get(page_number) or 0.0)
+        ordered = [
+            item
+            for item in page_assignments
+            if item.get("diagram_id")
+            and item.get("status") in {"exact", "candidate"}
+        ]
+        ordered.sort(
+            key=lambda item: _diagram_visual_sort_key(
+                diagrams_by_id.get(str(item.get("diagram_id") or ""), {}),
+                page_width=page_width,
+            )
+        )
+        ordered_ids = [
+            _exercise_label(str(item.get("exercise_id") or ""))
+            for item in ordered
+        ]
+        numeric_order = [
+            tuple(int(part) for part in exercise_id.split("-", 1))
+            for exercise_id in ordered_ids
+            if exercise_id
+        ]
+        if (
+            len(numeric_order) != len(ordered)
+            or len({chapter for chapter, _ in numeric_order}) != 1
+            or any(
+                right <= left
+                for (_, left), (_, right) in zip(
+                    numeric_order,
+                    numeric_order[1:],
+                )
+            )
+        ):
+            for item in ordered:
+                if item.get("status") == "candidate":
+                    item["blockers"] = sorted(
+                        {
+                            *list(item.get("blockers") or []),
+                            "visual_order_conflict",
+                        }
+                    )
+            continue
+
+        for item in ordered:
+            if item.get("status") != "candidate":
+                continue
+            exercise_id = _exercise_label(
+                str(item.get("exercise_id") or "")
+            )
+            diagram_id = str(item.get("diagram_id") or "")
+            chapter = (
+                exercise_id.split("-", 1)[0] if exercise_id else ""
+            )
+            decision_evidence = list(
+                item.get("decision_evidence") or []
+            )
+            blockers = set(item.get("blockers") or [])
+            checks = {
+                "known_solution_id": exercise_id in known,
+                "chapter_anchor_match": chapter in anchored_chapters,
+                "unique_exercise_candidate": (
+                    candidate_id_counts[exercise_id] == 1
+                    and exercise_id not in resolved_ids
+                ),
+                "unique_diagram_candidate": (
+                    candidate_diagram_counts[diagram_id] == 1
+                ),
+                "vision_confidence": float(
+                    item.get("confidence") or 0.0
+                )
+                >= 0.72,
+                "visual_order_monotonic": True,
+            }
+            for check, passed in checks.items():
+                if passed:
+                    decision_evidence.append(check)
+                else:
+                    blockers.add(f"{check}_failed")
+            if all(checks.values()):
+                item["status"] = "consensus"
+                item["auto_accepted"] = True
+                item["source"] = "deterministic_vision_consensus"
+                blockers.discard(
+                    "vision_candidate_requires_deterministic_consensus"
+                )
+                resolved_ids.add(exercise_id)
+            item["decision_evidence"] = sorted(set(decision_evidence))
+            item["blockers"] = sorted(blockers)
+
+
+def _diagram_visual_sort_key(
+    record: Mapping[str, Any],
+    *,
+    page_width: float,
+) -> tuple[int, float, float, str]:
+    bbox = _bbox4(
+        record.get("bbox")
+        or record.get("board_bbox")
+        or record.get("bbox_xyxy")
+    )
+    if bbox is None:
+        return (2, float("inf"), float("inf"), _record_id(record))
+    center = (bbox[0] + bbox[2]) / 2.0
+    column = 0 if not page_width or center < page_width / 2.0 else 1
+    return (column, bbox[1], bbox[0], _record_id(record))
+
+
+def _record_id(record: Mapping[str, Any]) -> str:
+    return str(
+        record.get("diagram_id") or record.get("id") or ""
+    ).strip()
+
+
+def _record_fingerprint(record: Mapping[str, Any]) -> str:
+    return str(
+        record.get("diagram_fingerprint")
+        or record.get("verified_diagram_fingerprint")
+        or ""
+    ).strip()
+
+
+def _record_is_confirmed(record: Mapping[str, Any]) -> bool:
+    return bool(
+        record.get("confirmed_diagram", True)
+        and record.get("publication_included", True)
+    )
 
 
 def _trusted_full_fen(record: Mapping[str, Any]) -> str:
@@ -864,11 +1404,22 @@ def _notation_model_route(blockers: Iterable[str]) -> dict[str, Any]:
             "purpose": "accepted_by_parser_and_replay",
             "auto_accept": False,
         }
-    if "missing_diagram_binding" in codes:
+    if (
+        "missing_diagram_binding" in codes
+        or "exercise_index_candidate" in codes
+        or "exercise_index_orphan_solution" in codes
+    ):
         return {
             "route": "diagram_label_vision_candidate",
             "model_tier": "high_vision",
             "purpose": "read_printed_exercise_label_from_source_crop",
+            "auto_accept": False,
+        }
+    if any(code.startswith("exercise_index_conflict") for code in codes):
+        return {
+            "route": "exercise_binding_conflict_review",
+            "model_tier": "none",
+            "purpose": "resolve_conflicting_source_evidence",
             "auto_accept": False,
         }
     if any(

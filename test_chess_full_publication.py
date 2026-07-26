@@ -341,6 +341,19 @@ class ChessFullPublicationTests(unittest.TestCase):
                     "accepted_count": 1,
                     "review_count": 0,
                 },
+                "exercise_index": {
+                    "schema": "kindlemaster.chess.exercise_index.v1",
+                    "records": [],
+                    "review_queue": [],
+                    "summary": {
+                        "exact_count": 1,
+                        "consensus_count": 0,
+                        "candidate_count": 0,
+                        "conflict_count": 0,
+                        "orphan_solution_count": 0,
+                        "review_queue_count": 0,
+                    },
+                },
             }
 
             with patch(
@@ -378,6 +391,22 @@ class ChessFullPublicationTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(report["summary"]["accepted_pgn"], 1)
+            self.assertEqual(
+                report["summary"]["exercise_index_exact"],
+                1,
+            )
+            exercise_index = json.loads(
+                (
+                    root
+                    / "semantic_chess_html"
+                    / "reports"
+                    / "chess_exercise_index.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                exercise_index["schema"],
+                "kindlemaster.chess.exercise_index.v1",
+            )
             health = json.loads(
                 (
                     root

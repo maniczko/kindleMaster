@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup
 
+from chess_exercise_index import build_source_exercise_index
 from chess_source_notation import (
     assign_source_exercise_labels_to_diagrams,
     extract_source_notation_pages,
@@ -655,6 +656,10 @@ def _build_full_reader(
         diagram_records=verified_records,
     )
     source_notation_page_rows = source_notation_pages.get("pages", {})
+    exercise_index = dict(
+        source_notation_pages.get("exercise_index") or {}
+    )
+    exercise_index_summary = dict(exercise_index.get("summary") or {})
     source_notation_consumed_pages: set[int] = set()
     visible_chars = 0
     spine_index = {
@@ -982,12 +987,14 @@ def _build_full_reader(
     pgn_cards = _reader_pgn_cards(combined_pgn_payload)
     safe_title = html.escape(title or "Chess publication")
     index_html = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,">
 <title>{safe_title}</title><link rel="stylesheet" href="styles.css"></head>
 <body><header class="reader-header"><p>KindleMaster full publication</p><h1>{safe_title}</h1>
 <div class="reader-stats"><span>{page_layout["page_count"]} PDF pages</span><span>{len(spine_documents)} text sections</span><span>{full_fen_count} verified FEN</span>
 <span>{placement_count} verified placements</span><span>{source_diagram_count} unreadable source diagrams</span>
-<span>{reader_accepted_pgn_count} accepted PGN</span></div>
+<span>{reader_accepted_pgn_count} accepted PGN</span>
+<span>{int(exercise_index_summary.get("exact_count") or 0) + int(exercise_index_summary.get("consensus_count") or 0)} linked exercises</span>
+<span>{int(exercise_index_summary.get("review_queue_count") or 0)} binding reviews</span></div>
 <p>Source prose and notation are preserved. Only parser-approved PGN can be copied as PGN.</p></header>
 <nav class="reader-nav" aria-label="Publication views">
 <a href="#pdf-pages">Strony PDF</a><a href="#book-text">Treść książki</a>
@@ -1065,6 +1072,30 @@ document.addEventListener("click",async event=>{const button=event.target.closes
         "source_solution_replay_review": (
             source_solution_block_count - source_solution_replay_accepted
         ),
+        "exercise_index_exact": int(
+            exercise_index_summary.get("exact_count") or 0
+        ),
+        "exercise_index_consensus": int(
+            exercise_index_summary.get("consensus_count") or 0
+        ),
+        "exercise_index_candidate": int(
+            exercise_index_summary.get("candidate_count") or 0
+        ),
+        "exercise_index_conflict": int(
+            exercise_index_summary.get("conflict_count") or 0
+        ),
+        "exercise_index_orphan_solution": int(
+            exercise_index_summary.get("orphan_solution_count") or 0
+        ),
+        "exercise_index_review_queue": int(
+            exercise_index_summary.get("review_queue_count") or 0
+        ),
+        "exercise_index_vision_candidates": int(
+            exercise_index_summary.get(
+                "vision_candidate_diagram_count"
+            )
+            or 0
+        ),
         "diagrams_total": full_fen_count + placement_count + source_diagram_count,
         "empty_img_src_count": 0,
     }
@@ -1118,6 +1149,7 @@ document.addEventListener("click",async event=>{const button=event.target.closes
                 source_solution_block_count
                 - source_solution_replay_accepted
             ),
+            "exercise_index": exercise_index_summary,
             "epub_fragment_count": len(source_notation_audit_rows),
         },
     }
@@ -1126,6 +1158,10 @@ document.addEventListener("click",async event=>{const button=event.target.closes
     _atomic_write_json(
         staging / "reports" / "source_notation_decode.json",
         source_notation_audit,
+    )
+    _atomic_write_json(
+        staging / "reports" / "chess_exercise_index.json",
+        exercise_index,
     )
     if reader_dir.exists():
         backup = reader_dir.with_name(reader_dir.name + ".previous")
@@ -1180,16 +1216,32 @@ def _reader_source_notation_pages(
             pdf_candidates[0],
             page_numbers=page_numbers,
         )
+        known_exercise_ids = {
+            str(block.get("exercise_id") or "").strip()
+            for page in (source_payload.get("pages") or {}).values()
+            if isinstance(page, Mapping)
+            for block in page.get("solution_blocks") or []
+            if isinstance(block, Mapping)
+            and str(block.get("exercise_id") or "").strip()
+        }
         diagram_binding = assign_source_exercise_labels_to_diagrams(
             pdf_candidates[0],
             diagram_records,
+            known_exercise_ids=known_exercise_ids,
+        )
+        exercise_index = build_source_exercise_index(
+            source_payload,
+            diagram_binding["records"],
+            diagram_binding["assignments"],
         )
         replayed = replay_source_notation_blocks(
             source_payload,
             diagram_binding["records"],
+            exercise_index=exercise_index,
         )
         return {
             **replayed,
+            "exercise_index": exercise_index,
             "diagram_binding": {
                 "schema": diagram_binding["schema"],
                 "summary": diagram_binding["summary"],

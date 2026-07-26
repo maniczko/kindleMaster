@@ -20,11 +20,10 @@ on:
 permissions:
   contents: read
 
-environment: staging
-
 jobs:
   staging-acceptance:
     runs-on: ubuntu-latest
+    environment: staging
     timeout-minutes: 40
     env:
       KINDLEMASTER_STAGING_BASE_URL: ${{ secrets.KINDLEMASTER_STAGING_BASE_URL }}

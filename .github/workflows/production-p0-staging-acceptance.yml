@@ -34,7 +34,7 @@ jobs:
       KINDLEMASTER_PRODUCTION_HOSTS: ${{ secrets.KINDLEMASTER_PRODUCTION_HOSTS }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Bootstrap runtime dependencies

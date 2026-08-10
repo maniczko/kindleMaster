@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.7",
-    "@trigger.dev/sdk": "^4.5.4",
+    "@trigger.dev/sdk": "^4.5.7",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.24.0",

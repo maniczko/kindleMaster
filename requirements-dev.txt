@@ -2,7 +2,7 @@
 # Python developer/test tooling installed by:
 #   python kindlemaster.py bootstrap
 pytest>=9.1.1
-coverage[toml]>=7.15.2
+coverage[toml]>=7.15.4
 ruff>=0.15.22
 pip-audit>=2.10.1
 # Optional local verification surfaces:

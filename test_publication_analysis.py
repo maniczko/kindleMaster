@@ -14,6 +14,7 @@ from premium_reflow import PublicationTable, _build_chapter_drafts, _publication
 from publication_analysis import (
     _choose_profile,
     _detect_chess_notation_collection,
+    _estimate_columns_from_centers,
     _large_document_sparse_sample_pages,
     analyze_publication,
 )
@@ -72,6 +73,20 @@ class PublicationAnalysisTests(unittest.TestCase):
         self.assertFalse(analysis.has_tables)
         self.assertEqual(analysis.route_decision["mode"], "shadow")
         self.assertEqual(analysis.route_decision["selected_profile"], "diagram_book_reflow")
+
+    def test_column_estimator_supports_three_columns(self) -> None:
+        self.assertEqual(
+            _estimate_columns_from_centers([90, 100, 280, 290, 470, 480], 600),
+            3,
+        )
+        self.assertEqual(
+            _estimate_columns_from_centers([120, 130, 430, 440], 600),
+            2,
+        )
+        self.assertEqual(
+            _estimate_columns_from_centers([280, 290, 300, 310], 600),
+            1,
+        )
 
     def test_document_like_report_routes_to_technical_book_before_magazine(self) -> None:
         profile, ui_profile, reason = _choose_profile(

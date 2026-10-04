@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import fitz
+from layout_reading_order import estimate_column_count_from_anchors
 
 from ml_features import route_feature_payload
 from ml_route_model import build_route_decision
@@ -498,13 +499,14 @@ def _toc_noise_score(toc: list[list[Any]]) -> float:
 
 
 def _estimate_columns_from_centers(x_centers: list[float], page_width: float) -> int:
-    if len(x_centers) < 2:
+    if len(x_centers) < 2 or page_width <= 0:
         return 1
-    left = sum(1 for center in x_centers if center < page_width * 0.42)
-    right = sum(1 for center in x_centers if center > page_width * 0.58)
-    if left >= 2 and right >= 2:
-        return 2
-    return 1
+    return estimate_column_count_from_anchors(
+        x_centers,
+        page_width,
+        min_items_per_column=1,
+        max_columns=4,
+    )
 
 
 def _detect_tables(pdf_path: str, sample_pages: list[int]) -> bool:

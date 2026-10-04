@@ -196,7 +196,13 @@ def analyze_publication(
     has_tables = False if preferred_profile == "diagram_book_reflow" else _detect_tables(pdf_path, sample_pages)
     chess_font_signal = _detect_chess_fonts(pdf_path)
     has_diagrams = detected_diagrams > 0 or chess_font_signal
-    estimated_columns = round(mean(column_estimates)) if column_estimates else 1
+    estimated_columns = (
+        max(column_estimates)
+        if any(value >= 3 for value in column_estimates)
+        else round(mean(column_estimates))
+        if column_estimates
+        else 1
+    )
     heading_density = mean(heading_scores) if heading_scores else 0.0
     font_consistency = _font_consistency(font_medians)
     sampled_page_count = max(len(sample_pages), 1)

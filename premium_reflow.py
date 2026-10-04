@@ -2363,23 +2363,38 @@ def _reading_order_summary(page_lines: dict[int, list[TextLine]], page_widths: d
     low_confidence_pages: list[int] = []
     for page_index, lines in sorted(page_lines.items()):
         page_width = float(page_widths.get(page_index, 0.0) or 0.0)
-        stats = _two_column_stats(lines, page_width=page_width)
-        if not stats["is_two_column"]:
+        layouts = _page_column_layouts(lines, page_width=page_width)
+        if not layouts:
             continue
-        assigned_count = int(stats["left_count"]) + int(stats["right_count"])
-        ambiguous_count = int(stats["ambiguous_count"])
-        confidence = 0.94
-        if assigned_count:
-            confidence -= min(0.35, ambiguous_count / max(assigned_count + ambiguous_count, 1))
+
+        confidence = min(float(layout.get("confidence", 0.72)) for layout in layouts)
         confidence = max(0.45, min(0.98, confidence))
+        zone_column_counts = [int(layout.get("column_count", 1)) for layout in layouts]
+        column_line_counts = [
+            [int(value) for value in (layout.get("counts") or [])]
+            for layout in layouts
+        ]
+        gaps = [
+            float(gap)
+            for layout in layouts
+            for gap in (layout.get("gaps") or [])
+        ]
+        first_two_column = next(
+            (layout for layout in layouts if int(layout.get("column_count", 1)) == 2),
+            None,
+        )
+        legacy_counts = [int(value) for value in ((first_two_column or {}).get("counts") or [])]
         page_report = {
             "page": page_index + 1,
             "status": "passed" if confidence >= 0.75 else "review",
             "confidence": round(confidence, 3),
-            "left_line_count": int(stats["left_count"]),
-            "right_line_count": int(stats["right_count"]),
-            "ambiguous_line_count": ambiguous_count,
-            "column_gap": stats["gap"],
+            "max_column_count": max(zone_column_counts, default=1),
+            "zone_column_counts": zone_column_counts,
+            "column_line_counts": column_line_counts,
+            "left_line_count": legacy_counts[0] if legacy_counts else 0,
+            "right_line_count": legacy_counts[1] if len(legacy_counts) > 1 else 0,
+            "ambiguous_line_count": 0,
+            "column_gap": round(min(gaps), 2) if gaps else 0.0,
         }
         page_reports.append(page_report)
         if confidence < 0.75:
@@ -2390,7 +2405,7 @@ def _reading_order_summary(page_lines: dict[int, list[TextLine]], page_widths: d
         message = "Multi-column reading order needs manual review."
     else:
         status = "passed"
-        message = "Reading order passed heuristic checks."
+        message = "Reading order passed adaptive per-zone checks."
 
     return {
         "status": status,

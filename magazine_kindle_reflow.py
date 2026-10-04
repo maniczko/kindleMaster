@@ -13,6 +13,7 @@ import fitz
 from PIL import Image
 
 from converter import ConversionConfig, _extract_pdf_metadata, strip_emails
+from layout_reading_order import infer_column_layout
 
 
 POLISH_LETTERS = "A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż"
@@ -1939,33 +1940,72 @@ def _render_page_blocks(page: PageModel, config: ConversionConfig, chapter_title
     for block in sorted(header_blocks, key=lambda item: (item.y0, item.x0)):
         html_parts.append(_block_to_html(block))
 
-    left_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "left"],
-        key=lambda item: (item.y0, item.x0),
-    )
-    right_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "right"],
-        key=lambda item: (item.y0, item.x0),
-    )
-    full_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "full"],
-        key=lambda item: (item.y0, item.x0),
-    )
-
-    left_idx = 0
-    right_idx = 0
-    prev_y = min((block.y0 for block in header_blocks), default=0.0)
-
-    for item in full_blocks:
-        left_idx = _emit_column_range(html_parts, image_items, left_blocks, left_idx, prev_y, item.y0, chapter_title)
-        right_idx = _emit_column_range(html_parts, image_items, right_blocks, right_idx, prev_y, item.y0, chapter_title)
-        _append_stream_item(html_parts, image_items, item, chapter_title)
-        prev_y = item.y1
-
-    _emit_column_range(html_parts, image_items, left_blocks, left_idx, prev_y, float("inf"), chapter_title)
-    _emit_column_range(html_parts, image_items, right_blocks, right_idx, prev_y, float("inf"), chapter_title)
+    for block in _sort_stream_blocks_reading_order(stream_blocks, page.width):
+        _append_stream_item(html_parts, image_items, block, chapter_title)
 
     return _merge_loose_paragraphs(_polish_html_parts(html_parts)), image_items
+
+
+def _sort_stream_blocks_reading_order(
+    blocks: list[MagazineBlock],
+    page_width: float,
+) -> list[MagazineBlock]:
+    """Order magazine blocks by vertical zones and adaptive horizontal columns."""
+    if not blocks:
+        return []
+
+    ordered: list[MagazineBlock] = []
+    current_zone: list[MagazineBlock] = []
+    for block in sorted(blocks, key=lambda item: (item.y0, item.x0)):
+        if _block_is_spanning_break(block, page_width):
+            ordered.extend(_sort_block_zone(current_zone, page_width))
+            current_zone = []
+            ordered.append(block)
+            continue
+        current_zone.append(block)
+    ordered.extend(_sort_block_zone(current_zone, page_width))
+    return ordered
+
+
+def _block_is_spanning_break(block: MagazineBlock, page_width: float) -> bool:
+    if page_width <= 0:
+        return False
+    if block.kind == "image":
+        return block.width >= page_width * 0.4
+    return block.width >= page_width * 0.58 or block.role in {"pullquote", "aside"}
+
+
+def _sort_block_zone(blocks: list[MagazineBlock], page_width: float) -> list[MagazineBlock]:
+    if not blocks:
+        return []
+    top_to_bottom = sorted(blocks, key=lambda item: (item.y0, item.x0))
+    if page_width <= 0 or len(top_to_bottom) < 2:
+        return top_to_bottom
+
+    layout = infer_column_layout(
+        [(float(block.x0), float(block.x1)) for block in top_to_bottom],
+        page_width,
+        min_items_per_column=1,
+        max_columns=4,
+    )
+    if int(layout.get("column_count", 1)) <= 1:
+        return top_to_bottom
+
+    result: list[MagazineBlock] = []
+    emitted: set[int] = set()
+    for group in layout.get("groups") or []:
+        column_blocks: list[MagazineBlock] = []
+        for index in group:
+            index = int(index)
+            if 0 <= index < len(top_to_bottom):
+                emitted.add(index)
+                column_blocks.append(top_to_bottom[index])
+        result.extend(sorted(column_blocks, key=lambda item: (item.y0, item.x0)))
+
+    for index, block in enumerate(top_to_bottom):
+        if index not in emitted:
+            result.append(block)
+    return result
 
 
 def _strip_embedded_page_title(

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import fitz  # PyMuPDF
+from layout_reading_order import infer_column_layout
 from toc_segmentation import normalize_toc_entries, select_section_outline_entries
 
 try:
@@ -229,11 +230,8 @@ def _extract_lines_from_page(page, page_index: int) -> list[TextLine]:
 
 
 def _sort_lines_in_reading_order(lines: list[TextLine], *, page_width: float) -> list[TextLine]:
-    """Sort page text in Kindle reading order, including simple two-column pages."""
-    top_to_bottom = sorted(lines, key=lambda ln: (round(ln.y0, 1), ln.x0))
-    if not _page_has_two_column_text(top_to_bottom, page_width=page_width):
-        return top_to_bottom
-
+    """Sort page text in Kindle reading order with adaptive per-zone columns."""
+    top_to_bottom = sorted(lines, key=_line_sort_key)
     ordered: list[TextLine] = []
     current_zone: list[TextLine] = []
     for line in top_to_bottom:
@@ -260,72 +258,111 @@ def _line_is_full_width_break(line: TextLine, *, page_width: float) -> bool:
     return line.x0 <= page_width * 0.16 and line.x1 >= page_width * 0.84
 
 
+def _line_column_layout(lines: list[TextLine], *, page_width: float) -> dict[str, Any]:
+    if page_width <= 0 or len(lines) < 4:
+        return {
+            "column_count": 1,
+            "groups": [list(range(len(lines)))],
+            "counts": [len(lines)],
+            "gaps": [],
+            "confidence": 0.98,
+        }
+    boxes = [(float(line.x0), float(line.x1)) for line in lines if line.text.strip()]
+    if len(boxes) < 4:
+        return {
+            "column_count": 1,
+            "groups": [list(range(len(lines)))],
+            "counts": [len(lines)],
+            "gaps": [],
+            "confidence": 0.98,
+        }
+    return infer_column_layout(
+        boxes,
+        page_width,
+        min_items_per_column=2,
+        max_columns=4,
+    )
+
+
+def _page_column_layouts(lines: list[TextLine], *, page_width: float) -> list[dict[str, Any]]:
+    layouts: list[dict[str, Any]] = []
+    current_zone: list[TextLine] = []
+    for line in sorted(lines, key=_line_sort_key):
+        if _line_is_full_width_break(line, page_width=page_width):
+            if current_zone:
+                layout = _line_column_layout(current_zone, page_width=page_width)
+                if int(layout.get("column_count", 1)) > 1:
+                    layouts.append(layout)
+                current_zone = []
+            continue
+        current_zone.append(line)
+    if current_zone:
+        layout = _line_column_layout(current_zone, page_width=page_width)
+        if int(layout.get("column_count", 1)) > 1:
+            layouts.append(layout)
+    return layouts
+
+
 def _page_has_two_column_text(lines: list[TextLine], *, page_width: float) -> bool:
-    return _two_column_stats(lines, page_width=page_width)["is_two_column"]
+    """Backward-compatible helper retained for existing callers."""
+    return any(
+        int(layout.get("column_count", 1)) == 2
+        for layout in _page_column_layouts(lines, page_width=page_width)
+    )
 
 
 def _sort_column_zone(lines: list[TextLine], *, page_width: float) -> list[TextLine]:
     if not lines:
         return []
-    stats = _two_column_stats(lines, page_width=page_width)
-    if not stats["is_two_column"]:
-        return sorted(lines, key=_line_sort_key)
+    sorted_lines = sorted(lines, key=_line_sort_key)
+    layout = _line_column_layout(sorted_lines, page_width=page_width)
+    if int(layout.get("column_count", 1)) <= 1:
+        return sorted_lines
 
-    mid = page_width / 2.0
-    left: list[TextLine] = []
-    middle: list[TextLine] = []
-    right: list[TextLine] = []
-    for line in lines:
-        center = (line.x0 + line.x1) / 2.0
-        if center < mid and line.x1 < mid + page_width * 0.08:
-            left.append(line)
-        elif center >= mid and line.x0 > mid - page_width * 0.08:
-            right.append(line)
-        else:
-            middle.append(line)
+    groups = layout.get("groups") or []
+    ordered: list[TextLine] = []
+    emitted: set[int] = set()
+    for group in groups:
+        group_lines: list[TextLine] = []
+        for index in group:
+            if 0 <= int(index) < len(sorted_lines):
+                emitted.add(int(index))
+                group_lines.append(sorted_lines[int(index)])
+        ordered.extend(sorted(group_lines, key=_line_sort_key))
 
-    if len(left) < 2 or len(right) < 2:
-        return sorted(lines, key=_line_sort_key)
-    return sorted(left, key=_line_sort_key) + sorted(middle, key=_line_sort_key) + sorted(right, key=_line_sort_key)
+    for index, line in enumerate(sorted_lines):
+        if index not in emitted:
+            ordered.append(line)
+    return ordered
 
 
 def _two_column_stats(lines: list[TextLine], *, page_width: float) -> dict[str, Any]:
-    if page_width <= 0 or len(lines) < 6:
-        return {"is_two_column": False, "left_count": 0, "right_count": 0, "ambiguous_count": 0, "gap": 0.0}
-    mid = page_width / 2.0
-    narrow_lines = [
-        line
-        for line in lines
-        if line.text.strip()
-        and not _line_is_full_width_break(line, page_width=page_width)
-        and max(0.0, line.x1 - line.x0) <= page_width * 0.52
+    """Legacy two-column summary backed by the adaptive column detector."""
+    layouts = [
+        layout
+        for layout in _page_column_layouts(lines, page_width=page_width)
+        if int(layout.get("column_count", 1)) == 2
     ]
-    left = [line for line in narrow_lines if ((line.x0 + line.x1) / 2.0) < mid and line.x1 < mid + page_width * 0.08]
-    right = [line for line in narrow_lines if ((line.x0 + line.x1) / 2.0) >= mid and line.x0 > mid - page_width * 0.08]
-    assigned = {id(line) for line in left + right}
-    ambiguous_count = sum(1 for line in narrow_lines if id(line) not in assigned)
-    if len(left) < 2 or len(right) < 2:
+    if not layouts:
         return {
             "is_two_column": False,
-            "left_count": len(left),
-            "right_count": len(right),
-            "ambiguous_count": ambiguous_count,
+            "left_count": 0,
+            "right_count": 0,
+            "ambiguous_count": 0,
             "gap": 0.0,
         }
-    gap = min(line.x0 for line in right) - max(line.x1 for line in left)
-    is_two_column = gap >= page_width * 0.04
+    best = max(layouts, key=lambda layout: sum(int(value) for value in (layout.get("counts") or [])))
+    counts = [int(value) for value in (best.get("counts") or [])]
+    gaps = [float(value) for value in (best.get("gaps") or [])]
     return {
-        "is_two_column": is_two_column,
-        "left_count": len(left),
-        "right_count": len(right),
-        "ambiguous_count": ambiguous_count,
-        "gap": round(gap, 2),
+        "is_two_column": True,
+        "left_count": counts[0] if counts else 0,
+        "right_count": counts[1] if len(counts) > 1 else 0,
+        "ambiguous_count": 0,
+        "gap": round(gaps[0], 2) if gaps else 0.0,
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Vector drawing â†’ figure extraction
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _cluster_drawing_rects(drawings, page_rect) -> list[fitz.Rect]:
     """Cluster vector drawings into connected figure regions."""
     rects: list[fitz.Rect] = []

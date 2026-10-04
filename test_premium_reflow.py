@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import fitz
 
 from converter import ConversionConfig
-from premium_reflow import _extract_lines_from_page, _repair_mojibake, extract_book_premium, pdfplumber
+from premium_reflow import TextLine, _extract_lines_from_page, _repair_mojibake, _sort_lines_in_reading_order, extract_book_premium, pdfplumber
 
 
 class PremiumReflowGeneralizationTests(unittest.TestCase):
@@ -29,6 +29,62 @@ class PremiumReflowGeneralizationTests(unittest.TestCase):
         self.assertEqual(
             lines[:6],
             ["Left one", "Left two", "Left three", "Right one", "Right two", "Right three"],
+        )
+
+    def test_extract_lines_orders_three_column_pages_by_column_before_row(self):
+        doc = fitz.open()
+        page = doc.new_page(width=600, height=760)
+        for index, text in enumerate(["Left one", "Left two", "Left three"]):
+            page.insert_text((48, 96 + index * 32), text, fontsize=10)
+        for index, text in enumerate(["Middle one", "Middle two", "Middle three"]):
+            page.insert_text((230, 96 + index * 32), text, fontsize=10)
+        for index, text in enumerate(["Right one", "Right two", "Right three"]):
+            page.insert_text((412, 96 + index * 32), text, fontsize=10)
+
+        lines = [line.text.strip() for line in _extract_lines_from_page(page, 0)]
+        doc.close()
+
+        self.assertEqual(
+            lines[:9],
+            [
+                "Left one", "Left two", "Left three",
+                "Middle one", "Middle two", "Middle three",
+                "Right one", "Right two", "Right three",
+            ],
+        )
+
+    def test_reading_order_can_change_from_three_columns_to_two_columns_on_same_page(self):
+        def line(text: str, x0: float, y0: float, x1: float) -> TextLine:
+            return TextLine(
+                text=text,
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y0 + 12,
+                size=10,
+                is_bold=False,
+                is_italic=False,
+                html=text,
+                page_index=0,
+            )
+
+        lines = [
+            line("L1", 40, 80, 150), line("M1", 220, 80, 330), line("R1", 400, 80, 510),
+            line("L2", 40, 110, 150), line("M2", 220, 110, 330), line("R2", 400, 110, 510),
+            line("Section break across page width", 40, 180, 560),
+            line("Lower left 1", 60, 250, 240), line("Lower right 1", 340, 250, 520),
+            line("Lower left 2", 60, 280, 240), line("Lower right 2", 340, 280, 520),
+        ]
+
+        ordered = [item.text for item in _sort_lines_in_reading_order(lines, page_width=600)]
+
+        self.assertEqual(
+            ordered,
+            [
+                "L1", "L2", "M1", "M2", "R1", "R2",
+                "Section break across page width",
+                "Lower left 1", "Lower left 2", "Lower right 1", "Lower right 2",
+            ],
         )
 
     def test_extract_book_premium_reports_reading_order_for_multicolumn_pages(self):

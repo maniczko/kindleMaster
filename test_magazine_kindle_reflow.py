@@ -18,6 +18,7 @@ from magazine_kindle_reflow import (
     _pick_chapter_title,
     _render_special_layout_page,
     _synthesize_sponsored_feature_title,
+    _sort_stream_blocks_reading_order,
 )
 
 
@@ -57,6 +58,37 @@ def _page(
 
 
 class MagazineKindleReflowTests(unittest.TestCase):
+    def test_magazine_stream_supports_three_columns_then_two_columns(self) -> None:
+        def block(text: str, bbox: tuple[float, float, float, float]) -> MagazineBlock:
+            return MagazineBlock(
+                kind="text",
+                text=text,
+                bbox=bbox,
+                avg_font=10.0,
+                max_font=10.0,
+                page_number=1,
+                role="body",
+            )
+
+        blocks = [
+            block("L1", (40, 80, 150, 100)), block("M1", (220, 80, 330, 100)), block("R1", (400, 80, 510, 100)),
+            block("L2", (40, 110, 150, 130)), block("M2", (220, 110, 330, 130)), block("R2", (400, 110, 510, 130)),
+            block("BREAK", (40, 180, 560, 205)),
+            block("LOWER L1", (60, 250, 240, 270)), block("LOWER R1", (340, 250, 520, 270)),
+            block("LOWER L2", (60, 280, 240, 300)), block("LOWER R2", (340, 280, 520, 300)),
+        ]
+
+        ordered = [item.text for item in _sort_stream_blocks_reading_order(blocks, 600)]
+
+        self.assertEqual(
+            ordered,
+            [
+                "L1", "L2", "M1", "M2", "R1", "R2",
+                "BREAK",
+                "LOWER L1", "LOWER L2", "LOWER R1", "LOWER R2",
+            ],
+        )
+
     def test_coalesces_incomplete_article_tail_when_next_page_has_no_strong_title(self) -> None:
         chapters = [
             [_page(0, title="Pierwszy artykuł", body="Zespół musi widzieć, że")],

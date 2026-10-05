@@ -698,6 +698,8 @@ def _is_probable_page_junk(
     page_height: float,
 ) -> bool:
     x0, y0, x1, y1 = bbox
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
     if EMAIL_RE.search(text):
         return True
     if PAGE_NUMBER_RE.fullmatch(text):
@@ -707,7 +709,14 @@ def _is_probable_page_junk(
         return True
     if near_margin and len(text) <= 32 and text.upper() == text:
         return True
-    if PHOTO_CREDIT_RE.match(text) and (x1 - x0) <= page_width * 0.4:
+    if PHOTO_CREDIT_RE.match(text) and width <= page_width * 0.4:
+        return True
+    vertical_margin_label = (
+        width <= page_width * 0.055
+        and height >= page_height * 0.10
+        and (x0 <= page_width * 0.09 or x1 >= page_width * 0.91)
+    )
+    if vertical_margin_label:
         return True
     if y0 < page_height * 0.1 and len(text) <= 40 and re.search(r"\d{1,2}[-./ ]\d{1,2}", text):
         return True
@@ -1982,8 +1991,26 @@ def _sort_block_zone(blocks: list[MagazineBlock], page_width: float) -> list[Mag
     if page_width <= 0 or len(top_to_bottom) < 2:
         return top_to_bottom
 
+    candidate_indices = [
+        index
+        for index, block in enumerate(top_to_bottom)
+        if _block_is_column_evidence(block, page_width)
+    ]
+    if len(candidate_indices) < 2:
+        candidate_indices = [
+            index
+            for index, block in enumerate(top_to_bottom)
+            if block.kind == "text" and block.width >= page_width * 0.16
+        ]
+    if len(candidate_indices) < 2:
+        return top_to_bottom
+
+    candidate_boxes = [
+        (float(top_to_bottom[index].x0), float(top_to_bottom[index].x1))
+        for index in candidate_indices
+    ]
     layout = infer_column_layout(
-        [(float(block.x0), float(block.x1)) for block in top_to_bottom],
+        candidate_boxes,
         page_width,
         min_items_per_column=1,
         max_columns=4,
@@ -1991,21 +2018,73 @@ def _sort_block_zone(blocks: list[MagazineBlock], page_width: float) -> list[Mag
     if int(layout.get("column_count", 1)) <= 1:
         return top_to_bottom
 
-    result: list[MagazineBlock] = []
-    emitted: set[int] = set()
-    for group in layout.get("groups") or []:
-        column_blocks: list[MagazineBlock] = []
-        for index in group:
-            index = int(index)
-            if 0 <= index < len(top_to_bottom):
-                emitted.add(index)
-                column_blocks.append(top_to_bottom[index])
-        result.extend(sorted(column_blocks, key=lambda item: (item.y0, item.x0)))
+    candidate_groups = layout.get("groups") or []
+    column_groups: list[list[int]] = []
+    column_spans: list[tuple[float, float]] = []
+    for group in candidate_groups:
+        original_indices = [
+            candidate_indices[int(index)]
+            for index in group
+            if 0 <= int(index) < len(candidate_indices)
+        ]
+        if not original_indices:
+            continue
+        column_groups.append(original_indices)
+        column_spans.append(
+            (
+                median(top_to_bottom[index].x0 for index in original_indices),
+                median(top_to_bottom[index].x1 for index in original_indices),
+            )
+        )
 
-    for index, block in enumerate(top_to_bottom):
-        if index not in emitted:
-            result.append(block)
+    if len(column_groups) <= 1:
+        return top_to_bottom
+
+    assigned: list[list[MagazineBlock]] = [[] for _ in column_groups]
+    floating: list[MagazineBlock] = []
+    for block in top_to_bottom:
+        center = (block.x0 + block.x1) / 2.0
+        containing = [
+            idx
+            for idx, (x0, x1) in enumerate(column_spans)
+            if x0 - page_width * 0.035 <= center <= x1 + page_width * 0.035
+        ]
+        if containing:
+            nearest = min(
+                containing,
+                key=lambda idx: abs(center - ((column_spans[idx][0] + column_spans[idx][1]) / 2.0)),
+            )
+            assigned[nearest].append(block)
+            continue
+
+        distances = [
+            min(abs(center - x0), abs(center - x1))
+            for x0, x1 in column_spans
+        ]
+        nearest = min(range(len(distances)), key=distances.__getitem__)
+        if distances[nearest] <= page_width * 0.05:
+            assigned[nearest].append(block)
+        else:
+            floating.append(block)
+
+    result: list[MagazineBlock] = []
+    for column in assigned:
+        result.extend(sorted(column, key=lambda item: (item.y0, item.x0)))
+    result.extend(sorted(floating, key=lambda item: (item.y0, item.x0)))
     return result
+
+
+def _block_is_column_evidence(block: MagazineBlock, page_width: float) -> bool:
+    if block.kind != "text" or page_width <= 0:
+        return False
+    words = len(block.text.split())
+    if words < 8:
+        return False
+    if block.width < page_width * 0.20:
+        return False
+    if block.height > max(block.width * 2.5, 120.0) and block.width < page_width * 0.12:
+        return False
+    return True
 
 
 def _strip_embedded_page_title(

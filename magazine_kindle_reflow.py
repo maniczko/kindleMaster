@@ -13,6 +13,7 @@ import fitz
 from PIL import Image
 
 from converter import ConversionConfig, _extract_pdf_metadata, strip_emails
+from layout_reading_order import infer_column_layout
 
 
 POLISH_LETTERS = "A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż"
@@ -697,6 +698,8 @@ def _is_probable_page_junk(
     page_height: float,
 ) -> bool:
     x0, y0, x1, y1 = bbox
+    width = max(0.0, x1 - x0)
+    height = max(0.0, y1 - y0)
     if EMAIL_RE.search(text):
         return True
     if PAGE_NUMBER_RE.fullmatch(text):
@@ -706,7 +709,14 @@ def _is_probable_page_junk(
         return True
     if near_margin and len(text) <= 32 and text.upper() == text:
         return True
-    if PHOTO_CREDIT_RE.match(text) and (x1 - x0) <= page_width * 0.4:
+    if PHOTO_CREDIT_RE.match(text) and width <= page_width * 0.4:
+        return True
+    vertical_margin_label = (
+        width <= page_width * 0.055
+        and height >= page_height * 0.10
+        and (x0 <= page_width * 0.09 or x1 >= page_width * 0.91)
+    )
+    if vertical_margin_label:
         return True
     if y0 < page_height * 0.1 and len(text) <= 40 and re.search(r"\d{1,2}[-./ ]\d{1,2}", text):
         return True
@@ -1939,33 +1949,152 @@ def _render_page_blocks(page: PageModel, config: ConversionConfig, chapter_title
     for block in sorted(header_blocks, key=lambda item: (item.y0, item.x0)):
         html_parts.append(_block_to_html(block))
 
-    left_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "left"],
-        key=lambda item: (item.y0, item.x0),
-    )
-    right_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "right"],
-        key=lambda item: (item.y0, item.x0),
-    )
-    full_blocks = sorted(
-        [block for block in stream_blocks if _block_column(block, page.width) == "full"],
-        key=lambda item: (item.y0, item.x0),
-    )
-
-    left_idx = 0
-    right_idx = 0
-    prev_y = min((block.y0 for block in header_blocks), default=0.0)
-
-    for item in full_blocks:
-        left_idx = _emit_column_range(html_parts, image_items, left_blocks, left_idx, prev_y, item.y0, chapter_title)
-        right_idx = _emit_column_range(html_parts, image_items, right_blocks, right_idx, prev_y, item.y0, chapter_title)
-        _append_stream_item(html_parts, image_items, item, chapter_title)
-        prev_y = item.y1
-
-    _emit_column_range(html_parts, image_items, left_blocks, left_idx, prev_y, float("inf"), chapter_title)
-    _emit_column_range(html_parts, image_items, right_blocks, right_idx, prev_y, float("inf"), chapter_title)
+    for block in _sort_stream_blocks_reading_order(stream_blocks, page.width):
+        _append_stream_item(html_parts, image_items, block, chapter_title)
 
     return _merge_loose_paragraphs(_polish_html_parts(html_parts)), image_items
+
+
+def _sort_stream_blocks_reading_order(
+    blocks: list[MagazineBlock],
+    page_width: float,
+) -> list[MagazineBlock]:
+    """Order magazine blocks by vertical zones and adaptive horizontal columns."""
+    if not blocks:
+        return []
+
+    ordered: list[MagazineBlock] = []
+    current_zone: list[MagazineBlock] = []
+    for block in sorted(blocks, key=lambda item: (item.y0, item.x0)):
+        if _block_is_spanning_break(block, page_width):
+            ordered.extend(_sort_block_zone(current_zone, page_width))
+            current_zone = []
+            ordered.append(block)
+            continue
+        current_zone.append(block)
+    ordered.extend(_sort_block_zone(current_zone, page_width))
+    return ordered
+
+
+def _block_is_spanning_break(block: MagazineBlock, page_width: float) -> bool:
+    if page_width <= 0:
+        return False
+    if block.kind == "image":
+        return block.width >= page_width * 0.4
+    return block.width >= page_width * 0.58 or block.role in {"pullquote", "aside"}
+
+
+def _sort_block_zone(blocks: list[MagazineBlock], page_width: float) -> list[MagazineBlock]:
+    if not blocks:
+        return []
+    top_to_bottom = sorted(blocks, key=lambda item: (item.y0, item.x0))
+    if page_width <= 0 or len(top_to_bottom) < 2:
+        return top_to_bottom
+
+    candidate_indices = [
+        index
+        for index, block in enumerate(top_to_bottom)
+        if _block_is_column_evidence(block, page_width)
+    ]
+    if len(candidate_indices) < 2:
+        candidate_indices = [
+            index
+            for index, block in enumerate(top_to_bottom)
+            if block.kind == "text" and block.width >= page_width * 0.16
+        ]
+    if len(candidate_indices) < 2:
+        return top_to_bottom
+
+    candidate_boxes = [
+        (float(top_to_bottom[index].x0), float(top_to_bottom[index].x1))
+        for index in candidate_indices
+    ]
+    layout = infer_column_layout(
+        candidate_boxes,
+        page_width,
+        min_items_per_column=1,
+        max_columns=4,
+    )
+    if int(layout.get("column_count", 1)) <= 1:
+        return top_to_bottom
+
+    candidate_groups = layout.get("groups") or []
+    column_groups: list[list[int]] = []
+    column_spans: list[tuple[float, float]] = []
+    for group in candidate_groups:
+        original_indices = [
+            candidate_indices[int(index)]
+            for index in group
+            if 0 <= int(index) < len(candidate_indices)
+        ]
+        if not original_indices:
+            continue
+        column_groups.append(original_indices)
+        column_spans.append(
+            (
+                median(top_to_bottom[index].x0 for index in original_indices),
+                median(top_to_bottom[index].x1 for index in original_indices),
+            )
+        )
+
+    if len(column_groups) <= 1:
+        return top_to_bottom
+
+    assigned: list[list[MagazineBlock]] = [[] for _ in column_groups]
+    floating: list[MagazineBlock] = []
+    for block in top_to_bottom:
+        center = (block.x0 + block.x1) / 2.0
+        narrow_gutter_callout = (
+            block.width <= page_width * 0.16
+            and any(
+                left_span[1] - page_width * 0.02 <= center <= right_span[0] + page_width * 0.02
+                for left_span, right_span in zip(column_spans, column_spans[1:])
+            )
+        )
+        if narrow_gutter_callout:
+            floating.append(block)
+            continue
+        containing = [
+            idx
+            for idx, (x0, x1) in enumerate(column_spans)
+            if x0 - page_width * 0.035 <= center <= x1 + page_width * 0.035
+        ]
+        if containing:
+            nearest = min(
+                containing,
+                key=lambda idx: abs(center - ((column_spans[idx][0] + column_spans[idx][1]) / 2.0)),
+            )
+            assigned[nearest].append(block)
+            continue
+
+        distances = [
+            min(abs(center - x0), abs(center - x1))
+            for x0, x1 in column_spans
+        ]
+        nearest = min(range(len(distances)), key=distances.__getitem__)
+        if distances[nearest] <= page_width * 0.05:
+            assigned[nearest].append(block)
+        else:
+            floating.append(block)
+
+    result: list[MagazineBlock] = []
+    for column in assigned:
+        result.extend(sorted(column, key=lambda item: (item.y0, item.x0)))
+    result.extend(sorted(floating, key=lambda item: (item.y0, item.x0)))
+    return result
+
+
+def _block_is_column_evidence(block: MagazineBlock, page_width: float) -> bool:
+    if block.kind != "text" or page_width <= 0:
+        return False
+    words = len(block.text.split())
+    if words < 8:
+        return False
+    if block.width < page_width * 0.20:
+        return False
+    if block.height > max(block.width * 2.5, 120.0) and block.width < page_width * 0.12:
+        return False
+    return True
 
 
 def _strip_embedded_page_title(

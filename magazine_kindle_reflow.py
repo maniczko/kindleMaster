@@ -2044,6 +2044,16 @@ def _sort_block_zone(blocks: list[MagazineBlock], page_width: float) -> list[Mag
     floating: list[MagazineBlock] = []
     for block in top_to_bottom:
         center = (block.x0 + block.x1) / 2.0
+        narrow_gutter_callout = (
+            block.width <= page_width * 0.16
+            and any(
+                left_span[1] - page_width * 0.02 <= center <= right_span[0] + page_width * 0.02
+                for left_span, right_span in zip(column_spans, column_spans[1:])
+            )
+        )
+        if narrow_gutter_callout:
+            floating.append(block)
+            continue
         containing = [
             idx
             for idx, (x0, x1) in enumerate(column_spans)

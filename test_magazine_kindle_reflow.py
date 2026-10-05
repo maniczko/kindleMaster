@@ -14,6 +14,7 @@ from magazine_kindle_reflow import (
     _coalesce_fragile_chapters,
     _infer_publication_creator,
     _infer_publication_title,
+    _is_probable_page_junk,
     _optimize_image,
     _pick_chapter_title,
     _render_special_layout_page,
@@ -58,6 +59,50 @@ def _page(
 
 
 class MagazineKindleReflowTests(unittest.TestCase):
+    def test_vertical_margin_section_label_is_removed_as_layout_junk(self) -> None:
+        self.assertTrue(
+            _is_probable_page_junk(
+                "CO TRZĘSIE RYNKAMI • PRZYSZŁOŚĆ AI",
+                (23.8, 161.3, 43.3, 390.6),
+                596.3,
+                770.0,
+            )
+        )
+
+    def test_two_column_article_ignores_centered_stat_callout_for_column_inference(self) -> None:
+        def block(text: str, bbox: tuple[float, float, float, float]) -> MagazineBlock:
+            return MagazineBlock(
+                kind="text",
+                text=text,
+                bbox=bbox,
+                avg_font=10.0,
+                max_font=10.0,
+                page_number=1,
+                role="body",
+            )
+
+        blocks = [
+            block("M", (55.5, 377.3, 114.0, 450.2)),
+            block("Left article paragraph one with enough words to define the main left reading column.", (55.5, 392.5, 281.9, 602.0)),
+            block("Right article paragraph one with enough words to define the main right reading column.", (313.5, 392.5, 539.8, 717.0)),
+            block("Left article paragraph two continues the left reading column before moving to the right.", (55.5, 611.7, 254.6, 717.0)),
+            block("1 BLN USD", (269.9, 586.0, 323.7, 654.3)),
+            block("WYNIESIE W TYM ROKU WARTOŚĆ inwestycji w AI na świecie", (265.7, 657.5, 327.9, 714.8)),
+        ]
+
+        ordered = [item.text for item in _sort_stream_blocks_reading_order(blocks, 596.3)]
+
+        self.assertEqual(
+            ordered[:4],
+            [
+                "M",
+                "Left article paragraph one with enough words to define the main left reading column.",
+                "Left article paragraph two continues the left reading column before moving to the right.",
+                "Right article paragraph one with enough words to define the main right reading column.",
+            ],
+        )
+        self.assertEqual(ordered[-2:], ["1 BLN USD", "WYNIESIE W TYM ROKU WARTOŚĆ inwestycji w AI na świecie"])
+
     def test_magazine_stream_supports_three_columns_then_two_columns(self) -> None:
         def block(text: str, bbox: tuple[float, float, float, float]) -> MagazineBlock:
             return MagazineBlock(
